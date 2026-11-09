@@ -4,7 +4,8 @@ package native
 
 /*
 #cgo CFLAGS: -fblocks
-#cgo LDFLAGS: -framework Foundation -framework UIKit -framework CoreFoundation -framework CoreGraphics -framework IOSurface -framework ImageIO -framework VideoToolbox -framework CoreMedia -framework CoreVideo
+// 不链 -framework IOSurface：iOS 上它是私有框架，且代码已改为 dlsym 解析符号。
+#cgo LDFLAGS: -framework Foundation -framework UIKit -framework CoreFoundation -framework CoreGraphics -framework ImageIO -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 #include "bridge.h"
 #include <stdlib.h>
 */
@@ -18,7 +19,11 @@ func invoke(op string, input []byte) (Result, error) {
 	arg := C.CBytes(input)
 	defer C.free(arg)
 	r := C.ag_ios_call(name, (*C.uint8_t)(arg), C.size_t(len(input)))
-	defer C.ag_ios_free(r.data)
+	// ag_ios_free 的参数是 void*：cgo 生成的包装要求显式 unsafe.Pointer，
+	// 直接传 *C.uint8_t 会在 ios+cgo 构建时报
+	//   cannot use _cgo0 (variable of type *_Ctype_uint8_t) as unsafe.Pointer value
+	// （这条路径在 Windows 上是 build tag 排除的，只有真 iOS 构建才编译到。）
+	defer C.ag_ios_free(unsafe.Pointer(r.data))
 	// 单个包限制为 64 MiB，既避免 int 截断，也约束原生返回的分配规模。
 	if r.length > 64<<20 {
 		return Result{}, statusError(op, 3, "原生响应超过 64 MiB")
