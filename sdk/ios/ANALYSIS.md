@@ -83,3 +83,30 @@
 **结论边界**：这证明六个 `.m` 能被真实的 iPhoneOS 26.2 SDK 编译，不证明链接、签名、安装或运行行为；`GOOS=ios` 的 cgo 构建仍未验证（缺 Go 工具链）。
 
 没有执行安装、签名、部署或真机操作。私有 API ABI、权限、横竖屏、多指、文字输入和视频效果仍待 Apple 工具链与真机验收。Go 测试通过不能替代这些验收。
+
+### 2026-11-09 全链路打通（GitHub macOS CI）与平台边界结论
+
+在 GitHub Actions（`macos-15`，Apple Silicon，自带完整 Xcode）上把整条链路跑通了，代码在小仓库 `iosBuild`（对应本目录的镜像）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| 用真 iPhoneOS SDK 编译 6 个 `.m`（`-fno-objc-arc`） | 通过，产物是 arm64 `MH_OBJECT` |
+| `GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go build ./sdk/ios/...` | 通过（修了 cgo 传 `void*` 需显式 `unsafe.Pointer`） |
+| `cmd/ioshost` 编成 c-archive（`libagovios.a` + `.h`） | 通过 |
+| `xcodegen generate` + `xcodebuild -sdk iphoneos CODE_SIGNING_ALLOWED=NO` | 通过，产出未签名 `.app` |
+| 打包 `Payload/` → `.ipa` | 通过，产物约 950 KB |
+
+产物核验（下载 artifact 后本地检查）：主二进制为 arm64 `MH_EXECUTE` 2.5 MB，内含 `agov_ios_invoke`、`autogov1/v2/sdk/ios/motion`、`IOHIDEventSystemClientCreate`、`CARenderServerRenderDisplay`、`runtime.capabilities` 与 Go 运行时标记，说明 Go + cgo + 六个 `.m` 确实链接进了 App。无 `_CodeSignature`、无 `embedded.mobileprovision`，符合"未签名"预期。
+
+**平台边界结论（本次确定）**：目标设备是 **iPhone / iOS 18.7，未越狱，也没有 TrollStore**（TrollStore 上限 iOS 17.0）。这套 SDK 依赖 `IOHIDEventSystemClientDispatchEvent` 注入与 `CARenderServerRenderDisplay` 采集，二者都需要系统级私有 entitlement；普通开发者签名（免费或付费）拿不到，所以即便装上 App，能力探测也会是 false。
+
+因此本 SDK 的可用前提明确为：**越狱设备（root）或 iOS ≤ 17.0 的 TrollStore 设备**。当前设备不满足，等越狱设备到位再验证。
+
+同时排除了两条不合适的替代路线：
+
+- **WDA（XCUITest）**：能给点击/滑动/输入/控件树，但**没有实时视频流**（只能轮询 `/screenshot`，约 2–5 fps），不满足投屏需求。
+- **CoreDevice（USB 隧道）**：iOS 17+ 的 `DisplayService` 确实能推 RTP/H.264-H.265 视频、也能发 HID，且**不需要证书**；但需要 USB 直连 + 开发者模式 + 隧道（Windows 要管理员与 wintun），而且我们的 `coredevice/conn.go` 传输层与视频接收解码都还没写。已确认 pymobiledevice3 11.12.4 实现了该服务，可作为后续自研的协议参照。
+
+**下一步（等设备）**：越狱机到位后，用 CI 产出的未签名 `.ipa` 直接经 TrollStore / root 安装，先跑 `AgovHost` 的三个自证式测试（注入点击看计数、注入上滑看列表、截图看出图），确认 `runtime.capabilities` 全为 true 后再做业务。
+
+iOS 侧的架构认知（与安卓相反）：未越狱场景下被控端不在手机里，而在**连手机的电脑**上。本 SDK 面向的是"手机内运行"的越狱场景，与 host 侧方案是两条独立路线。
