@@ -1,0 +1,59 @@
+# xcodegen 工程描述（不手写 .pbxproj，改这里重新 generate 即可）
+#
+# 关键点：
+#   · SWIFT_OBJC_BRIDGING_HEADER 指向 Sources/Bridging.h（它 include 生成的 libagovios.h）
+#   · LIBRARY_SEARCH_PATHS 指向 GoLib/（go build -buildmode=c-archive 的产物）
+#   · OTHER_LDFLAGS 链 -lagovios，并补 Go c-archive 需要的系统框架
+#   · 不链 IOSurface：iOS 上是私有框架，SDK 已改 dlsym
+name: AgovHost
+options:
+  bundleIdPrefix: dev.autogov
+  deploymentTarget:
+    iOS: "14.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_BITCODE: NO
+    CLANG_ENABLE_MODULES: YES
+
+targets:
+  AgovHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.autogov.host
+        PRODUCT_NAME: AgovHost
+        INFOPLIST_FILE: Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging.h
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/GoLib"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/GoLib"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lagovios"
+          - "-framework"
+          - "Foundation"
+          - "-framework"
+          - "UIKit"
+          - "-framework"
+          - "CoreFoundation"
+          - "-framework"
+          - "CoreGraphics"
+          - "-framework"
+          - "ImageIO"
+          - "-framework"
+          - "VideoToolbox"
+          - "-framework"
+          - "CoreMedia"
+          - "-framework"
+          - "CoreVideo"
+        # Go 的 c-archive 里含 ObjC 类别/符号，需要 -ObjC 才会被链接进来
+        OTHER_SWIFT_FLAGS: "$(inherited)"

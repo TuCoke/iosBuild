@@ -1,16 +1,19 @@
 name: ios-sdk
 
-# 只负责 iOS 能力 SDK 的编译验证：不构建服务端、控制台或安卓内容。
-# 触发只看 sdk/ios 与工作流本身，其它改动不消耗 macOS 额度。
+# 只负责 iOS：能力 SDK 编译验证 + 宿主 App 出未签名 ipa。
+# 不构建服务端、控制台或安卓任何内容。
 on:
   push:
     paths:
       - 'sdk/ios/**'
+      - 'cmd/ioshost/**'
+      - 'host/ios/**'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
       - 'sdk/ios/**'
-      - '.github/workflows/ios-sdk.yml'
+      - 'cmd/ioshost/**'
+      - 'host/ios/**'
   workflow_dispatch:
 
 permissions:
@@ -21,13 +24,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ios:
+  # ── 1. 能力 SDK 自身的编译验证（快，先跑）────────────────────────────
+  ios-sdk:
     name: iOS SDK 编译验证
-    # macos-15 = Apple Silicon(arm64)，自带 Xcode 与 iPhoneOS SDK
     runs-on: macos-15
     timeout-minutes: 20
     env:
-      # 代码是 MRR（手动引用计数）：不关 ARC 会直接编译失败（release/dealloc）
       OBJC_ARC_FLAG: '-fno-objc-arc'
       IOS_MIN: '14.0'
     steps:
@@ -41,23 +43,16 @@ jobs:
       - name: 环境自检
         run: |
           set -x
-          sw_vers
-          uname -m
-          xcodebuild -version
-          go version
+          sw_vers; uname -m; xcodebuild -version; go version
           xcrun --sdk iphoneos --show-sdk-path
-          xcrun --sdk iphoneos --show-sdk-version
 
-      - name: 解析 iPhoneOS SDK 路径
+      - name: 解析 iPhoneOS SDK
         id: sdk
         run: |
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          if [ -z "${SDK}" ] || [ ! -d "${SDK}" ]; then
-            echo "::error::找不到 iPhoneOS SDK"
-            exit 1
-          fi
-          echo "path=${SDK}" >> "${GITHUB_OUTPUT}"
-          echo "cc=$(xcrun --sdk iphoneos -f clang)" >> "${GITHUB_OUTPUT}"
+          [ -d "${SDK}" ] || { echo "::error::找不到 iPhoneOS SDK"; exit 1; }
+          echo "path=${SDK}" >> "$GITHUB_OUTPUT"
+          echo "cc=$(xcrun --sdk iphoneos -f clang)" >> "$GITHUB_OUTPUT"
 
       - name: 用真 iPhoneOS SDK 编译 6 个 .m
         working-directory: sdk/ios/internal/native
@@ -77,17 +72,14 @@ jobs:
           done
           ls -l "${RUNNER_TEMP}/obj"
 
-      - name: Go 编译与单测（非 cgo，走 stub）
-        env:
-          CGO_ENABLED: '0'
-          GOOS: darwin
-          GOARCH: arm64
+      - name: Go 编译与单测（非 cgo）
+        env: { CGO_ENABLED: '0', GOOS: darwin, GOARCH: arm64 }
         run: |
           set -euo pipefail
-          go build ./...
-          go test ./...
+          go build ./sdk/ios/...
+          go test ./sdk/ios/...
 
-      - name: GOOS=ios + cgo 编 Go 包（关键一步）
+      - name: GOOS=ios + cgo 编 Go 包
         env:
           CGO_ENABLED: '1'
           GOOS: ios
@@ -98,17 +90,93 @@ jobs:
           set -euo pipefail
           export CC="${CC_IOS}"
           export CGO_CFLAGS="-arch arm64 -mios-version-min=${IOS_MIN} -isysroot ${SDK} ${OBJC_ARC_FLAG}"
-          # IOSurface 走 dlsym，不链 -framework IOSurface（iOS 上是私有框架）
           export CGO_LDFLAGS="-arch arm64 -isysroot ${SDK} \
             -framework Foundation -framework UIKit -framework CoreGraphics \
             -framework ImageIO -framework VideoToolbox -framework CoreVideo -framework CoreMedia"
-          go build ./...
+          go build ./sdk/ios/...
 
-      - name: 上传编译产物（.o）
-        if: always()
+      - name: 上传 .o（仅当以上全部成功）
         uses: actions/upload-artifact@v4
         with:
           name: ios-sdk-objfiles
           path: ${{ runner.temp }}/obj
-          if-no-files-found: ignore
           retention-days: 7
+
+  # ── 2. 宿主 App：出未签名 ipa，供本地签名安装 ──────────────────────
+  ios-host:
+    name: iOS 宿主 App（未签名 ipa）
+    needs: ios-sdk
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      OBJC_ARC_FLAG: '-fno-objc-arc'
+      IOS_MIN: '14.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: go.sum
+
+      - name: 解析 iPhoneOS SDK
+        id: sdk
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "path=${SDK}" >> "$GITHUB_OUTPUT"
+          echo "cc=$(xcrun --sdk iphoneos -f clang)" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 xcodegen
+        run: brew install xcodegen
+
+      - name: Go 编 c-archive（libagovios.a + libagovios.h）
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ios
+          GOARCH: arm64
+          SDK: ${{ steps.sdk.outputs.path }}
+          CC_IOS: ${{ steps.sdk.outputs.cc }}
+        run: |
+          set -euo pipefail
+          export CC="${CC_IOS}"
+          export CGO_CFLAGS="-arch arm64 -mios-version-min=${IOS_MIN} -isysroot ${SDK} ${OBJC_ARC_FLAG}"
+          mkdir -p host/ios/GoLib
+          go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
+          ls -l host/ios/GoLib
+
+      - name: 生成 Xcode 工程
+        working-directory: host/ios
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          ls -d *.xcodeproj
+
+      - name: 编译 App（不签名）
+        working-directory: host/ios
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project AgovHost.xcodeproj \
+            -scheme AgovHost \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: 打成未签名 ipa
+        run: |
+          set -euo pipefail
+          APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
+          [ -d "${APP}" ] || { echo "::error::没有找到构建产物 ${APP}"; ls -R host/ios/build/Build/Products || true; exit 1; }
+          rm -rf out && mkdir -p out/Payload
+          cp -R "${APP}" out/Payload/
+          ( cd out && zip -qry AgovHost-unsigned.ipa Payload )
+          ls -lh out/AgovHost-unsigned.ipa
+
+      - name: 上传 ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgovHost-unsigned-ipa
+          path: out/AgovHost-unsigned.ipa
+          retention-days: 14
