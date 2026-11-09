@@ -1,0 +1,114 @@
+name: ios-sdk
+
+# 只负责 iOS 能力 SDK 的编译验证：不构建服务端、控制台或安卓内容。
+# 触发只看 sdk/ios 与工作流本身，其它改动不消耗 macOS 额度。
+on:
+  push:
+    paths:
+      - 'sdk/ios/**'
+      - '.github/workflows/ios-sdk.yml'
+  pull_request:
+    paths:
+      - 'sdk/ios/**'
+      - '.github/workflows/ios-sdk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS SDK 编译验证
+    # macos-15 = Apple Silicon(arm64)，自带 Xcode 与 iPhoneOS SDK
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      # 代码是 MRR（手动引用计数）：不关 ARC 会直接编译失败（release/dealloc）
+      OBJC_ARC_FLAG: '-fno-objc-arc'
+      IOS_MIN: '14.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: go.sum
+
+      - name: 环境自检
+        run: |
+          set -x
+          sw_vers
+          uname -m
+          xcodebuild -version
+          go version
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: 解析 iPhoneOS SDK 路径
+        id: sdk
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          if [ -z "${SDK}" ] || [ ! -d "${SDK}" ]; then
+            echo "::error::找不到 iPhoneOS SDK"
+            exit 1
+          fi
+          echo "path=${SDK}" >> "${GITHUB_OUTPUT}"
+          echo "cc=$(xcrun --sdk iphoneos -f clang)" >> "${GITHUB_OUTPUT}"
+
+      - name: 用真 iPhoneOS SDK 编译 6 个 .m
+        working-directory: sdk/ios/internal/native
+        env:
+          SDK: ${{ steps.sdk.outputs.path }}
+          CC_IOS: ${{ steps.sdk.outputs.cc }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/obj"
+          for f in *.m; do
+            echo "::group::${f}"
+            "${CC_IOS}" -c -arch arm64 -mios-version-min="${IOS_MIN}" \
+              -isysroot "${SDK}" "${OBJC_ARC_FLAG}" -fblocks \
+              -Wall -Wno-unused-parameter \
+              -o "${RUNNER_TEMP}/obj/${f%.m}.o" "${f}"
+            echo "::endgroup::"
+          done
+          ls -l "${RUNNER_TEMP}/obj"
+
+      - name: Go 编译与单测（非 cgo，走 stub）
+        env:
+          CGO_ENABLED: '0'
+          GOOS: darwin
+          GOARCH: arm64
+        run: |
+          set -euo pipefail
+          go build ./...
+          go test ./...
+
+      - name: GOOS=ios + cgo 编 Go 包（关键一步）
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ios
+          GOARCH: arm64
+          SDK: ${{ steps.sdk.outputs.path }}
+          CC_IOS: ${{ steps.sdk.outputs.cc }}
+        run: |
+          set -euo pipefail
+          export CC="${CC_IOS}"
+          export CGO_CFLAGS="-arch arm64 -mios-version-min=${IOS_MIN} -isysroot ${SDK} ${OBJC_ARC_FLAG}"
+          # IOSurface 走 dlsym，不链 -framework IOSurface（iOS 上是私有框架）
+          export CGO_LDFLAGS="-arch arm64 -isysroot ${SDK} \
+            -framework Foundation -framework UIKit -framework CoreGraphics \
+            -framework ImageIO -framework VideoToolbox -framework CoreVideo -framework CoreMedia"
+          go build ./...
+
+      - name: 上传编译产物（.o）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-sdk-objfiles
+          path: ${{ runner.temp }}/obj
+          if-no-files-found: ignore
+          retention-days: 7
