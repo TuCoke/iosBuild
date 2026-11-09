@@ -14,7 +14,7 @@ options:
 
 settings:
   base:
-    SWIFT_VERSION: "5.9"
+    SWIFT_VERSION: "5.0"
     ENABLE_BITCODE: NO
     CLANG_ENABLE_MODULES: YES
 

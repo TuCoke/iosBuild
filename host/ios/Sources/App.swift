@@ -1,12 +1,13 @@
 import SwiftUI
+import UIKit
 
-// 最小诊断 App：用来验证 SDK 的私有 API 在这台设备上到底能不能用。
+// 最小诊断 App：验证 SDK 的私有 API 在这台设备上到底能不能用。
 //
 // 三个自证式测试（不依赖其它 App）：
 //   1) 能力探测：IOHIDEvent / CARenderServer 等符号能不能解析到
-//   2) 注入点击：往屏幕中心注入一次点击，中间那个红色方块如果计数 +1，就说明注入生效
-//   3) 注入上滑：往列表注入一次上滑，列表如果滚动了，就说明滑动注入生效
-//   4) 截图：走 CARenderServer + IOSurface，能把图显示出来就说明采集可用
+//   2) 注入点击：往屏幕中心注入一次点击，中间红色方块计数 +1 即说明注入生效
+//   3) 注入上滑：往列表注入一次上滑，列表真的滚动即说明滑动注入生效
+//   4) 截图：走 CARenderServer + IOSurface，能把图显示出来即说明采集可用
 
 @main
 struct AgovHostApp: App {
@@ -32,33 +33,27 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(rows, id: \.self) { row in
-                            Text(row)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 10)
-                                .background(Color.secondary.opacity(0.12))
-                                .cornerRadius(6)
-                                .id(row)
-                        }
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(rows, id: \.self) { row in
+                        Text(row)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 10)
+                            .background(Color.gray.opacity(0.15))
+                            .cornerRadius(6)
                     }
-                    .padding(.horizontal, 12)
                 }
-                .frame(height: 160)
-                .onChange(of: log.count) { _ in
-                    // 滑动注入会让列表滚动；这里不主动滚，保持"是否真的动了"可见。
-                }
+                .padding(.horizontal, 12)
             }
+            .frame(height: 150)
 
             // 中央目标：被注入点击命中时计数 +1
             Text("被注入点击：\(tapCount)")
                 .font(.title3).bold()
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
-                .frame(height: 90)
+                .frame(height: 84)
                 .background(Color.red)
                 .cornerRadius(10)
                 .padding(.horizontal, 12)
@@ -68,7 +63,7 @@ struct ContentView: View {
                 Button("设备信息") { callDeviceInfo() }
                 Button("截图") { callScreenshot() }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(BorderlessButtonStyle())
             .padding(.horizontal, 12)
 
             HStack(spacing: 8) {
@@ -76,22 +71,27 @@ struct ContentView: View {
                 Button("注入上滑") { injectSwipe() }
                 Button("清空日志") { log.removeAll() }
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(BorderlessButtonStyle())
             .padding(.horizontal, 12)
 
-            if let image {
+            if let image = image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxHeight: 180)
-                    .overlay(Text(imageInfo).font(.caption).padding(4), alignment: .bottomLeading)
+                    .frame(maxHeight: 160)
+                    .overlay(
+                        Text(imageInfo)
+                            .font(.caption)
+                            .padding(4),
+                        alignment: .bottomLeading
+                    )
             }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(log) { line in
                         Text(line.text)
-                            .font(.system(.caption, design: .monospaced))
+                            .font(.system(size: 11, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -111,18 +111,17 @@ struct ContentView: View {
     }
 
     private func callCapabilities() {
-        let r = AgovBridge.invoke("capabilities", "{}")
-        append("capabilities → \(r)")
+        append("capabilities → \(AgovBridge.invoke("capabilities", "{}"))")
     }
 
     private func callDeviceInfo() {
-        let r = AgovBridge.invoke("device.info", "{}")
-        append("device.info → \(r)")
+        append("device.info → \(AgovBridge.invoke("device.info", "{}"))")
     }
 
     private func callScreenshot() {
-        let r = AgovBridge.invoke("capture.screenshot", "{\"maxSize\":1024,\"jpeg\":true,\"quality\":0.8}")
-        append("capture.screenshot → \(r.prefix(160))")
+        let r = AgovBridge.invoke("capture.screenshot",
+                                  "{\"maxSize\":1024,\"jpeg\":true,\"quality\":0.8}")
+        append("capture.screenshot → \(String(r.prefix(160)))")
         if let data = AgovBridge.lastImageData {
             image = UIImage(data: data)
             imageInfo = "\(AgovBridge.lastImageWidth)x\(AgovBridge.lastImageHeight)"
@@ -130,13 +129,10 @@ struct ContentView: View {
     }
 
     private func injectTap() {
-        let r = AgovBridge.invoke("motion.tap", "{\"x\":0.5,\"y\":0.5}")
-        append("motion.tap(0.5,0.5) → \(r)")
+        append("motion.tap(0.5,0.5) → \(AgovBridge.invoke("motion.tap", "{\"x\":0.5,\"y\":0.5}"))")
     }
 
     private func injectSwipe() {
-        let r = AgovBridge.invoke("motion.swipe",
-                                  "{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":400}")
-        append("motion.swipe → \(r)")
+        append("motion.swipe → \(AgovBridge.invoke("motion.swipe", "{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":400}"))")
     }
 }

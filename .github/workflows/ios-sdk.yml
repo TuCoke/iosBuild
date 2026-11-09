@@ -154,7 +154,8 @@ jobs:
       - name: 编译 App（不签名）
         working-directory: host/ios
         run: |
-          set -euo pipefail
+          set -o pipefail
+          set +e
           xcodebuild \
             -project AgovHost.xcodeproj \
             -scheme AgovHost \
@@ -162,7 +163,18 @@ jobs:
             -configuration Release \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ "${status}" -ne 0 ]; then
+            echo "::group::关键错误"
+            grep -nE "error:|fatal error:|Undefined symbol|ld: |is only available" build.log | head -80 || true
+            echo "::endgroup::"
+            echo "::group::libagovios 产物"
+            ls -l GoLib || true
+            head -40 GoLib/libagovios.h 2>/dev/null || echo "没有 libagovios.h"
+            echo "::endgroup::"
+            exit "${status}"
+          fi
 
       - name: 打成未签名 ipa
         run: |
