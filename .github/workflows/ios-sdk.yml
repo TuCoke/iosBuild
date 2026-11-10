@@ -144,30 +144,71 @@ jobs:
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           ls -l host/ios/GoLib
 
-      - name: 编译 frpc（内网穿透客户端，GOOS=ios）
+      - name: Go 出 dylib（c-archive + clang -dynamiclib）
         env:
           SDK: ${{ steps.sdk.outputs.path }}
           CC_IOS: ${{ steps.sdk.outputs.cc }}
         run: |
           set -euo pipefail
-          echo "::group::拉 frp 源码"
-          git clone --depth 1 --branch v0.61.1 https://github.com/fatedier/frp "${RUNNER_TEMP}/frp"
+          # Go 在 ios/arm64 上不支持 -buildmode=c-shared，实测报错：
+          #   "-buildmode=c-shared not supported on ios/arm64"
+          # 参考实现能出 libgoeval.dylib，走的是同一条路：
+          #   先用 c-archive 产出 .a，再用 clang -dynamiclib 把它包成 dylib。
+          # 导出符号不变（agov_ios_invoke / agov_ios_free），宿主照旧 dlopen。
+          export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
+          export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
+          export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
+          mkdir -p host/ios/Frameworks
+          go build -buildmode=c-archive -trimpath -ldflags "-s -w" \
+            -o host/ios/Frameworks/libagovios.a ./cmd/ioshost
+          clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
+            -Wl,-all_load host/ios/Frameworks/libagovios.a \
+            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
+            -framework CoreMedia -framework CoreVideo -framework Security \
+            -lresolv -lpthread -lm \
+            -o host/ios/Frameworks/libagovios.dylib
+          file host/ios/Frameworks/libagovios.dylib
+          # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
+          # 然后通过 http://127.0.0.1:8989/{status,task?cmd=} 通信。
+          mkdir -p host/ios/Runtime
+          go build -buildmode=exe -trimpath -ldflags "-s -w" \
+            -o host/ios/Runtime/app ./cmd/runtimeapp
+          file host/ios/Runtime/app
+          ls -lh host/ios/Runtime/app
+          ls -lh host/ios/Frameworks/libagovios.dylib
+          nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "agov_ios_(invoke|free)" || true
+
+
+      - name: 准备 frpc（优先用包内预置的 arm64 二进制）
+        env:
+          SDK: ${{ steps.sdk.outputs.path }}
+          CC_IOS: ${{ steps.sdk.outputs.cc }}
+        run: |
+          set -euo pipefail
+          PREBUILT="host/ios/Frameworks/frpc-ios"
+          if [ -f "${PREBUILT}" ] && [ "$(stat -f%z "${PREBUILT}")" -gt 1000000 ]; then
+            echo "::group::使用仓库内预置的 frpc"
+            file "${PREBUILT}"
+            ls -lh "${PREBUILT}"
+            shasum -a 256 "${PREBUILT}"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::group::没有预置 frpc，从源码编（frp v0.67.0）"
+          # frp 的 go.mod 带 replace，不能 go install，只能拉源码在模块内构建；
+          # GOOS=ios 强制要 cgo，CC / CGO_CFLAGS / CGO_LDFLAGS 都要指向 iphoneos SDK。
+          git clone --depth 1 --branch v0.67.0 https://github.com/fatedier/frp "${RUNNER_TEMP}/frp"
           cd "${RUNNER_TEMP}/frp"
-          git log --oneline -1
-          echo "::endgroup::"
-          echo "::group::为 ios/arm64 编译"
-          # frp 的 go.mod 带 replace，只能在其模块内构建；GOOS=ios 又强制要 cgo，
-          # 所以 CC / CGO_CFLAGS / CGO_LDFLAGS 都要指向 iphoneos SDK 与最低版本。
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
           file "${RUNNER_TEMP}/frpc-ios"
-          ls -lh "${RUNNER_TEMP}/frpc-ios"
-          echo "::endgroup::"
           mkdir -p "$GITHUB_WORKSPACE/host/ios/Frameworks"
-          cp "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
-          chmod +x "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
+          cp "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/${PREBUILT}"
+          chmod +x "$GITHUB_WORKSPACE/${PREBUILT}"
+          echo "::endgroup::"
 
       - name: 生成 Xcode 工程
         working-directory: host/ios
@@ -201,6 +242,29 @@ jobs:
             exit "${status}"
           fi
 
+      - name: 断言 frpc 已进包
+        run: |
+          set -euo pipefail
+          APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
+          if [ ! -f "${APP}/frpc-ios" ]; then
+            echo "::error::frpc-ios 不在 app 包内，隧道功能会失效"
+            ls -la "${APP}" || true
+            exit 1
+          fi
+          file "${APP}/frpc-ios"
+          ls -lh "${APP}/frpc-ios"
+          echo "✅ frpc-ios 已在包内"
+          if [ -f "${APP}/Runtime/app" ]; then
+            echo "✅ Runtime/app 已在包内（任务隔离就绪）"
+          else
+            echo "::warning::包内没有 Runtime/app"
+          fi
+          if [ -f "${APP}/libagovios.dylib" ]; then
+            echo "✅ libagovios.dylib 已在包内（热更能力就绪）"
+            nm -gU "${APP}/libagovios.dylib" | grep -E "agov_ios_(invoke|free)" || echo "::warning::dylib 里没找到导出符号"
+          else
+            echo "::warning::包内没有 libagovios.dylib（只能走静态 SDK）"
+          fi
       - name: 安装打包工具（ldid / dpkg）
         run: |
           set +e
@@ -218,6 +282,32 @@ jobs:
           # 1) 把 entitlements 放进包内：TrollStore 安装时会读取它再签名
           cp host/ios/entitlements.plist "${APP}/entitlements.plist"
           # frpc 放进包内并单独签名 —— 包内可执行文件不签，posix_spawn 会被系统拒绝。
+          # 任务执行体：放进包内 Runtime/app（与参考实现同路径），并单独签名
+          if [ -f host/ios/Runtime/app ]; then
+            mkdir -p "${APP}/Runtime"
+            cp host/ios/Runtime/app "${APP}/Runtime/app"
+            chmod +x "${APP}/Runtime/app"
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -Sentitlements.plist "${APP}/Runtime/app"
+            else
+              codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/Runtime/app"
+            fi
+            echo "Runtime/app 已放进包内并签名"; ls -lh "${APP}/Runtime/app"
+          else
+            echo "::warning::没有 Runtime/app，任务隔离不可用（脚本仍在宿主进程内跑）"
+          fi
+          # SDK 动态库：放在包内，宿主优先加载它；签名后才能在设备上 dlopen
+          if [ -f host/ios/Frameworks/libagovios.dylib ]; then
+            cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -Sentitlements.plist "${APP}/libagovios.dylib"
+            else
+              codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/libagovios.dylib"
+            fi
+            echo "libagovios.dylib 已放进包内并签名"; ls -lh "${APP}/libagovios.dylib"
+          else
+            echo "::warning::没有 libagovios.dylib，热更能力不可用（仍可用静态 SDK）"
+          fi
           if [ -f host/ios/Frameworks/frpc-ios ]; then
             cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"
             chmod +x "${APP}/frpc-ios"

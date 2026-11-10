@@ -19,6 +19,11 @@ package main
 
 /*
 #include <stdlib.h>
+#include <stddef.h>
+
+// 由同包的 ag_ax.m 实现（C 侧导出，壳也可以 dlsym）
+int   AXBootstrap(void);
+char *AXSweepNodesJSON(char *buf, size_t bufLen);
 */
 import "C"
 
@@ -320,6 +325,18 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 
 	default:
 		return fail(contextError("未知方法: " + name))
+	}
+}
+
+// GoMain 与参考实现同名：dylib 被 dlopen 之后由宿主/自身初始化调用一次，
+// 用来确保原生能力就绪。参考实现里它是 void(void)，我们也保持一样。
+//
+//export GoMain
+func GoMain() {
+	// 幂等：这里只做"确保 AX 引导"，失败也不 panic —— 之后脚本调用时会再试一次。
+	if C.AXBootstrap() != 0 {
+		// 不可用是正常情况（普通签名/无授权），不阻断启动。
+		println("[agov] AXBootstrap 未就绪（控件树不可用）")
 	}
 }
 
