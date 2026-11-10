@@ -171,6 +171,8 @@ jobs:
           ls -lh host/ios/Frameworks/libagovios.dylib
           nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "agov_ios_(invoke|free)" || true
 
+
+      - name: 准备 frpc（优先用包内预置的 arm64 二进制）
         env:
           SDK: ${{ steps.sdk.outputs.path }}
           CC_IOS: ${{ steps.sdk.outputs.cc }}
