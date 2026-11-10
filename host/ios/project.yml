@@ -14,7 +14,7 @@ name: AgovHost
 options:
   bundleIdPrefix: dev.autogov
   deploymentTarget:
-    iOS: "14.0"
+    iOS: "15.0"
   createIntermediateGroups: true
 
 settings:

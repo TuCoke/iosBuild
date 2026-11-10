@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 20
     env:
       OBJC_ARC_FLAG: '-fno-objc-arc'
-      IOS_MIN: '14.0'
+      IOS_MIN: '15.0'
     steps:
       - uses: actions/checkout@v4
 
@@ -110,7 +110,7 @@ jobs:
     timeout-minutes: 30
     env:
       OBJC_ARC_FLAG: '-fno-objc-arc'
-      IOS_MIN: '14.0'
+      IOS_MIN: '15.0'
     steps:
       - uses: actions/checkout@v4
 
@@ -405,7 +405,7 @@ jobs:
     timeout-minutes: 30
     env:
       OBJC_ARC_FLAG: '-fno-objc-arc'
-      IOS_MIN: '14.0'
+      IOS_MIN: '15.0'
     steps:
       - uses: actions/checkout@v4
 
