@@ -218,6 +218,16 @@ jobs:
             -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
             -I "${IMGUI}" -I "${IMGUI}/backends" \
             "${IMGUI}/backends/imgui_impl_metal.mm" -o host/ios/Frameworks/imgui-obj/imgui_impl_metal.o
+          # cimgui：imgui 的 C API 封装（参考实现就是这么用的）
+          CIMGUI=host/ios/third_party/cimgui
+          if [ -f "${CIMGUI}/cimgui.cpp" ]; then
+            xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fno-exceptions \
+              -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
+              -I "${IMGUI}" -I "${CIMGUI}" \
+              "${CIMGUI}/cimgui.cpp" -o host/ios/Frameworks/imgui-obj/cimgui.o
+          else
+            echo "::warning::没有 cimgui 源码，Go 的 imgui 包会缺符号"
+          fi
           libtool -static -o host/ios/Frameworks/libimgui.a host/ios/Frameworks/imgui-obj/*.o
           ls -lh host/ios/Frameworks/libimgui.a
 

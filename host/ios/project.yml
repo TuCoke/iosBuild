@@ -52,3 +52,21 @@ targets:
           # SDK 动态库的签名校验 / 钥匙串
           - "-framework"
           - "Security"
+          # 以下与参考实现 AutoGoRunner 的 otool -L 对齐（它链了这些，我们也链上）
+          # WebKit 已在上方；这里补 AVFoundation/AVKit/JavaScriptCore/CoreLocation/
+          # AudioToolbox/IOSurface/Accelerate —— 少了它们，将来接视频播放、
+          # JS 桥、定位、音频、IOSurface 采集都会在链接期缺符号。
+          - "-framework"
+          - "AVFoundation"
+          - "-framework"
+          - "AVKit"
+          - "-framework"
+          - "JavaScriptCore"
+          - "-framework"
+          - "CoreLocation"
+          - "-framework"
+          - "AudioToolbox"
+          - "-framework"
+          - "IOSurface"
+          - "-framework"
+          - "Accelerate"
