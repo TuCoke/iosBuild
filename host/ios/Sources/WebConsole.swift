@@ -14,7 +14,6 @@ struct WebConsoleView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
-        // 允许内联播放与脚本（页面里用 fetch 调本地 API）
         config.allowsInlineMediaPlayback = true
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
@@ -32,20 +31,19 @@ struct WebConsoleView: UIViewRepresentable {
 }
 
 /// 全屏呈现的 Web 控制台。
+///
+/// 关闭用回调而不是 @Environment(\.dismiss)：后者是 iOS 15+ API，
+/// 我们的最低版本是 14.0，用了会在编译期报 availability 错误。
 struct WebConsoleScreen: View {
     let url: URL
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
 
     var body: some View {
         NavigationView {
             WebConsoleView(url: url)
-                .navigationTitle("控制台")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("关闭") { dismiss() }
-                    }
-                }
+                .navigationBarTitle("控制台", displayMode: .inline)
+                .navigationBarItems(trailing: Button("关闭") { onClose() })
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 }

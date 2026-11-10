@@ -111,7 +111,7 @@ struct ContentView: View {
         }
         .padding(.vertical, 8)
         .sheet(isPresented: $showWebConsole) {
-            WebConsoleScreen(url: consoleURL)
+            WebConsoleScreen(url: consoleURL) { showWebConsole = false }
         }
         .onAppear {
             append("AgovHost 启动")
