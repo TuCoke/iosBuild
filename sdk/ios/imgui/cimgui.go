@@ -18,6 +18,7 @@ package imgui
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../../host/ios/third_party/imgui_shim -I${SRCDIR}/../../../host/ios/third_party/imgui
+#include <stdlib.h>
 #include "ag_imgui_c.h"
 */
 import "C"

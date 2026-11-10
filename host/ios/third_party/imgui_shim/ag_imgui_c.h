@@ -9,6 +9,8 @@
 #ifndef AG_IMGUI_C_H
 #define AG_IMGUI_C_H
 
+#include <stdlib.h>   // C.free 在 Go 侧要用到
+
 #ifdef __cplusplus
 extern "C" {
 #endif
