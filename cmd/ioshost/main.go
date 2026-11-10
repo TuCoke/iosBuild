@@ -112,7 +112,6 @@ func boolean(m map[string]any, key string) bool {
 	return false
 }
 
-//export agov_ios_invoke
 // ---- 本地 API ----
 //
 // 宿主在 127.0.0.1 上开一个小 HTTP 服务，两个用途：
@@ -156,6 +155,12 @@ func startLocalAPI(port int) error {
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
+// agov_ios_invoke 是壳唯一的调用入口：method + payloadJson → JSON 结果。
+//
+// 注意：//export 必须【紧邻】函数声明，cgo 才会生成导出符号。
+// 之前它被上面新加的代码隔开了，结果归档里只有 agov_ios_free、没有 invoke，
+// 表现就是 clang 报 <initial-undefines> / dlsym 失败 —— 踩过一次，别再挪。
+//export agov_ios_invoke
 func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	if method == nil {
 		return fail(contextError("缺少方法名"))
