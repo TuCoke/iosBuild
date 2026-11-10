@@ -1,14 +1,20 @@
 name: reverse
 
-# 逆向分析（手动触发，不参与构建、不影响 ios-sdk）
+# 逆向分析 v2（手动触发，不参与构建）
 #
-# 目的：拿到参考实现里几个关键符号的真实签名，避免我们靠猜写代码。
-#   GoMain            —— 壳/运行时 的总入口，参数与返回未知
-#   AXBootstrap       —— 控件树采集入口
-#   AXSweepNodesJSON  —— 控件树导出 JSON
-#   AGAppCtlStartServer / AGAppCtlEval —— 壳里的会话层
+# v1 已确定：
+#   void GoMain(void)                       —— 无参无返回
+#   int  AXBootstrap(void)                  —— 0 成功 / -1 未就绪
+#   char *AXSweepNodesJSON(char*, size_t)   —— 未就绪时把错误写进 buf 并返回 NULL
+#   76 个 _Bridge* 的完整地址清单
+#   壳不引用 GoMain（由 dylib 自己初始化时调用）
 #
-# 产物：一份文本报告（符号表 + 关键函数反汇编），上传为 artifact。
+# v2 要补齐的：
+#   ① AXSweepNodesJSON 成功分支 —— 返回 buf 还是 strdup 的串（决定要不要 free）
+#   ② 谁调用了 GoMain（0x1011e80ac）—— 是不是 constructor
+#   ③ 壳怎么调用 AXBootstrap / AXSweepNodesJSON（dlsym 之后传什么参数）
+#   ④ 壳的 AGAppCtl 会话层（socket？帧格式？）
+#   ⑤ 两边的可读字符串（错误信息最能说明行为）
 
 on:
   workflow_dispatch:
@@ -18,101 +24,107 @@ permissions:
 
 jobs:
   reverse:
-    name: 反汇编关键符号
+    name: 反汇编（完整版）
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: 环境检查
         run: |
           set -euo pipefail
+          mkdir -p out
           ls -lh reverse/
           file reverse/libgoeval.dylib reverse/AutoGoRunner
 
-      - name: 导出符号表（全量）
+      - name: ① AXSweepNodesJSON 完整实现
         run: |
           set -euo pipefail
-          mkdir -p out
-          {
-            echo "== libgoeval.dylib: 全部导出符号 =="
-            nm -gU reverse/libgoeval.dylib | sort
-            echo
-            echo "== libgoeval.dylib: 未定义符号（宿主或系统需提供）=="
-            nm -gu reverse/libgoeval.dylib | sort
-          } > out/libgoeval-symbols.txt 2>&1
-          wc -l out/libgoeval-symbols.txt
+          otool -tvV reverse/libgoeval.dylib > /tmp/dylib.asm
+          # 从符号标签开始，截到下一条符号标签之前（最多 400 行）
+          awk '/^_AXSweepNodesJSON:/{f=1} f{print; n++} n>400{exit}' /tmp/dylib.asm > out/ax-sweep-full.txt || true
+          wc -l out/ax-sweep-full.txt
+          # 同时把字符串引用单独摘出来（错误信息、格式串）
+          grep -oE 'literal pool for: "[^"]*"' out/ax-sweep-full.txt | sort -u || true
 
-      - name: 导出 Bridge / AX / GoMain 清单
+      - name: ①b AXBootstrap 完整实现
         run: |
           set -euo pipefail
-          {
-            echo "== _Bridge* =="
-            nm -gU reverse/libgoeval.dylib | grep -E ' _Bridge' | sort
-            echo
-            echo "== _AX* =="
-            nm -gU reverse/libgoeval.dylib | grep -E ' _AX' | sort
-            echo
-            echo "== GoMain =="
-            nm -gU reverse/libgoeval.dylib | grep -i gomain || true
-          } > out/keys.txt 2>&1
-          cat out/keys.txt
+          awk '/^_AXBootstrap:/{f=1} f{print; n++} n>200{exit}' /tmp/dylib.asm > out/ax-bootstrap-full.txt || true
+          wc -l out/ax-bootstrap-full.txt
 
-      - name: 壳的符号（AGAppCtl / dlsym 目标）
+      - name: ② 谁调用了 GoMain
         run: |
           set -euo pipefail
           {
-            echo "== AutoGoRunner: 定义的符号（含 AGAppCtl*）=="
-            nm -gU reverse/AutoGoRunner | grep -E 'AGAppCtl|GoMain|AX' | sort || true
+            echo "== bl _GoMain 出现位置 =="
+            grep -n "bl[[:space:]]*_GoMain" /tmp/dylib.asm || true
             echo
-            echo "== AutoGoRunner: 字符串里的入口候选 =="
-            strings -a reverse/AutoGoRunner | grep -E '^(GoMain|AXBootstrap|AXSweepNodesJSON|AGAppCtl)' | sort -u || true
-          } > out/shell.txt 2>&1
-          cat out/shell.txt
-
-      - name: 反汇编 GoMain（看参数怎么用）
-        run: |
-          set -euo pipefail
-          # otool 的 -tV 输出全量太大，用 sed 截取从 GoMain 标签开始的一段
-          {
-            echo "== libgoeval.dylib: _GoMain 反汇编 =="
-            otool -tvV reverse/libgoeval.dylib | grep -n "_GoMain" | head -5 || true
-            otool -tvV reverse/libgoeval.dylib | sed -n "/_GoMain:/,/^_/p" | head -120 || true
-            echo
-            echo "== AutoGoRunner: _GoMain 引用点 =="
-            otool -tvV reverse/AutoGoRunner | grep -n "GoMain" | head -20 || true
-          } > out/disasm-gomain.txt 2>&1
-          wc -l out/disasm-gomain.txt
-
-      - name: 反汇编 AX 入口
-        run: |
-          set -euo pipefail
-          {
-            for sym in _AXBootstrap _AXSweepNodesJSON; do
-              echo "== $sym =="
-              otool -tvV reverse/libgoeval.dylib | sed -n "/${sym}:/,/^_/p" | head -80 || true
+            echo "== 每个调用点前 120 行（找所属函数）=="
+            for line in $(grep -n "bl[[:space:]]*_GoMain" /tmp/dylib.asm | cut -d: -f1 | head -3); do
+              echo "---- around line $line ----"
+              sed -n "$((line-120)),$((line+10))p" /tmp/dylib.asm
               echo
             done
-          } > out/disasm-ax.txt 2>&1
-          wc -l out/disasm-ax.txt
+          } > out/gomain-caller.txt 2>&1
+          wc -l out/gomain-caller.txt
 
-      - name: 反汇编壳的会话层
+      - name: ③ 壳怎么调 AX 两个函数
+        run: |
+          set -euo pipefail
+          otool -tvV reverse/AutoGoRunner > /tmp/shell.asm
+          {
+            echo "== 壳里引用 AXBootstrap / AXSweepNodesJSON 的位置 =="
+            grep -n "AXBootstrap\|AXSweepNodesJSON" /tmp/shell.asm || echo "(反汇编里没有直接引用，说明走 dlsym)"
+            echo
+            echo "== 壳里 dlsym 调用点（每个前后 60 行）=="
+            for line in $(grep -n "_dlsym" /tmp/shell.asm | cut -d: -f1 | head -4); do
+              echo "---- around line $line ----"
+              sed -n "$((line-60)),$((line+20))p" /tmp/shell.asm
+              echo
+            done
+          } > out/shell-axcall.txt 2>&1
+          wc -l out/shell-axcall.txt
+
+      - name: ④ 壳的 AGAppCtl（ObjC 元数据 + 反汇编）
         run: |
           set -euo pipefail
           {
-            for sym in _AGAppCtlStartServer _AGAppCtlEval; do
-              echo "== $sym =="
-              otool -tvV reverse/AutoGoRunner | sed -n "/${sym}:/,/^_/p" | head -100 || true
-              echo
-            done
-          } > out/disasm-appctl.txt 2>&1
-          wc -l out/disasm-appctl.txt
+            echo "== ObjC 元数据里 AGAppCtl 相关 =="
+            otool -oV reverse/AutoGoRunner 2>/dev/null | grep -n -A4 -B2 "AGAppCtl" | head -200 || true
+            echo
+            echo "== 反汇编里 AGAppCtlStartServer / AGAppCtlEval 位置 =="
+            grep -n "AGAppCtlStartServer\|AGAppCtlEval\|AGAppCtlSession\|AGAppCtlPendingWait" /tmp/shell.asm | head -40 || true
+          } > out/appctl.txt 2>&1
+          wc -l out/appctl.txt
+
+      - name: ⑤ 可读字符串（错误信息最说明行为）
+        run: |
+          set -euo pipefail
+          {
+            echo "== libgoeval.dylib: AX / Eval / Bridge / socket / dylib 相关 =="
+            strings -a reverse/libgoeval.dylib | grep -iE "AX |AXUIElement|bootstrap|sweep|eval|goeval|\.sock|libagov|Bridge" | sort -u | head -400
+          } > out/strings-dylib.txt 2>&1
+          {
+            echo "== AutoGoRunner: AGAppCtl / 端口 / socket / dlsym 相关 =="
+            strings -a reverse/AutoGoRunner | grep -iE "AGAppCtl|socket|tcp|localhost|127\.0\.0\.1|:[0-9]{4}|GoMain|AX" | sort -u | head -400
+          } > out/strings-shell.txt 2>&1
+          wc -l out/strings-dylib.txt out/strings-shell.txt
+
+      - name: ⑥ 符号与依赖（保留 v1 结论）
+        run: |
+          set -euo pipefail
+          nm -gU reverse/libgoeval.dylib | sort > out/dylib-exports.txt
+          otool -L reverse/libgoeval.dylib > out/dylib-deps.txt
+          nm -gU reverse/AutoGoRunner | sort > out/shell-exports.txt
+          otool -L reverse/AutoGoRunner > out/shell-deps.txt
+          wc -l out/*.txt
 
       - name: 上传报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reverse-report
+          name: reverse-report-v2
           path: out/
           if-no-files-found: warn
           retention-days: 30
