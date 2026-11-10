@@ -14,7 +14,7 @@ func SetNextWindowPos(v Vec2)          {}
 func SetNextWindowSize(v Vec2)         {}
 func WindowBg(r, g, b, a uint8)        {}
 func PopStyleColor()                   {}
-func SetFontScale(scale float32)       {}
+func FontSize() float32                { return 0 }
 func ScrollY() float32                 { return 0 }
 func ScrollMaxY() float32              { return 0 }
 func SetScrollHereY(center float32)    {}

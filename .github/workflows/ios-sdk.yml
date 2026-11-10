@@ -127,7 +127,14 @@ jobs:
         run: |
           set -euo pipefail
           export CC="${CC_IOS}"
+          # CXX 必须给：cgo 编 .mm（ag_rec / imgui_overlay）用 CXX，缺省会退回 g++ 导致 .mm 被跳过，
+          # 到链接期才报 _AGRecognition / _AGImGuiOverlay 未定义（已踩过一次）。
+          export CXX="${CC_IOS}"
           export CGO_CFLAGS="-arch arm64 -mios-version-min=${IOS_MIN} -isysroot ${SDK} ${OBJC_ARC_FLAG}"
+          # .mm 走 CGO_CXXFLAGS：-fobjc-arc 是 ARC 写法要求；两个 -I 给 cimgui/imgui 头（cimgui 内部按 ./imgui 布局引用）
+          export CGO_CXXFLAGS="-arch arm64 -mios-version-min=${IOS_MIN} -isysroot ${SDK} -fobjc-arc \
+            -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui \
+            -I host/ios/Frameworks/opencv2.framework/Headers"
           export CGO_LDFLAGS="-arch arm64 -isysroot ${SDK} \
             -framework Foundation -framework UIKit -framework CoreGraphics \
             -framework ImageIO -framework VideoToolbox -framework CoreVideo -framework CoreMedia"
@@ -199,39 +206,40 @@ jobs:
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           ls -l host/ios/GoLib
 
-      - name: 编 imgui 静态库（与参考实现同款 libimgui）
+      - name: 编 libimgui.dylib（imgui 1.92.5 + cimgui 1.92.5 + Metal 后端）
         run: |
           set -euo pipefail
-          IMGUI=host/ios/third_party/imgui
-          if [ ! -d "${IMGUI}" ]; then echo "::warning::没有 imgui 源码，跳过"; exit 0; fi
-          # imgui.cpp 会 #include "imgui_internal.h"，缺它编不过（踩过一次）
-          [ -f "${IMGUI}/imgui_internal.h" ] || { echo "::error::缺少 imgui_internal.h"; exit 1; }
+          # 版本与参考实现一致：imgui 1.92.5 + cimgui 1.92.5
+          # （cimgui 仓库里 imgui 是子模块，cimgui.cpp 用 "./imgui/..." 引用它）
+          CIMGUI=host/ios/third_party/cimgui
+          IMGUI="${CIMGUI}/imgui"
+          [ -f "${CIMGUI}/cimgui.cpp" ] || { echo "::error::缺少 cimgui 源码"; exit 1; }
+          [ -f "${IMGUI}/imgui.cpp" ] || { echo "::error::缺少 imgui 源码"; exit 1; }
+          [ -f "${IMGUI}/misc/freetype/imgui_freetype.h" ] || { echo "::error::缺少 misc/freetype 头"; exit 1; }
           SDK_DIR=$(xcrun --sdk iphoneos --show-sdk-path)
-          mkdir -p host/ios/Frameworks/imgui-obj
+          OBJ=host/ios/Frameworks/imgui-obj
+          rm -rf "${OBJ}"; mkdir -p "${OBJ}" host/ios/Frameworks
+          CXXFLAGS="-O2 -std=c++17 -fno-exceptions -isysroot ${SDK_DIR} -mios-version-min=15.0 -arch arm64 -I ${CIMGUI} -I ${IMGUI} -I ${IMGUI}/backends"
           for f in imgui imgui_draw imgui_tables imgui_widgets; do
-            xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fno-exceptions \
-              -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
-              -I "${IMGUI}" -I "${IMGUI}/backends" \
-              "${IMGUI}/$f.cpp" -o "host/ios/Frameworks/imgui-obj/$f.o"
+            xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} "${IMGUI}/$f.cpp" -o "${OBJ}/$f.o"
           done
-          xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fobjc-arc \
-            -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
-            -I "${IMGUI}" -I "${IMGUI}/backends" \
-            "${IMGUI}/backends/imgui_impl_metal.mm" -o host/ios/Frameworks/imgui-obj/imgui_impl_metal.o
-          # imgui 的 C API 薄层（Go 通过 cgo 调它，形态与参考实现一致）
-          # 不用官方 cimgui：它的 master 对应 1.92+，与这里 vendor 的 1.91.5 不兼容
-          SHIM=host/ios/third_party/imgui_shim
-          if [ -f "${SHIM}/ag_imgui_c.cpp" ]; then
-            xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fno-exceptions \
-              -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
-              -I "${IMGUI}" -I "${SHIM}" \
-              "${SHIM}/ag_imgui_c.cpp" -o host/ios/Frameworks/imgui-obj/ag_imgui_c.o
-          else
-            echo "::error::缺少 imgui shim，Go 的 imgui 包会缺符号"
-            exit 1
-          fi
-          libtool -static -o host/ios/Frameworks/libimgui.a host/ios/Frameworks/imgui-obj/*.o
-          ls -lh host/ios/Frameworks/libimgui.a
+          # cimgui：imgui 的 C API（ig* 那一套，与参考实现导出的符号名一致）
+          xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} "${CIMGUI}/cimgui.cpp" -o "${OBJ}/cimgui.o"
+          # 官方 Metal 后端（参考实现里同样编进去）
+          xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -fobjc-arc \
+            "${IMGUI}/backends/imgui_impl_metal.mm" -o "${OBJ}/imgui_impl_metal.o"
+          # 独立 dylib：libagovios 用 @rpath 链接它（与参考实现的 libimgui.dylib 同形态）
+          xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -isysroot "${SDK_DIR}" \
+            -mios-version-min=15.0 -install_name @rpath/libimgui.dylib \
+            "${OBJ}"/*.o -framework Metal -framework MetalKit -framework UIKit \
+            -framework Foundation -framework CoreGraphics -lc++ \
+            -o host/ios/Frameworks/libimgui.dylib
+          file host/ios/Frameworks/libimgui.dylib
+          for sym in _igNewFrame _igBegin _igEnd _igTextUnformatted _igSetNextWindowPos; do
+            nm -gU host/ios/Frameworks/libimgui.dylib | grep -q " ${sym}$" \
+              || { echo "::error::libimgui.dylib 缺少 ${sym}"; exit 1; }
+          done
+          echo "✅ libimgui.dylib 导出 ig*（imgui 1.92.5 + cimgui 1.92.5）"
 
       - name: Go 出 dylib（c-archive + clang -dynamiclib）
         env:
@@ -251,7 +259,7 @@ jobs:
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -F host/ios/Frameworks -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           mkdir -p host/ios/Frameworks
             # 注意：不能加 -ldflags "-s -w"。
@@ -261,12 +269,15 @@ jobs:
             -o host/ios/Frameworks/libagovios.a ./cmd/ioshost
             echo "归档里的导出符号："
             nm -gU host/ios/Frameworks/libagovios.a 2>/dev/null | grep -E "agov_ios_(invoke|free)" || echo "  （没找到，后面必然失败）"
-          # 与参考实现一致：有 OpenCV framework 就链上（没有也照常编，先保证能出 dylib）
+          # OpenCV：链参考实现自带的 Runtime/libopencv_*.dylib（与它 otool -L 里
+          # @rpath/libopencv_core.dylib 等一致）。
+          # 不用 opencv2.framework：它带 Swift 兼容库（Calib3dExt.o 引 swiftCompatibility50/51），
+          # 会把 Swift 运行时拖进 dylib，并报 __swift_FORCE_LOAD_$ 未定义。
           OPENCV_FLAGS=""
           IMGUI_LIB=""
-          if [ -f host/ios/Frameworks/libimgui.a ]; then IMGUI_LIB="host/ios/Frameworks/libimgui.a"; fi
-          if [ -d host/ios/Frameworks/opencv2.framework ]; then
-            OPENCV_FLAGS="-F host/ios/Frameworks -framework opencv2"
+          if [ -f host/ios/Frameworks/libimgui.dylib ]; then IMGUI_LIB="-L host/ios/Frameworks -limgui"; fi
+          if [ -f host/ios/Runtime/libopencv_core.dylib ]; then
+            OPENCV_FLAGS="-L host/ios/Runtime -lopencv_core -lopencv_imgproc -lopencv_imgcodecs"
           fi
           clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
@@ -336,7 +347,7 @@ jobs:
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -F host/ios/Frameworks -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
           file "${RUNNER_TEMP}/frpc-ios"
@@ -389,6 +400,12 @@ jobs:
             copied=$((copied+1))
           done
           echo "放入 ${copied} 个识别/推理 dylib"
+          # imgui 也放进 Runtime：libagovios 的 install_name 是 @rpath/libimgui.dylib，
+          # 而 App 已补 @executable_path/Runtime 这条 rpath（下面 install_name_tool）
+          if [ -f host/ios/Frameworks/libimgui.dylib ]; then
+            cp host/ios/Frameworks/libimgui.dylib "${APP}/Runtime/"
+            echo "放入 libimgui.dylib"
+          fi
           ls -lh "${APP}/Runtime" || true
           # 它们的 LC_RPATH 指向作者本机路径，补一条 app 内 rpath 才能解析 @rpath
           if [ -d "${APP}/Runtime" ]; then
@@ -611,13 +628,10 @@ jobs:
           # 1) 静态归档
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           # 2) 包成 dylib（模拟器架构 + 模拟器 SDK，宿主会在运行时 dlopen 它）
-          # 与参考实现一致：有 OpenCV framework 就链上（没有也照常编，先保证能出 dylib）
+          # 模拟器里同样链 Runtime/libopencv_*.dylib（设备版架构不匹配，所以模拟器先不链）
           OPENCV_FLAGS=""
           IMGUI_LIB=""
-          if [ -f host/ios/Frameworks/libimgui.a ]; then IMGUI_LIB="host/ios/Frameworks/libimgui.a"; fi
-          if [ -d host/ios/Frameworks/opencv2.framework ]; then
-            OPENCV_FLAGS="-F host/ios/Frameworks -framework opencv2"
-          fi
+          if [ -f host/ios/Frameworks/libimgui.dylib ]; then IMGUI_LIB="-L host/ios/Frameworks -limgui"; fi
           clang -dynamiclib -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
             -mios-simulator-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/GoLib/libagovios.a \
