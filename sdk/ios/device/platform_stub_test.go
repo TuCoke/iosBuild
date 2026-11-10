@@ -22,10 +22,10 @@ func TestUnsupportedPlatformNeverReportsDeviceSuccess(t *testing.T) {
 	cases := map[string]func() error{
 		"设备信息": func() error { _, err := device.Info(ctx); return err },
 		"能力探测": func() error { _, err := device.Capabilities(ctx); return err },
-		"应用启动": func() error { return app.Launch(ctx, "com.example.demo") },
+		"应用启动": func() error { return app.LaunchBundle(ctx, "com.example.demo") },
 		"点击":   func() error { return motion.Tap(ctx, .5, .5) },
-		"滑动":   func() error { return motion.Swipe(ctx, .5, .8, .5, .2, time.Millisecond) },
-		"文本":   func() error { return ime.InputText(ctx, "杭州") },
+		"滑动":   func() error { return motion.SwipePath(ctx, .5, .8, .5, .2, time.Millisecond) },
+		"文本":   func() error { return ime.InputTextContext(ctx, "杭州") },
 		"截图":   func() error { _, err := capture.Screenshot(ctx, capture.Options{}); return err },
 		"视频":   func() error { _, err := video.Start(ctx, video.Config{}); return err },
 	}
@@ -42,7 +42,7 @@ func TestInvalidRequestsFailBeforeNativeDispatch(t *testing.T) {
 	ctx := context.Background()
 	cases := map[string]func() error{
 		"越界点击": func() error { return motion.Tap(ctx, 1.1, .5) },
-		"无效时长": func() error { return motion.Swipe(ctx, .5, .8, .5, .2, 0) },
+		"无效时长": func() error { return motion.SwipePath(ctx, .5, .8, .5, .2, 0) },
 		"重复手指": func() error {
 			return motion.TouchFrame(ctx, []types.Contact{{ID: 0, Point: types.Point{X: .1, Y: .1}}, {ID: 0, Point: types.Point{X: .2, Y: .2}}})
 		},

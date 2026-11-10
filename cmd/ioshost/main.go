@@ -147,7 +147,7 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 
 	case "motion.swipe":
 		d := time.Duration(num(args, "durationMs", 500)) * time.Millisecond
-		if err := motion.Swipe(ctx, num(args, "x1", 0.5), num(args, "y1", 0.7), num(args, "x2", 0.5), num(args, "y2", 0.3), d); err != nil {
+		if err := motion.SwipePath(ctx, num(args, "x1", 0.5), num(args, "y1", 0.7), num(args, "x2", 0.5), num(args, "y2", 0.3), d); err != nil {
 			return fail(err)
 		}
 		return okData(map[string]any{"injected": "swipe", "durationMs": d.Milliseconds()})
@@ -178,13 +178,13 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		return okData(v)
 
 	case "app.launch":
-		if err := app.Launch(ctx, str(args, "bundleId")); err != nil {
+		if err := app.LaunchBundle(ctx, str(args, "bundleId")); err != nil {
 			return fail(err)
 		}
 		return okData(map[string]any{"launched": str(args, "bundleId")})
 
 	case "ime.text":
-		if err := ime.InputText(ctx, str(args, "text")); err != nil {
+		if err := ime.InputTextContext(ctx, str(args, "text")); err != nil {
 			return fail(err)
 		}
 		return okData(map[string]any{"typed": len(str(args, "text"))})

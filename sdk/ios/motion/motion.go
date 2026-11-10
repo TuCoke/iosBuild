@@ -162,7 +162,8 @@ func LongPress(ctx context.Context, x, y float64, d time.Duration) error {
 	}
 	return Gesture(ctx, []types.Frame{{AtMS: 0, Contacts: []types.Contact{{ID: 0, Point: types.Point{X: x, Y: y}}}}, {AtMS: int(d / time.Millisecond)}})
 }
-func Swipe(ctx context.Context, x1, y1, x2, y2 float64, d time.Duration) error {
+// SwipePath 是"归一化坐标 + 可取消"的高精度滑动；像素坐标的简版 Swipe 在 touch.go。
+func SwipePath(ctx context.Context, x1, y1, x2, y2 float64, d time.Duration) error {
 	if d < time.Millisecond || d > 119*time.Second {
 		return types.ErrInvalid
 	}

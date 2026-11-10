@@ -16,7 +16,8 @@ type Info struct {
 	Version  string `json:"version"`
 }
 
-func Launch(ctx context.Context, bundleID string) error {
+// LaunchBundle 是带 context/error 的启动版本；简版 Launch 在 manage.go。
+func LaunchBundle(ctx context.Context, bundleID string) error {
 	if strings.TrimSpace(bundleID) == "" || strings.ContainsAny(bundleID, "\x00\r\n") {
 		return fmt.Errorf("%w: bundleID 无效", types.ErrInvalid)
 	}

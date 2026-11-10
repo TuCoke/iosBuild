@@ -94,10 +94,52 @@ static ag_ios_result SendFrame(NSArray *points) {
     [contacts setDictionary:next];
     return AGJSON(@{@"submitted":@YES});
 }
+// AGKeyUsage 把 Android 风格的键码映射到 HID usage。
+//
+// 脚本里写的是 KEYCODE_HOME=3 这类常量（Android 的历史命名），
+// iOS 只认 HID usage，映射表就是这两边的翻译层。
+// 表里没有的键返回 0，调用方据此报"不支持的键码"，而不是发一个随机按键。
+static uint32_t AGKeyUsage(int code, uint32_t *page) {
+    *page = 0x0c; // Consumer Page：多媒体/电源键在消费类页
+    switch (code) {
+        case 3:   *page = 0x0c; return 0x40; // HOME
+        case 24:  *page = 0x0c; return 0xe9; // VOLUME_UP
+        case 25:  *page = 0x0c; return 0xea; // VOLUME_DOWN
+        case 26:  *page = 0x0c; return 0x30; // POWER
+        case 187: *page = 0x0c; return 0x029d; // APP_SWITCH（任务切换）
+        default:  *page = 0x07; break;       // 其余走 Keyboard Page
+    }
+    switch (code) {
+        case 19: return 0x52; // DPAD_UP
+        case 20: return 0x51; // DPAD_DOWN
+        case 21: return 0x50; // DPAD_LEFT
+        case 22: return 0x4f; // DPAD_RIGHT
+        case 61: return 0x2b; // TAB
+        case 62: return 0x2c; // SPACE
+        case 66: return 0x28; // ENTER
+        case 67: return 0x2a; // DEL (Backspace)
+        case 84: return 0x28; // SEARCH → 回车即搜索
+        case 111: return 0x29; // ESCAPE
+        case 112: return 0x4c; // FORWARD_DEL (Delete)
+        default: return 0;
+    }
+}
+
 ag_ios_result AGInput(NSString *op, NSDictionary *args) {
     InitInput();
     [inputLock lock];
     @try {
+        // 键码动作要在 client 建好之前判断可用性，但发送仍需要 client。
+        if ([op isEqualToString:@"motion.key"]) {
+            int code = [args[@"code"] intValue];
+            uint32_t page = 0, usage = AGKeyUsage(code, &page);
+            if (!usage) return AGError(2,@"不支持该键码");
+            if (!createClient || !dispatchEvent) return AGError(1,@"HID 事件服务接口不可用");
+            if (!createKey) return AGError(1,@"HID 键盘接口不可用");
+            if (!client) client = createClient(kCFAllocatorDefault);
+            if (!client) return AGError(3,@"无法创建 HID 客户端，需检查授权环境");
+            return SendKey(page, usage);
+        }
         if ([op isEqualToString:@"motion.configure"]) {
             if (contacts.count) return AGError(5,@"手指仍按下，不能切换事件配置");
             uint64_t value = [args[@"senderId"] unsignedLongLongValue];

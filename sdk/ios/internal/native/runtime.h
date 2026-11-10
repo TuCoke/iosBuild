@@ -22,3 +22,8 @@ CGImageRef AGCopyScreenImage(int width, int height, NSString **error);
 void AGReleaseCaptureSurface(void);
 void AGDrawImage(CGContextRef context, CGImageRef image, int width, int height, int rotation);
 ag_ios_result AGVideo(NSString *op, NSDictionary *args);
+ag_ios_result AGSystem(NSString *op, NSDictionary *args);
+ag_ios_result AGUtils(NSString *op, NSDictionary *args);
+ag_ios_result AGUIAcc(NSString *op, NSDictionary *args);
+ag_ios_result AGOverlay(NSString *op, NSDictionary *args);
+ag_ios_result AGAPKCtl(NSString *op, NSDictionary *args);

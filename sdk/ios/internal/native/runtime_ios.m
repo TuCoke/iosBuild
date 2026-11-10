@@ -112,7 +112,13 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
             if ([op isEqualToString:@"capture.image"]) return AGCapture(args);
             if ([op isEqualToString:@"capture.release"]) { AGReleaseCaptureSurface(); return AGJSON(@{}); }
             if ([op hasPrefix:@"video."]) return AGVideo(op,args);
-            return AGError(1,@"尚未提供此原生能力");
+            if ([op hasPrefix:@"system."]) return AGSystem(op,args);
+            if ([op hasPrefix:@"utils."]) return AGUtils(op,args);
+            if ([op hasPrefix:@"uiacc."]) return AGUIAcc(op,args);
+            if ([op hasPrefix:@"hud."]) return AGOverlay(op,args);
+            if ([op hasPrefix:@"console."]) return AGOverlay(op,args);
+            if ([op hasPrefix:@"apkctl."]) return AGAPKCtl(op,args);
+            return AGError(1,[NSString stringWithFormat:@"尚未提供此原生能力: %@", op]);
         } @catch (NSException *ex) {
             return AGError(4,[NSString stringWithFormat:@"原生异常，需核对是否部分执行: %@",ex.reason]);
         }

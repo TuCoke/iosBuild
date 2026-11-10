@@ -12,8 +12,9 @@ import (
 	"autogov1/v2/sdk/ios/types"
 )
 
-// InputText 逐个 Unicode 码点提交 UTF-8 数据；取消时返回已经提交的事实，不自动重发。
-func InputText(ctx context.Context, text string) error {
+// InputTextContext 逐个 Unicode 码点提交 UTF-8 数据；取消时返回已经提交的事实，不自动重发。
+// （简版 InputText 在 text.go。）
+func InputTextContext(ctx context.Context, text string) error {
 	if !utf8.ValidString(text) || len(text) > 65536 {
 		return fmt.Errorf("%w: 文本必须是有效 UTF-8 且不超过 64 KiB", types.ErrInvalid)
 	}

@@ -9,7 +9,8 @@ import (
 	"autogov1/v2/sdk/ios/types"
 )
 
-type Rect struct {
+// Bounds 是采集器给出的矩形（浮点归一化前的像素）。
+type Bounds struct {
 	X      float64 `json:"x"`
 	Y      float64 `json:"y"`
 	Width  float64 `json:"width"`
@@ -22,7 +23,7 @@ type Node struct {
 	Text     string  `json:"text"`
 	Value    string  `json:"value"`
 	Role     string  `json:"role"`
-	Bounds   Rect    `json:"bounds"`
+	Bounds   Bounds  `json:"bounds"`
 	Enabled  *bool   `json:"enabled,omitempty"`
 	Visible  *bool   `json:"visible,omitempty"`
 	Children []*Node `json:"children,omitempty"`

@@ -28,7 +28,7 @@ func Run(ctx context.Context, bundleID, text string, x, y float64, ready func(co
 	if err = motion.Configure(ctx, 0, 0); err != nil {
 		return capture.Frame{}, err
 	}
-	if err = app.Launch(ctx, bundleID); err != nil {
+	if err = app.LaunchBundle(ctx, bundleID); err != nil {
 		return capture.Frame{}, err
 	}
 	// 由宿主根据截图或控件确认页面已准备好，不用固定 sleep 冒充业务就绪。
@@ -38,7 +38,7 @@ func Run(ctx context.Context, bundleID, text string, x, y float64, ready func(co
 	if err = motion.Tap(ctx, x, y); err != nil {
 		return capture.Frame{}, err
 	}
-	if err = ime.InputText(ctx, text); err != nil {
+	if err = ime.InputTextContext(ctx, text); err != nil {
 		return capture.Frame{}, err
 	}
 	return capture.Screenshot(ctx, capture.Options{JPEG: true, MaxSize: 960})
