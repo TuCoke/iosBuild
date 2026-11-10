@@ -259,7 +259,7 @@ jobs:
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I ${PWD}/host/ios/Frameworks/opencv2.framework/Headers -I ${PWD}/host/ios/third_party/cimgui -I ${PWD}/host/ios/third_party/cimgui/imgui"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           mkdir -p host/ios/Frameworks
             # 注意：不能加 -ldflags "-s -w"。
@@ -347,7 +347,7 @@ jobs:
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I ${PWD}/host/ios/Frameworks/opencv2.framework/Headers -I ${PWD}/host/ios/third_party/cimgui -I ${PWD}/host/ios/third_party/cimgui/imgui"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
           file "${RUNNER_TEMP}/frpc-ios"

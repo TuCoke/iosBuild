@@ -4,6 +4,10 @@ package native
 
 /*
 #cgo CFLAGS: -fblocks
+// SRCDIR 由 cgo 展开成绝对路径；OpenCV 头写在这里才不依赖 CI 的工作目录
+// （之前放在 CI 的 CGO_CXXFLAGS 里是相对路径，cgo 在包目录下调用编译器时失效）。
+// 没有 opencv2.framework 时，ag_rec.mm 的 __has_include 会走降级分支（识别栈报不可用）。
+#cgo CXXFLAGS: -I${SRCDIR}/../../../../host/ios/Frameworks/opencv2.framework/Headers
 // 不链 -framework IOSurface：iOS 上它是私有框架，且代码已改为 dlsym 解析符号。
 #cgo LDFLAGS: -framework Foundation -framework UIKit -framework CoreFoundation -framework CoreGraphics -framework ImageIO -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 #include "bridge.h"

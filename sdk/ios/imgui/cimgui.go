@@ -20,7 +20,11 @@
 package imgui
 
 /*
+// ${SRCDIR} 由 cgo 展开成【绝对路径】，所以这行不依赖 CI 的工作目录。
+// 之前把 -I 写在 CI 的 CGO_CXXFLAGS 里（相对路径），cgo 在包目录下调用编译器，
+// 相对路径失效 → ag_bridge.cpp 报 'cimgui.h' file not found。
 #cgo CFLAGS: -I${SRCDIR}
+#cgo CXXFLAGS: -I${SRCDIR}/../../../host/ios/third_party/cimgui -I${SRCDIR}/../../../host/ios/third_party/cimgui/imgui
 #include <stdlib.h>
 #include "ag_bridge.h"
 */
