@@ -114,6 +114,10 @@ struct ContentView: View {
             WebConsoleScreen(url: consoleURL) { showWebConsole = false }
         }
         .onAppear {
+            // SwiftUI 会多次触发 onAppear（界面重算就会再来一次），
+            // 不加这道闸，脚本会跑好几遍、日志也会重复。
+            guard !didStartup else { return }
+            didStartup = true
             resetLogFile()
             append("AgovHost 启动")
             callCapabilities()
@@ -167,6 +171,8 @@ struct ContentView: View {
 
     /// Web 控制台的地址：本地 HTTP 服务提供的 /ui/ 页面（可热更）。
     @State private var showWebConsole = false
+    /// 启动流程只跑一次（SwiftUI 的 onAppear 会重复触发）。
+    @State private var didStartup = false
     private let consoleURL = URL(string: "http://127.0.0.1:18989/ui/index.html")!
 
     private func callCapabilities() {

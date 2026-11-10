@@ -551,6 +551,12 @@ jobs:
             mkdir -p "${APP}/Runtime"; cp host/ios/Runtime/app "${APP}/Runtime/app"; chmod +x "${APP}/Runtime/app"
             echo "已放入 Runtime/app"
           fi
+          # frpc-ios 也放进去：否则"启动穿透"必然报"找不到 frpc-ios"
+          # （模拟器连不上 frps 是另一回事，但二进制得在）
+          if [ -f host/ios/Frameworks/frpc-ios ]; then
+            cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"; chmod +x "${APP}/frpc-ios"
+            echo "已放入 frpc-ios"
+          fi
           # 往已签名的 app 里塞文件会让签名失效，模拟器也要重签一次
           codesign -f -s - "${APP}" 2>/dev/null || echo "（重签失败，模拟器通常仍可运行）"
           ls -lh "${APP}"; ls -lh "${APP}/Runtime" 2>/dev/null || true
