@@ -54,7 +54,7 @@ jobs:
           echo "path=${SDK}" >> "$GITHUB_OUTPUT"
           echo "cc=$(xcrun --sdk iphoneos -f clang)" >> "$GITHUB_OUTPUT"
 
-      - name: 用真 iPhoneOS SDK 编译 6 个 .m
+      - name: 用真 iPhoneOS SDK 编译全部 .m
         working-directory: sdk/ios/internal/native
         env:
           SDK: ${{ steps.sdk.outputs.path }}
