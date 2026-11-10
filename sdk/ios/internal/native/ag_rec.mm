@@ -83,16 +83,16 @@ static void AGLoadRecognitionOnce(void) {
             gUnavailable = @"编译期没有 OpenCV 头（opencv2.framework 未就位）";
             return;
         }
-        // 【必须按依赖顺序加载】
+        // 【加载顺序】
         // 逆向出的依赖链：
         //   libppocr → libncnn + libopencv_{core,imgproc,imgcodecs}
         //   libyolo  → libncnn
         //   libdotocr → libopencv_{core,imgproc}
-        // 而且它们的 LC_RPATH 指向作者本机路径（/Users/song/...），
-        // 所以先把被依赖的用 RTLD_GLOBAL 装进来，@rpath 查找就会命中已加载的镜像。
-        AGLoadRuntimeLib(@"libopencv_core.dylib");
-        AGLoadRuntimeLib(@"libopencv_imgproc.dylib");
-        AGLoadRuntimeLib(@"libopencv_imgcodecs.dylib");
+        //
+        // opencv 不再 dlopen：它们已经在 libagovios 链接时被 -lopencv_* 带进来了
+        // （dyld 在加载本 dylib 时就已解析好），再 dlopen 一次是重复动作。
+        // ncnn 仍要先 dlopen：它的 LC_RPATH 指向作者本机（/Users/song/...），
+        // 必须用 RTLD_GLOBAL 先装进来，libppocr/libyolo 的 @rpath 查找才会命中。
         AGLoadRuntimeLib(@"libncnn.dylib");
 
         gPpocrHandle = AGLoadRuntimeLib(@"libppocr.dylib");

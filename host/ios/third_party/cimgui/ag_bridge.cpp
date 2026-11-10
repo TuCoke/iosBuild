@@ -43,12 +43,16 @@ void agImSetNextWindowSize(float w, float h) {
 }
 
 void agImPushWindowBg(unsigned int rgba) {
-    // rgba 按 0xAABBGGRR 传进来；ImU32 就是 IM_COL32(R,G,B,A) 的位布局
-    unsigned int a = (rgba >> 24) & 0xFF;
-    unsigned int b = (rgba >> 16) & 0xFF;
-    unsigned int g = (rgba >> 8) & 0xFF;
-    unsigned int r = rgba & 0xFF;
-    igPushStyleColor_U32(ImGuiCol_WindowBg, IM_COL32(r, g, b, a));
+    // 【为什么不再自己做位运算】
+    // 之前是把 RGBA 拼成 0xAABBGGRR 再解回 IM_COL32，中间多一层反转，容易错。
+    // cimgui 直接给了 igPushStyleColor_Vec4，传 0~1 的浮点分量即可，语义无歧义。
+    // 入参仍然是 RGBA 各 0-255（Go 侧传的就是这个）。
+    ImVec4_c c;
+    c.x = ((rgba) & 0xFF) / 255.0f;          // R
+    c.y = ((rgba >> 8) & 0xFF) / 255.0f;     // G
+    c.z = ((rgba >> 16) & 0xFF) / 255.0f;    // B
+    c.w = ((rgba >> 24) & 0xFF) / 255.0f;    // A
+    igPushStyleColor_Vec4(ImGuiCol_WindowBg, c);
 }
 
 void agImPopStyleColor(void) { igPopStyleColor(1); }
