@@ -1,6 +1,7 @@
 //go:build ios && cgo
 
 #import "runtime.h"
+#import "ag_rec.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -127,8 +128,15 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
             if ([op hasPrefix:@"system."]) return AGSystem(op,args);
             if ([op hasPrefix:@"utils."]) return AGUtils(op,args);
             if ([op hasPrefix:@"uiacc."]) return AGUIAcc(op,args);
-            if ([op hasPrefix:@"hud."]) return AGOverlay(op,args);
-            if ([op hasPrefix:@"console."]) return AGOverlay(op,args);
+            // 悬浮层：与参考实现一致走 imgui + Metal；没有 Metal 设备时退回 UIKit
+            if ([op hasPrefix:@"hud."] || [op hasPrefix:@"console."]) {
+                if (AGImGuiOverlayAvailable()) return AGImGuiOverlay(op,args);
+                return AGOverlay(op,args);
+            }
+            if ([op hasPrefix:@"ppocr."] || [op hasPrefix:@"yolo."] || [op hasPrefix:@"dotocr."]) {
+                // 识别栈：按参考实现的 C ABI 调用它的 libppocr/libyolo/libdotocr
+                return AGRecognition(op, args);
+            }
             if ([op hasPrefix:@"apkctl."]) return AGAPKCtl(op,args);
             if ([op isEqualToString:@"runtime.selftest"]) return AGSelfTest(op,args);
             return AGError(1,[NSString stringWithFormat:@"尚未提供此原生能力: %@", op]);

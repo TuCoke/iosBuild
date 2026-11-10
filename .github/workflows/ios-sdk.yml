@@ -185,6 +185,47 @@ jobs:
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           ls -l host/ios/GoLib
 
+      - name: 准备第三方原生库（与参考实现同款：OpenCV / ncnn / imgui）
+        run: |
+          set -uo pipefail
+          mkdir -p host/ios/Frameworks
+          cd host/ios/Frameworks
+          # 参考实现的 libgoeval 依赖里明确有：
+          #   libopencv_core / libopencv_imgcodecs / libopencv_imgproc
+          #   libncnn / libppocr / libyolo / libdotocr / libimgui
+          # 这里先拉官方 iOS framework，拿到就和它同款；拿不到不阻断（后续再有条件链接）。
+          if [ ! -d opencv2.framework ]; then
+            echo "::group::下载 OpenCV iOS framework"
+            curl -fL --retry 3 -o /tmp/opencv-ios.zip \
+              https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip \
+              && unzip -q /tmp/opencv-ios.zip -d /tmp/opencv-ios \
+              && cp -R /tmp/opencv-ios/opencv2.framework . \
+              && echo "OpenCV 就位: $(du -sh opencv2.framework | cut -f1)" \
+              || echo "::warning::OpenCV framework 下载失败，本轮不链 opencv（不影响出 dylib）"
+            echo "::endgroup::"
+          fi
+          ls -1
+
+      - name: 编 imgui 静态库（与参考实现同款 libimgui）
+        run: |
+          set -euo pipefail
+          IMGUI=host/ios/third_party/imgui
+          if [ ! -d "${IMGUI}" ]; then echo "::warning::没有 imgui 源码，跳过"; exit 0; fi
+          SDK_DIR=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p host/ios/Frameworks/imgui-obj
+          for f in imgui imgui_draw imgui_tables imgui_widgets; do
+            xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fno-exceptions \
+              -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
+              -I "${IMGUI}" -I "${IMGUI}/backends" \
+              "${IMGUI}/$f.cpp" -o "host/ios/Frameworks/imgui-obj/$f.o"
+          done
+          xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fobjc-arc \
+            -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
+            -I "${IMGUI}" -I "${IMGUI}/backends" \
+            "${IMGUI}/backends/imgui_impl_metal.mm" -o host/ios/Frameworks/imgui-obj/imgui_impl_metal.o
+          libtool -static -o host/ios/Frameworks/libimgui.a host/ios/Frameworks/imgui-obj/*.o
+          ls -lh host/ios/Frameworks/libimgui.a
+
       - name: Go 出 dylib（c-archive + clang -dynamiclib）
         env:
           SDK: ${{ steps.sdk.outputs.path }}
@@ -198,6 +239,7 @@ jobs:
           # 导出符号不变（agov_ios_invoke / agov_ios_free），宿主照旧 dlopen。
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           mkdir -p host/ios/Frameworks
             # 注意：不能加 -ldflags "-s -w"。
@@ -207,12 +249,23 @@ jobs:
             -o host/ios/Frameworks/libagovios.a ./cmd/ioshost
             echo "归档里的导出符号："
             nm -gU host/ios/Frameworks/libagovios.a 2>/dev/null | grep -E "agov_ios_(invoke|free)" || echo "  （没找到，后面必然失败）"
+          # 与参考实现一致：有 OpenCV framework 就链上（没有也照常编，先保证能出 dylib）
+          OPENCV_FLAGS=""
+          IMGUI_LIB=""
+          if [ -f host/ios/Frameworks/libimgui.a ]; then IMGUI_LIB="host/ios/Frameworks/libimgui.a"; fi
+          if [ -d host/ios/Frameworks/opencv2.framework ]; then
+            OPENCV_FLAGS="-F host/ios/Frameworks -framework opencv2"
+          fi
           clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
+            ${IMGUI_LIB} \
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
-            -lresolv -lpthread -lm \
+            -framework Accelerate -framework Metal -framework MetalKit \
+            -framework IOKit -framework NetworkExtension \
+            ${OPENCV_FLAGS} \
+            -lresolv -lpthread -lm -lc++ -lc++abi \
             -Wl,-exported_symbol,_agov_ios_invoke \
             -Wl,-exported_symbol,_agov_ios_free \
             -Wl,-exported_symbol,_GoMain \
@@ -266,6 +319,7 @@ jobs:
           [ -f web/frpc/dist/index.html ] || echo '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
           file "${RUNNER_TEMP}/frpc-ios"
@@ -304,6 +358,25 @@ jobs:
             head -40 GoLib/libagovios.h 2>/dev/null || echo "没有 libagovios.h"
             echo "::endgroup::"
             exit "${status}"
+          fi
+
+      - name: 放入识别栈全套 dylib（与参考实现同目录 Runtime/）
+        run: |
+          set -euo pipefail
+          APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
+          mkdir -p "${APP}/Runtime"
+          copied=0
+          for f in host/ios/Runtime/*.dylib; do
+            [ -e "$f" ] || continue
+            cp "$f" "${APP}/Runtime/"
+            copied=$((copied+1))
+          done
+          echo "放入 ${copied} 个识别/推理 dylib"
+          ls -lh "${APP}/Runtime" || true
+          # 它们的 LC_RPATH 指向作者本机路径，补一条 app 内 rpath 才能解析 @rpath
+          if [ -d "${APP}/Runtime" ]; then
+            install_name_tool -add_rpath "@executable_path/Runtime" "${APP}/AgovHost" 2>/dev/null \
+              || echo "（rpath 已存在或 add_rpath 不可用，忽略）"
           fi
 
       - name: 把三件套放进 app 包
@@ -358,6 +431,10 @@ jobs:
           if [ -f "${APP}/Runtime/app" ]; then sign "${APP}/Runtime/app"; fi
           if [ -f "${APP}/libagovios.dylib" ]; then sign "${APP}/libagovios.dylib"; fi
           if [ -f "${APP}/frpc-ios" ]; then sign "${APP}/frpc-ios"; fi
+          # 识别栈的 dylib 也要逐个签，否则真机 dlopen 会被拦
+          if [ -d "${APP}/Runtime" ]; then
+            for f in "${APP}/Runtime"/*.dylib; do [ -e "$f" ] && sign "$f"; done
+          fi
 
           # 3) 再签主程序与整个包
           sign "${APP}/AgovHost"
@@ -517,13 +594,24 @@ jobs:
           # 1) 静态归档
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           # 2) 包成 dylib（模拟器架构 + 模拟器 SDK，宿主会在运行时 dlopen 它）
+          # 与参考实现一致：有 OpenCV framework 就链上（没有也照常编，先保证能出 dylib）
+          OPENCV_FLAGS=""
+          IMGUI_LIB=""
+          if [ -f host/ios/Frameworks/libimgui.a ]; then IMGUI_LIB="host/ios/Frameworks/libimgui.a"; fi
+          if [ -d host/ios/Frameworks/opencv2.framework ]; then
+            OPENCV_FLAGS="-F host/ios/Frameworks -framework opencv2"
+          fi
           clang -dynamiclib -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
             -mios-simulator-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/GoLib/libagovios.a \
+            ${IMGUI_LIB} \
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
-            -lresolv -lpthread -lm \
+            -framework Accelerate -framework Metal -framework MetalKit \
+            -framework IOKit -framework NetworkExtension \
+            ${OPENCV_FLAGS} \
+            -lresolv -lpthread -lm -lc++ -lc++abi \
             -Wl,-exported_symbol,_agov_ios_invoke \
             -Wl,-exported_symbol,_agov_ios_free \
             -Wl,-exported_symbol,_GoMain \

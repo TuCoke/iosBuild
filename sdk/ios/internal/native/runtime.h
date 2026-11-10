@@ -28,3 +28,6 @@ ag_ios_result AGUIAcc(NSString *op, NSDictionary *args);
 ag_ios_result AGOverlay(NSString *op, NSDictionary *args);
 ag_ios_result AGAPKCtl(NSString *op, NSDictionary *args);
 ag_ios_result AGSelfTest(NSString *op, NSDictionary *args);
+// 悬浮层（imgui + Metal）：hud.* / console.* 的实现
+ag_ios_result AGImGuiOverlay(NSString *op, NSDictionary *args);
+BOOL AGImGuiOverlayAvailable(void);
