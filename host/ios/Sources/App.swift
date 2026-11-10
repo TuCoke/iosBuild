@@ -114,6 +114,7 @@ struct ContentView: View {
             WebConsoleScreen(url: consoleURL) { showWebConsole = false }
         }
         .onAppear {
+            resetLogFile()
             append("AgovHost 启动")
             callCapabilities()
             // 启动时顺手跑一次自检：这样 CI 截一张图就能看到
@@ -133,9 +134,35 @@ struct ContentView: View {
         }
     }
 
+    /// 追加一行日志：同时写进界面列表和 Documents/app.log。
+    ///
+    /// 为什么要落盘：界面上只能看到前若干行，CI 也拿不到屏幕上的文字；
+    /// 写到 Documents 后，CI 用 simctl get_app_container 就能把完整日志取出来当 artifact。
     private func append(_ s: String) {
         log.append(LogLine(text: s))
         if log.count > 200 { log.removeFirst(log.count - 200) }
+        appendToFile(s)
+    }
+
+    /// resetLogFile 每次启动清空 app.log，避免多次运行混在一起。
+    private func resetLogFile() {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        try? FileManager.default.removeItem(at: docs.appendingPathComponent("app.log"))
+    }
+
+    /// appendToFile 把一行追加到 Documents/app.log（超过 512 KB 自动截断重写）。
+    private func appendToFile(_ line: String) {
+        guard let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let url = docs.appendingPathComponent("app.log")
+        let text = line + "\n"
+        guard let data = text.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            let size = (try? handle.seekToEnd()) ?? 0
+            if size < 512 * 1024 { try? handle.write(contentsOf: data) }
+        } else {
+            try? data.write(to: url)
+        }
     }
 
     /// Web 控制台的地址：本地 HTTP 服务提供的 /ui/ 页面（可热更）。
