@@ -175,8 +175,17 @@
     if (screen.width <= 0 || screen.height <= 0) {
         return self.targetCenter;
     }
-    return CGPointMake(frame.origin.x + frame.size.width / 2.0,
-                       frame.origin.y + frame.size.height / 2.0);
+    // 注入接口要的是【归一化】坐标（0..1），不是像素。
+    // 之前这里直接返回了像素中心（如 600,400），motion.tap 判成
+    // "手指编号或坐标无效" —— 日志里"注入点击(目标块) → ok:false"就是它。
+    CGFloat nx = (frame.origin.x + frame.size.width / 2.0) / screen.width;
+    CGFloat ny = (frame.origin.y + frame.size.height / 2.0) / screen.height;
+    // 夹到 (0.01, 0.99)：0/1 这种边界值有的实现会判越界
+    if (isnan(nx) || isinf(nx)) { nx = 0.5; }
+    if (isnan(ny) || isinf(ny)) { ny = 0.5; }
+    nx = MAX(0.01, MIN(0.99, nx));
+    ny = MAX(0.01, MIN(0.99, ny));
+    return CGPointMake(nx, ny);
 }
 
 #pragma mark - 按钮动作
