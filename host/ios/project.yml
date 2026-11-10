@@ -38,7 +38,10 @@ targets:
           - "$(SRCROOT)/GoLib"
         OTHER_LDFLAGS:
           - "$(inherited)"
-          - "-lagovios"
+          # 用 force_load 而不是 -lagovios：Go 的 c-archive 把导出符号放在
+          # _cgo_export.o 里，普通 -l 方式在 -dead_strip 下可能没被拉进来，
+          # 表现就是 "Undefined symbols: _agov_ios_invoke"。
+          - "-Wl,-force_load,$(SRCROOT)/GoLib/libagovios.a"
           - "-framework"
           - "Foundation"
           - "-framework"
@@ -61,5 +64,9 @@ targets:
           - "WebKit"
           - "-framework"
           - "Security"
+          # Go 运行时依赖：net 包要 libresolv，其它要 pthread 与 libm
+          - "-lresolv"
+          - "-lpthread"
+          - "-lm"
         # Go 的 c-archive 里含 ObjC 类别/符号，需要 -ObjC 才会被链接进来
         OTHER_SWIFT_FLAGS: "$(inherited)"
