@@ -144,22 +144,29 @@ jobs:
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           ls -l host/ios/GoLib
 
-      - name: Go 编 c-shared（libagovios.dylib：可热更的 SDK）
+      - name: Go 出 dylib（c-archive + clang -dynamiclib）
         env:
           SDK: ${{ steps.sdk.outputs.path }}
           CC_IOS: ${{ steps.sdk.outputs.cc }}
         run: |
           set -euo pipefail
-          # 同一份代码两种产物：
-          #   c-archive → libagovios.a   链进主程序（静态回退，永远可用）
-          #   c-shared  → libagovios.dylib 运行时 dlopen（可单独替换 = 热更新）
-          # 导出符号相同（agov_ios_invoke / agov_ios_free），所以宿主两边通用。
+          # Go 在 ios/arm64 上不支持 -buildmode=c-shared，实测报错：
+          #   "-buildmode=c-shared not supported on ios/arm64"
+          # 参考实现能出 libgoeval.dylib，走的是同一条路：
+          #   先用 c-archive 产出 .a，再用 clang -dynamiclib 把它包成 dylib。
+          # 导出符号不变（agov_ios_invoke / agov_ios_free），宿主照旧 dlopen。
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           mkdir -p host/ios/Frameworks
-          go build -buildmode=c-shared -trimpath -ldflags "-s -w" \
-            -o host/ios/Frameworks/libagovios.dylib ./cmd/ioshost
+          go build -buildmode=c-archive -trimpath -ldflags "-s -w" \
+            -o host/ios/Frameworks/libagovios.a ./cmd/ioshost
+          clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
+            -Wl,-all_load host/ios/Frameworks/libagovios.a \
+            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
+            -framework CoreMedia -framework CoreVideo -framework Security \
+            -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
           # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
           # 然后通过 http://127.0.0.1:8989/{status,task?cmd=} 通信。
