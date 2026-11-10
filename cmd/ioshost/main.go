@@ -145,6 +145,47 @@ func startLocalAPI(port int) error {
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "pong")
 	})
+	// /ui/* 从沙盒 UI/ 目录取静态文件 —— 这就是 UI 热更：
+	// 服务端下发新的 index.html，不重装 App 就能换界面。
+	mux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/ui/")
+		if name == "" {
+			name = "index.html"
+		}
+		if strings.Contains(name, "..") {
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		local := files.Path(filepath.Join("UI", name))
+		if data := files.ReadBytes(local); len(data) > 0 {
+			w.Header().Set("Content-Type", contentTypeOf(name))
+			w.Write(data)
+			return
+		}
+		if name == "index.html" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, builtinUI)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	// /invoke?method=xxx：POST body 作为 payload，供 Web UI 调 SDK。
+	mux.HandleFunc("/invoke", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		method := r.URL.Query().Get("method")
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		cm := C.CString(method)
+		cp := C.CString(string(body))
+		defer C.free(unsafe.Pointer(cm))
+		defer C.free(unsafe.Pointer(cp))
+		out := agov_ios_invoke(cm, cp)
+		defer C.free(unsafe.Pointer(out))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, C.GoString(out))
+	})
 	server := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Handler: mux}
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
@@ -288,7 +329,6 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		res, err := task.Run(ctx, task.Options{
 			Timeout: time.Duration(num(args, "timeoutMs", 60000)) * time.Millisecond,
-			Params:  args,
 		}, source)
 		if err != nil && !res.OK && res.Error == "" {
 			res.Error = err.Error()
