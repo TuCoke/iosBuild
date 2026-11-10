@@ -166,6 +166,7 @@ jobs:
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
+            -lresolv -lpthread -lm \
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
           # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
