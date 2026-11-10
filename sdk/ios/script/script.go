@@ -18,7 +18,6 @@ package script
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -107,25 +106,12 @@ func (r *Runner) Run(ctx context.Context, source string) (Result, error) {
 	started := time.Now()
 	i := r.ensure()
 
+	// yaegi 在求值 `package main` 时会【自动执行】main()，
+	// 所以这里只 Eval 一次，绝不能再显式调 main() ——
+	// 否则脚本会跑两遍（实测日志里出现两段"脚本开始执行"）。
 	if _, err := i.Eval(source); err != nil {
-		return Result{Logs: api.Logs(), Elapsed: time.Since(started)}, fmt.Errorf("脚本编译失败: %w", err)
-	}
-	// 入口调用：没有 main 就当成顶层语句脚本（Eval 已经执行完了）。
-	if _, err := i.Eval("main()"); err != nil {
-		if isUndefined(err, "main") {
-			return Result{Value: api.Result(), Logs: api.Logs(), Elapsed: time.Since(started)}, nil
-		}
-		return Result{Value: api.Result(), Logs: api.Logs(), Elapsed: time.Since(started)}, fmt.Errorf("脚本执行失败: %w", err)
+		return Result{Logs: api.Logs(), Elapsed: time.Since(started)}, fmt.Errorf("脚本执行失败: %w", err)
 	}
 	return Result{Value: api.Result(), Logs: api.Logs(), Elapsed: time.Since(started)}, nil
 }
 
-// isUndefined 判断错误是不是"没有 main 这个符号"。
-// yaegi 的报错文本不稳定（版本间改过），所以按子串判断。
-func isUndefined(err error, name string) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "undefined: "+name) || strings.Contains(msg, "not found: "+name)
-}

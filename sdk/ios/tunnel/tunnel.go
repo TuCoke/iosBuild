@@ -155,7 +155,13 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 
 	binary := BundleBinary(ctx)
 	if binary == "" {
-		return Status{LastError: "app 包里找不到 frpc-ios 可执行文件"}, fmt.Errorf("找不到 frpc-ios")
+		// 把"在哪找过"一起报出来，否则只看到"找不到"没法排查。
+		var dir struct {
+			Path string `json:"path"`
+		}
+		_ = native.Call(ctx, "app.bundle_dir", nil, &dir)
+		return Status{LastError: "app 包里找不到 frpc-ios；bundle=" + dir.Path},
+			fmt.Errorf("找不到 frpc-ios（bundle=%s）", dir.Path)
 	}
 
 	files.EnsureDir(workDir)
