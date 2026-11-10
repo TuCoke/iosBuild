@@ -444,20 +444,29 @@ jobs:
       - name: 安装 xcodegen
         run: brew install xcodegen
 
-      - name: Go 编模拟器 c-archive
+      - name: Go 出模拟器 dylib（归档 + clang -dynamiclib）
         env:
-          CGO_ENABLED: '1'
-          GOOS: ios
-          GOARCH: ${{ steps.arch.outputs.goarch }}
           SDK: ${{ steps.simsdk.outputs.path }}
           CC_SIM: ${{ steps.simsdk.outputs.cc }}
         run: |
           set -euo pipefail
-          export CC="${CC_SIM}"
+          export CGO_ENABLED=1 GOOS=ios GOARCH=${{ steps.arch.outputs.goarch }} CC="${CC_SIM}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-simulator-version-min=${IOS_MIN} ${OBJC_ARC_FLAG}"
-          mkdir -p host/ios/GoLib
+          export CGO_LDFLAGS="-isysroot ${SDK} -mios-simulator-version-min=${IOS_MIN}"
+          mkdir -p host/ios/GoLib host/ios/Frameworks
+          # 1) 静态归档
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
-          ls -l host/ios/GoLib
+          # 2) 包成 dylib（模拟器架构 + 模拟器 SDK，宿主会在运行时 dlopen 它）
+          clang -dynamiclib -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
+            -mios-simulator-version-min="${IOS_MIN}" \
+            -Wl,-all_load host/ios/GoLib/libagovios.a \
+            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
+            -framework CoreMedia -framework CoreVideo -framework Security \
+            -lresolv -lpthread -lm \
+            -o host/ios/Frameworks/libagovios.dylib
+          file host/ios/Frameworks/libagovios.dylib
+          ls -lh host/ios/Frameworks/libagovios.dylib
 
       - name: 生成 Xcode 工程
         working-directory: host/ios
@@ -484,6 +493,19 @@ jobs:
             echo "::endgroup::"
             exit "${status}"
           fi
+
+      - name: 把 dylib 放进模拟器 App 包
+        run: |
+          set -euo pipefail
+          APP=$(find host/ios/build -name "AgovHost.app" -maxdepth 8 | head -1)
+          [ -d "${APP}" ] || { echo "::error::没找到模拟器产物"; exit 1; }
+          if [ -f host/ios/Frameworks/libagovios.dylib ]; then
+            cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
+            echo "已放入 libagovios.dylib"; ls -lh "${APP}/libagovios.dylib"
+          else
+            echo "::warning::没有模拟器版 dylib"
+          fi
+          ls -lh "${APP}"
 
       - name: 启动模拟器并安装
         id: run
