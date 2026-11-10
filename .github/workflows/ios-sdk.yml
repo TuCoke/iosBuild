@@ -200,6 +200,10 @@ jobs:
           # GOOS=ios 强制要 cgo，CC / CGO_CFLAGS / CGO_LDFLAGS 都要指向 iphoneos SDK。
           git clone --depth 1 --branch v0.67.0 https://github.com/fatedier/frp "${RUNNER_TEMP}/frp"
           cd "${RUNNER_TEMP}/frp"
+          # frp 的 cmd/frpc 用 //go:embed 嵌 web/frpc/dist（前端产物，需要 npm 构建）。
+          # 我们只要客户端二进制，放个占位文件满足 embed 即可。
+          mkdir -p web/frpc/dist
+          [ -f web/frpc/dist/index.html ] || echo '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
