@@ -1,15 +1,10 @@
 # xcodegen 工程描述（不手写 .pbxproj，改这里重新 generate 即可）
 #
-# 【关键：壳里没有 Go 代码 —— 与参考实现一致】
-#
-# AutoGoRunner 只有 0.5 MB，它的壳不链任何 Go 产物：
-#   · SDK/解释器 在 libagovios.dylib 里，运行时 dlopen
-#   · 任务执行体 在 Runtime/app 里，posix_spawn
-# 所以我们也不链 libagovios.a、不设 GoLib 的头/库搜索路径。
-# 壳只负责：UI、WebView、进程、文件、网络。
-#
-# 之前链静态归档导致的 _agov_ios_invoke / _res_9_* 未定义符号，
-# 在这个结构下不会再出现 —— 因为壳根本不参与 Go 的链接。
+# 关键点：
+#   · SWIFT_OBJC_BRIDGING_HEADER 指向 Sources/Bridging.h（它 include 生成的 libagovios.h）
+#   · LIBRARY_SEARCH_PATHS 指向 GoLib/（go build -buildmode=c-archive 的产物）
+#   · OTHER_LDFLAGS 链 -lagovios，并补 Go c-archive 需要的系统框架
+#   · 不链 IOSurface：iOS 上是私有框架，SDK 已改 dlsym
 name: AgovHost
 options:
   bundleIdPrefix: dev.autogov
@@ -34,9 +29,16 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.autogov.host
         PRODUCT_NAME: AgovHost
         INFOPLIST_FILE: Info.plist
-        # 壳不引用任何 Go 头文件，因此没有 SWIFT_OBJC_BRIDGING_HEADER
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging.h
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/GoLib"
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/GoLib"
         OTHER_LDFLAGS:
           - "$(inherited)"
+          - "-lagovios"
           - "-framework"
           - "Foundation"
           - "-framework"
@@ -45,9 +47,13 @@ targets:
           - "CoreFoundation"
           - "-framework"
           - "CoreGraphics"
-          # WebView 控制台（WKWebView）
           - "-framework"
-          - "WebKit"
-          # SDK 动态库的签名校验 / 钥匙串
+          - "ImageIO"
           - "-framework"
-          - "Security"
+          - "VideoToolbox"
+          - "-framework"
+          - "CoreMedia"
+          - "-framework"
+          - "CoreVideo"
+        # Go 的 c-archive 里含 ObjC 类别/符号，需要 -ObjC 才会被链接进来
+        OTHER_SWIFT_FLAGS: "$(inherited)"

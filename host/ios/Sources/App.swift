@@ -68,7 +68,6 @@ struct ContentView: View {
             .padding(.horizontal, 12)
 
             HStack(spacing: 8) {
-                Button("Web 控制台") { showWebConsole = true }
                 Button("启动穿透") { startTunnel() }
                 Button("停止穿透") { stopTunnel() }
                 Button("隧道状态") { tunnelStatus() }
@@ -110,9 +109,6 @@ struct ContentView: View {
             }
         }
         .padding(.vertical, 8)
-        .sheet(isPresented: $showWebConsole) {
-            WebConsoleScreen(url: consoleURL) { showWebConsole = false }
-        }
         .onAppear {
             append("AgovHost 启动")
             callCapabilities()
@@ -121,10 +117,6 @@ struct ContentView: View {
             callSelfTest()
             // 启动时也跑一次内置脚本：CI 截图即可验证 yaegi 解释器与热更新链路。
             runScript()
-            // 报告 SDK 来源：静态（编进主程序）还是动态 dylib（可热更）。
-            // 这两行是"壳方案是否生效"的唯一判据，一眼就能看到。
-            append("sdk: dynamic=\(AgovBridge.isDynamic) path=\(AgovBridge.loadedPath)")
-            if !AgovBridge.loadError.isEmpty { append("sdk loadError=\(AgovBridge.loadError)") }
             // 本地 API：隧道要用它做被映射的本地端口，也供服务端探活。
             append("localapi.start → \(AgovBridge.invoke("localapi.start", "{\"port\":18989}"))")
         }
@@ -134,10 +126,6 @@ struct ContentView: View {
         log.append(LogLine(text: s))
         if log.count > 200 { log.removeFirst(log.count - 200) }
     }
-
-    /// Web 控制台的地址：本地 HTTP 服务提供的 /ui/ 页面（可热更）。
-    @State private var showWebConsole = false
-    private let consoleURL = URL(string: "http://127.0.0.1:18989/ui/index.html")!
 
     private func callCapabilities() {
         append("capabilities → \(AgovBridge.invoke("capabilities", "{}"))")
