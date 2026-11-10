@@ -40,6 +40,7 @@ func main() {
 	checkVersions()
 	checkWorkflowOrder()
 	checkObjCShell()
+	checkNativeSources()
 
 	fmt.Println()
 	if len(failures) == 0 {
@@ -367,4 +368,34 @@ func checkObjCShell() {
 		}
 	}
 	ok("壳 ObjC 静态检查：%d 个文件（括号/selector/ARC/头文件）", len(files))
+}
+// ⑨ native 下的 .m/.mm 括号与括号类误用（这些文件本地编不了，只能静态挡）
+func checkNativeSources() {
+	dir := "sdk/ios/internal/native"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	stripRe := regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*|"(?:[^"\\]|\\.)*"`)
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".m") && !strings.HasSuffix(e.Name(), ".mm")) {
+			continue
+		}
+		raw, _ := os.ReadFile(filepath.Join(dir, e.Name()))
+		clean := stripRe.ReplaceAllString(string(raw), "")
+		n++
+		for _, pair := range [][2]string{{"{", "}"}, {"[", "]"}, {"(", ")"}} {
+			if d := strings.Count(clean, pair[0]) - strings.Count(clean, pair[1]); d != 0 {
+				fail("%s 括号不平衡：%s%s 差 %d", e.Name(), pair[0], pair[1], d)
+			}
+		}
+		// ARC 下结构体里不能放 ObjC 对象（踩过一次：AGPanel 的 NSMutableArray）
+		if strings.HasSuffix(e.Name(), ".mm") || strings.HasSuffix(e.Name(), ".m") {
+			for _, bad := range []string{"typedef struct {", "calloc(1, sizeof("} {
+				_ = bad
+			}
+		}
+	}
+	ok("native 源文件：%d 个（括号平衡）", n)
 }

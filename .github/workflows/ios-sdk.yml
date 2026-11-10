@@ -170,6 +170,20 @@ jobs:
       - name: 安装 xcodegen
         run: brew install xcodegen
 
+      - name: 准备第三方原生库（OpenCV，供 cgo 编 .mm 用）
+        run: |
+          set -uo pipefail
+          mkdir -p host/ios/Frameworks
+          cd host/ios/Frameworks
+          if [ ! -d opencv2.framework ]; then
+            curl -fL --retry 3 -o /tmp/opencv-ios.zip \
+              https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip \
+              && unzip -q /tmp/opencv-ios.zip -d /tmp/opencv-ios \
+              && cp -R /tmp/opencv-ios/opencv2.framework . \
+              || echo "::warning::OpenCV 下载失败，ag_rec.mm 会降级为无 OpenCV"
+          fi
+          ls -1
+
       - name: Go 编 c-archive（libagovios.a + libagovios.h）
         env:
           CGO_ENABLED: '1'
@@ -184,27 +198,6 @@ jobs:
           mkdir -p host/ios/GoLib
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           ls -l host/ios/GoLib
-
-      - name: 准备第三方原生库（与参考实现同款：OpenCV / ncnn / imgui）
-        run: |
-          set -uo pipefail
-          mkdir -p host/ios/Frameworks
-          cd host/ios/Frameworks
-          # 参考实现的 libgoeval 依赖里明确有：
-          #   libopencv_core / libopencv_imgcodecs / libopencv_imgproc
-          #   libncnn / libppocr / libyolo / libdotocr / libimgui
-          # 这里先拉官方 iOS framework，拿到就和它同款；拿不到不阻断（后续再有条件链接）。
-          if [ ! -d opencv2.framework ]; then
-            echo "::group::下载 OpenCV iOS framework"
-            curl -fL --retry 3 -o /tmp/opencv-ios.zip \
-              https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip \
-              && unzip -q /tmp/opencv-ios.zip -d /tmp/opencv-ios \
-              && cp -R /tmp/opencv-ios/opencv2.framework . \
-              && echo "OpenCV 就位: $(du -sh opencv2.framework | cut -f1)" \
-              || echo "::warning::OpenCV framework 下载失败，本轮不链 opencv（不影响出 dylib）"
-            echo "::endgroup::"
-          fi
-          ls -1
 
       - name: 编 imgui 静态库（与参考实现同款 libimgui）
         run: |
@@ -241,7 +234,9 @@ jobs:
           # 导出符号不变（agov_ios_invoke / agov_ios_free），宿主照旧 dlopen。
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
+          # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
+          # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -F host/ios/Frameworks -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           mkdir -p host/ios/Frameworks
             # 注意：不能加 -ldflags "-s -w"。
@@ -321,7 +316,9 @@ jobs:
           [ -f web/frpc/dist/index.html ] || echo '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
+          # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
+          # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
+          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -F host/ios/Frameworks -I host/ios/Frameworks/opencv2.framework/Headers -I host/ios/third_party/imgui -I host/ios/third_party/imgui/backends"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
           file "${RUNNER_TEMP}/frpc-ios"
