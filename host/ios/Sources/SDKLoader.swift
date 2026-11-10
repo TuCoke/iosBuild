@@ -14,6 +14,17 @@ import Foundation
 /// 【为什么保留静态回退】
 /// 动态库加载失败（签名不对、架构不对、权限不够）时 App 不能变砖；
 /// 静态那份永远在，只是版本旧一点。
+// 直接按符号名声明 Go 的导出函数，不依赖桥接头是否被正确 include。
+//
+// 为什么这么写：桥接头（Bridging.h → libagovios.h）在 Release 构建里
+// 曾出现过 PCH 没刷新、Swift 看不到 C 声明的情况（报 cannot find in scope）。
+// @_silgen_name 是编译器级绑定，绕开头文件这一层，行为确定。
+@_silgen_name("agov_ios_invoke")
+private func agov_ios_invoke(_ method: UnsafePointer<CChar>?, _ payload: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("agov_ios_free")
+private func agov_ios_free(_ p: UnsafeMutablePointer<CChar>?)
+
 final class SDKLoader {
     static let shared = SDKLoader()
 
