@@ -19,7 +19,10 @@ enum AgovBridge {
                 SDKLoader.shared.invoke(UnsafeMutablePointer(mutating: m), UnsafeMutablePointer(mutating: p))
             }
         }) else {
-            return "{\"ok\":false,\"error\":\"原生调用返回空\"}"
+            // 壳里没有静态实现：拿不到 dylib 就是"SDK 未加载"，
+            // 把原因带出去，别让人以为是"调用成功但没返回"。
+            let reason = SDKLoader.shared.loadError.isEmpty ? "未找到 libagovios.dylib" : SDKLoader.shared.loadError
+            return "{\"ok\":false,\"error\":\"SDK 未加载: \(reason)\"}"
         }
         defer { SDKLoader.shared.freeString(out) }
         let text = String(cString: out)

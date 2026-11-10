@@ -14,16 +14,9 @@ import Foundation
 /// 【为什么保留静态回退】
 /// 动态库加载失败（签名不对、架构不对、权限不够）时 App 不能变砖；
 /// 静态那份永远在，只是版本旧一点。
-// 直接按符号名声明 Go 的导出函数，不依赖桥接头是否被正确 include。
-//
-// 为什么这么写：桥接头（Bridging.h → libagovios.h）在 Release 构建里
-// 曾出现过 PCH 没刷新、Swift 看不到 C 声明的情况（报 cannot find in scope）。
-// @_silgen_name 是编译器级绑定，绕开头文件这一层，行为确定。
-@_silgen_name("agov_ios_invoke")
-private func agov_ios_invoke(_ method: UnsafePointer<CChar>?, _ payload: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
-
-@_silgen_name("agov_ios_free")
-private func agov_ios_free(_ p: UnsafeMutablePointer<CChar>?)
+// 【没有静态回退】与参考实现一致：壳里不含 Go 代码，
+// dylib 找不到就明确报错，而不是偷偷用编进来的旧版本。
+// 这样"换 SDK"只有一条路径，行为可预期。
 
 final class SDKLoader {
     static let shared = SDKLoader()
@@ -90,17 +83,16 @@ final class SDKLoader {
         return load()
     }
 
-    /// 统一入口：动态库在就用动态库，否则回退到静态实现。
+    /// 统一入口：没有 dylib 就返回 nil，由调用方报"SDK 未加载"。
     func invoke(_ method: UnsafePointer<CChar>?, _ payload: UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>? {
         load()
-        if let fn = dynamicInvoke { return fn(method, payload) }
-        return agov_ios_invoke(method, payload)
+        guard let fn = dynamicInvoke else { return nil }
+        return fn(method, payload)
     }
 
-    /// 释放 SDK 返回的字符串（动态/静态各用各的 free）。
+    /// 释放 SDK 返回的字符串。
     func freeString(_ p: UnsafeMutablePointer<CChar>?) {
         load()
-        if let fn = dynamicFree { fn(p); return }
-        agov_ios_free(p)
+        dynamicFree?(p)
     }
 }
