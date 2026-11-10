@@ -100,14 +100,23 @@ jobs:
 
       - name: ⑤ 可读字符串（错误信息最说明行为）
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          STRINGS="strings"
+          command -v strings >/dev/null 2>&1 || STRINGS=""
+          dump() { # $1=file
+            if [ -n "${STRINGS}" ]; then
+              strings "$1"
+            else
+              tr -c '[:print:]' '\n' < "$1"
+            fi
+          }
           {
             echo "== libgoeval.dylib: AX / Eval / Bridge / socket / dylib 相关 =="
-            strings -a reverse/libgoeval.dylib | grep -iE "AX |AXUIElement|bootstrap|sweep|eval|goeval|\.sock|libagov|Bridge" | sort -u | head -400
+            dump reverse/libgoeval.dylib | grep -iE "AX |AXUIElement|bootstrap|sweep|eval|goeval|\.sock|libagov|Bridge" | sort -u | head -400 || true
           } > out/strings-dylib.txt 2>&1
           {
             echo "== AutoGoRunner: AGAppCtl / 端口 / socket / dlsym 相关 =="
-            strings -a reverse/AutoGoRunner | grep -iE "AGAppCtl|socket|tcp|localhost|127\.0\.0\.1|:[0-9]{4}|GoMain|AX" | sort -u | head -400
+            dump reverse/AutoGoRunner | grep -iE "AGAppCtl|socket|tcp|localhost|127\.0\.0\.1|:[0-9]{4}|GoMain|AX" | sort -u | head -400 || true
           } > out/strings-shell.txt 2>&1
           wc -l out/strings-dylib.txt out/strings-shell.txt
 
