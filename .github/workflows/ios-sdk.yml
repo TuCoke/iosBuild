@@ -218,15 +218,17 @@ jobs:
             -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
             -I "${IMGUI}" -I "${IMGUI}/backends" \
             "${IMGUI}/backends/imgui_impl_metal.mm" -o host/ios/Frameworks/imgui-obj/imgui_impl_metal.o
-          # cimgui：imgui 的 C API 封装（参考实现就是这么用的）
-          CIMGUI=host/ios/third_party/cimgui
-          if [ -f "${CIMGUI}/cimgui.cpp" ]; then
+          # imgui 的 C API 薄层（Go 通过 cgo 调它，形态与参考实现一致）
+          # 不用官方 cimgui：它的 master 对应 1.92+，与这里 vendor 的 1.91.5 不兼容
+          SHIM=host/ios/third_party/imgui_shim
+          if [ -f "${SHIM}/ag_imgui_c.cpp" ]; then
             xcrun --sdk iphoneos clang++ -c -O2 -std=c++17 -fno-exceptions \
               -isysroot "${SDK_DIR}" -mios-version-min=15.0 -arch arm64 \
-              -I "${IMGUI}" -I "${CIMGUI}" \
-              "${CIMGUI}/cimgui.cpp" -o host/ios/Frameworks/imgui-obj/cimgui.o
+              -I "${IMGUI}" -I "${SHIM}" \
+              "${SHIM}/ag_imgui_c.cpp" -o host/ios/Frameworks/imgui-obj/ag_imgui_c.o
           else
-            echo "::warning::没有 cimgui 源码，Go 的 imgui 包会缺符号"
+            echo "::error::缺少 imgui shim，Go 的 imgui 包会缺符号"
+            exit 1
           fi
           libtool -static -o host/ios/Frameworks/libimgui.a host/ios/Frameworks/imgui-obj/*.o
           ls -lh host/ios/Frameworks/libimgui.a
