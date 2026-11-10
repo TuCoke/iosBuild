@@ -18,6 +18,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// 【必须包 extern "C"】
+// 这个头被 ag_rec.mm（ObjC++）包含并实现。没有 C 链接的话，
+// AGRecognition 会被编成 C++ 修饰名，而 runtime_ios.m 按 C 符号引用它 —— 链接期找不到。
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /// 识别栈是否可用（三个 dylib 都在 + 编译期有 OpenCV 头）
 BOOL AGRecognitionAvailable(void);
 
@@ -28,4 +35,8 @@ NSString *AGRecognitionUnavailableReason(void);
 /// 返回值与 AGJSON/AGError 同一套约定（见 runtime.h）
 ag_ios_result AGRecognition(NSString *op, NSDictionary *args);
 
+
+#ifdef __cplusplus
+}
+#endif
 NS_ASSUME_NONNULL_END

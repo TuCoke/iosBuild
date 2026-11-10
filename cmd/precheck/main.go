@@ -41,6 +41,7 @@ func main() {
 	checkWorkflowOrder()
 	checkObjCShell()
 	checkNativeSources()
+	checkCLinkage()
 
 	fmt.Println()
 	if len(failures) == 0 {
@@ -398,4 +399,31 @@ func checkNativeSources() {
 		}
 	}
 	ok("native 源文件：%d 个（括号平衡）", n)
+}
+// ⑩ C 链接检查：会被 ObjC++（.mm）包含的头，声明必须包在 extern "C" 里。
+//
+// 踩过的坑：runtime.h / ag_rec.h / bridge.h 的声明没有 extern "C"，
+// .mm 里按 C++ 编 → 生成修饰名（如 AGJSON(objc_object*)），
+// 而 .m 导出的是 _AGJSON → 链接期一堆 Undefined，报错还很难读。
+func checkCLinkage() {
+	headers := []string{
+		"sdk/ios/internal/native/runtime.h",
+		"sdk/ios/internal/native/bridge.h",
+		"sdk/ios/internal/native/ag_rec.h",
+		"sdk/ios/imgui/ag_bridge.h",
+	}
+	bad := 0
+	for _, h := range headers {
+		data, err := os.ReadFile(h)
+		if err != nil {
+			continue
+		}
+		if !strings.Contains(string(data), `extern "C"`) {
+			fail("%s 没有 extern \"C\"（被 .mm 包含时会产生 C++ 修饰名，链接期找不到符号）", filepath.Base(h))
+			bad++
+		}
+	}
+	if bad == 0 {
+		ok("C 链接头检查：%d 个都有 extern \"C\"", len(headers))
+	}
 }
