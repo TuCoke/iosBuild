@@ -189,8 +189,16 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"utils.spawn"]) {
         NSString *path = args[@"path"];
         if (path.length == 0) return AGError(2,@"缺少可执行文件路径");
-        if (![[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
-            return AGError(3,@"文件不存在或不可执行");
+        // 检查失败时把"到底哪里不对"说清楚：不存在？不是普通文件？没有执行位？
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if (![fm fileExistsAtPath:path]) {
+            return AGError(3,[NSString stringWithFormat:@"文件不存在: %@", path]);
+        }
+        if (![fm isExecutableFileAtPath:path]) {
+            NSDictionary *attrs = [fm attributesOfItemAtPath:path error:NULL];
+            unsigned long mode = [attrs[NSFilePosixPermissions] unsignedLongValue];
+            return AGError(3,[NSString stringWithFormat:@"没有执行权限: %@ (mode=%o, size=%llu)",
+                                    path, (unsigned int)(mode & 0777), [attrs[NSFileSize] unsignedLongLongValue]]);
         }
         NSArray *extra = args[@"args"];
         NSMutableArray *argvList = [NSMutableArray arrayWithObject:path];
