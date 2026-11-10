@@ -2,43 +2,51 @@
 
 // 进程与系统工具：按名查 pid、读进程内存/CPU、自重启，以及 Toast/Alert/执行外部程序。
 //
-// 两条硬约束写在这里，免得后来人踩：
+// 三条硬约束写在这里，免得后来人踩：
 //   1. 弹窗类（Toast/Alert/InputAlert）必须在主线程，而且 Alert 要等用户点按钮 ——
 //      不能用 AGOnMain（它有 3 秒上限，会误判超时），这里用信号量自己等。
 //   2. 启动外部进程（ExecBinary / RestartSelf）在普通签名下会被系统拒绝，
 //      和 platform-application 权限绑死；失败必须如实返回 -1，不能假装成功。
+//   3. iOS SDK 不提供 <sys/proc_info.h>，连 <libproc.h> 都会把它带进来；
+//      所以进程相关的 C 函数在这里自己声明，只依赖 <sys/resource.h>。
 #import "runtime.h"
-#include <sys/sysctl.h>
-#include <sys/proc_info.h>
-#include <libproc.h>
+#include <sys/resource.h>
 #include <spawn.h>
 #include <signal.h>
 #include <mach-o/dyld.h>
+#include <mach/mach_time.h>
 #include <unistd.h>
 #include <sys/wait.h>
-#include <mach/mach_time.h>
 #include <stdlib.h>
 #include <string.h>
 
 extern char **environ;
 
+// libproc 的三个入口 + rusage。自己声明，绕开 proc_info.h 缺失的问题。
+extern int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer);
+extern int proc_listallpids(void *buffer, int buffersize);
+extern int proc_name(int pid, void *buffer, uint32_t buffersize);
+#ifndef RUSAGE_INFO_V2
+#define RUSAGE_INFO_V2 2
+#endif
+
 // AGFindPID 遍历所有进程，按可执行名匹配；找不到返回 0。
 static int AGFindPID(NSString *name) {
     if (name.length == 0) return 0;
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
-    size_t size = 0;
-    if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0 || size == 0) return 0;
-    struct kinfo_proc *procs = malloc(size);
-    if (!procs) return 0;
+    int capacity = 4096;
+    pid_t *pids = calloc((size_t)capacity, sizeof(pid_t));
+    if (!pids) return 0;
+    int count = proc_listallpids(pids, capacity * (int)sizeof(pid_t));
     int found = 0;
-    if (sysctl(mib, 4, procs, &size, NULL, 0) == 0) {
-        int count = (int)(size / sizeof(struct kinfo_proc));
+    if (count > 0) {
+        if (count > capacity) count = capacity;
         for (int i = 0; i < count; i++) {
-            const char *candidate = procs[i].kp_proc.p_comm;
-            if (strcmp(candidate, name.UTF8String) == 0) { found = procs[i].kp_proc.p_pid; break; }
+            char processName[64] = {0};
+            if (proc_name(pids[i], processName, sizeof(processName)) <= 0) continue;
+            if (strcmp(processName, name.UTF8String) == 0) { found = pids[i]; break; }
         }
     }
-    free(procs);
+    free(pids);
     return found;
 }
 
@@ -49,10 +57,12 @@ ag_ios_result AGSystem(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"system.memory"]) {
         int pid = [args[@"pid"] intValue];
         if (pid <= 0) return AGError(2,@"pid 无效");
-        struct proc_taskinfo info;
-        int size = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, sizeof(info));
-        if (size <= 0) return AGError(3,@"读不到该进程信息");
-        return AGJSON(@{@"kb":@((long long)info.pti_resident_size / 1024)});
+        // 用 rusage 的常驻内存（ri_resident_size）：proc_pidinfo 那条路在 iOS SDK 上编不过。
+        struct rusage_info_v2 info;
+        if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&info) != 0) {
+            return AGError(3,@"读不到该进程信息");
+        }
+        return AGJSON(@{@"kb":@((long long)info.ri_resident_size / 1024)});
     }
     if ([op isEqualToString:@"system.cpu"]) {
         int pid = [args[@"pid"] intValue];
@@ -61,7 +71,7 @@ ag_ios_result AGSystem(NSString *op, NSDictionary *args) {
         if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&a) != 0) return AGError(3,@"读不到 CPU 信息");
         usleep(200 * 1000);
         if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&b) != 0) return AGError(3,@"读不到 CPU 信息");
-        // 单位是 mach absolute time，换算成 200ms 内的占比。
+        // 单位是 mach absolute time，换算成 200ms 窗口内的占比。
         uint64_t used = (b.ri_user_time + b.ri_system_time) - (a.ri_user_time + a.ri_system_time);
         mach_timebase_info_data_t tb;
         mach_timebase_info(&tb);
@@ -75,17 +85,18 @@ ag_ios_result AGSystem(NSString *op, NSDictionary *args) {
         if (_NSGetExecutablePath(path, &size) != 0) return AGError(3,@"无法取到自身可执行路径");
         pid_t child = 0;
         char *argv[] = {path, NULL};
-        if (posix_spawn(&child, path, NULL, NULL, argv, environ) != 0) return AGError(3,@"重启失败：系统拒绝启动进程");
+        if (posix_spawn(&child, path, NULL, NULL, argv, environ) != 0) {
+            return AGError(3,@"重启失败：系统拒绝启动进程");
+        }
         // 新实例已经拉起，旧进程退出前给一点时间让句柄交接。
         usleep(200 * 1000);
         exit(0);
-        return AGJSON(@{@"submitted":@YES});
     }
     return AGError(1,@"未知系统操作");
 }
 
 // ---- 弹窗 ----
-//
+
 // AGRunOnMainAndWait 把 block 丢到主线程执行并等到完成（不设短上限：
 // Alert 要等人点按钮，用 AGOnMain 的 3 秒会直接判超时）。
 static void AGRunOnMainAndWait(dispatch_block_t block) {

@@ -15,6 +15,7 @@
 // 普通签名会拿到 kAXErrorCannotComplete，这里如实返回"不可用"，绝不返回空树冒充成功。
 #import "runtime.h"
 #import <CoreFoundation/CoreFoundation.h>
+#include <unistd.h>
 
 typedef CFTypeRef AXElement;
 typedef CFTypeRef AXValueLocal;
