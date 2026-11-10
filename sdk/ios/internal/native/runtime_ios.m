@@ -103,7 +103,7 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
                     id workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
                     id workspace = [workspaceClass respondsToSelector:NSSelectorFromString(@"defaultWorkspace")] ? ((id(*)(id,SEL))objc_msgSend)(workspaceClass, NSSelectorFromString(@"defaultWorkspace")) : nil;
                     BOOL capture = AGSymbol("CARenderServerRenderDisplay") != NULL;
-                    return AGJSON(@{@"touch":@(AGInputAvailable(@"touch")),@"keyboard":@(AGInputAvailable(@"keyboard")),@"unicode":@(AGInputAvailable(@"unicode")),@"capture":@(capture),@"video":@(capture),@"launchApp":@([workspace respondsToSelector:NSSelectorFromString(@"openApplicationWithBundleID:")]),@"foregroundApp":@(AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier") != NULL),@"lockScreen":@(AGSymbol("SBSLockDevice") != NULL)});
+                    return AGJSON(@{@"touch":@(AGInputAvailable(@"touch")),@"keyboard":@(AGInputAvailable(@"keyboard")),@"unicode":@(AGInputAvailable(@"unicode")),@"capture":@(capture),@"video":@(capture),@"launchApp":@([workspace respondsToSelector:NSSelectorFromString(@"openApplicationWithBundleID:")]),@"foregroundApp":@((BOOL)(AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier") != NULL)),@"lockScreen":@((BOOL)(AGSymbol("SBSLockDevice") != NULL))});
                 });
             }
             if ([op hasPrefix:@"device."]) return AGDevice(op,args);

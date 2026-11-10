@@ -160,14 +160,14 @@ ag_ios_result AGUIAcc(NSString *op, NSDictionary *args) {
                 @"parentLeft": @(0), @"parentTop": @(0), @"parentRight": @(0), @"parentBottom": @(0),
                 @"index": @(index),
                 @"childCount": @(childCount),
-                @"clickable": @(enabled == 1),
-                @"selected": @(selected == 1),
-                @"enabled": @(enabled != 0),
+                @"clickable": @((BOOL)(enabled == 1)),
+                @"selected": @((BOOL)(selected == 1)),
+                @"enabled": @((BOOL)(enabled != 0)),
                 @"scrollable": @([role containsString:@"Scroll"]),
-                @"editable": @([role containsString:@"TextField"] || [role containsString:@"TextView"]),
-                @"checked": @(selected == 1),
+                @"editable": @((BOOL)([role containsString:@"TextField"] || [role containsString:@"TextView"])),
+                @"checked": @((BOOL)(selected == 1)),
                 @"password": @([role containsString:@"Secure"]),
-                @"focused": @(focused == 1),
+                @"focused": @((BOOL)(focused == 1)),
             }];
             index++;
 

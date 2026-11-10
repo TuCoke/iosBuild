@@ -142,7 +142,7 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
 
         if ([op isEqualToString:@"app.installed"]) {
             if (bundleID.length == 0) return AGError(2,@"缺少 bundleId");
-            return AGJSON(@{@"installed":@(AGProxy(bundleID) != nil)});
+            return AGJSON(@{@"installed":@((BOOL)(AGProxy(bundleID) != nil))});
         }
 
         if ([op isEqualToString:@"app.bundle_path"]) {

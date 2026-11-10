@@ -137,7 +137,7 @@ ag_ios_result AGOverlay(NSString *op, NSDictionary *args) {
 
     if ([op hasSuffix:@"visible"]) {
         AGOverlayWindow *window = AGOverlayRegistry()[key];
-        return AGJSON(@{@"visible":@(window != nil && !window.hidden)});
+        return AGJSON(@{@"visible":@((BOOL)(window != nil && !window.hidden))});
     }
 
     if ([op hasSuffix:@"hide"] || [op hasSuffix:@"destroy"]) {

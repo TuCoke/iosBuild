@@ -98,7 +98,7 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         if (!getLockStatus) return AGError(1,@"锁屏状态接口不可用");
         BOOL locked = NO;
         getLockStatus(&locked);
-        return AGJSON(@{@"unlocked":@(!locked)});
+        return AGJSON(@{@"unlocked":@((BOOL)(!locked))});
     }
 
     // 亮屏态：用 SpringBoard 的 Darwin 通知 "hasBlankedScreen"。
@@ -113,7 +113,7 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         int status = notify_get_state(token, &blanked);
         notify_cancel(token);
         if (status != NOTIFY_STATUS_OK) return AGError(1,@"亮屏状态接口不可用");
-        return AGJSON(@{@"on":@(blanked == 0)});
+        return AGJSON(@{@"on":@((BOOL)(blanked == 0))});
     }
     // 内存：不需要主线程，放在 AGOnMain 之前返回更省。
     if ([op isEqualToString:@"device.memory"]) {
@@ -187,7 +187,7 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         SEL connStatus = NSSelectorFromString(@"status");
         long state = (connection && [connection respondsToSelector:connStatus])
             ? ((long(*)(id,SEL))objc_msgSend)(connection, connStatus) : 0;
-        return AGJSON(@{@"on":@(state == 3)}); // 3 = NEVPNStatusConnected
+        return AGJSON(@{@"on":@((BOOL)(state == 3))}); // 3 = NEVPNStatusConnected
     }
 
     return AGOnMain(^{
