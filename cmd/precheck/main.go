@@ -135,7 +135,7 @@ func checkSwiftMethods() {
 		}
 	}
 	if len(missing) == 0 {
-		ok("Swift 调用的 method 都能在 Go switch 里找到")
+		ok("壳（ObjC/Swift）调用的 method 都能在 Go switch 里找到")
 		return
 	}
 	names := make([]string, 0, len(missing))
@@ -144,7 +144,7 @@ func checkSwiftMethods() {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fail("Swift 调用了 %s（%s），但 Go 的 switch 里没有这个 case", name, missing[name])
+		fail("壳调用了 %s（%s），但 Go 的 switch 里没有这个 case", name, missing[name])
 	}
 }
 

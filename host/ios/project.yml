@@ -19,9 +19,10 @@ options:
 
 settings:
   base:
-    SWIFT_VERSION: "5.0"
     ENABLE_BITCODE: NO
     CLANG_ENABLE_MODULES: YES
+    # 壳是纯 ObjC（与参考实现一致）：不开 ARC 会到处手工 release，容易漏内存
+    CLANG_ENABLE_OBJC_ARC: YES
 
 targets:
   AgovHost:
@@ -34,7 +35,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.autogov.host
         PRODUCT_NAME: AgovHost
         INFOPLIST_FILE: Info.plist
-        # 壳不引用任何 Go 头文件，因此没有 SWIFT_OBJC_BRIDGING_HEADER
+        # 壳不引用任何 Go 头文件（全是 ObjC，没有 Swift 桥接头）
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-framework"
