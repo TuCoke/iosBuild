@@ -248,6 +248,31 @@ jobs:
           done
           echo "✅ libimgui.dylib 导出 ig*（imgui 1.92.5 + cimgui 1.92.5）"
 
+      - name: 编 libagovnative.a（ObjC++ 层：识别栈 + imgui 悬浮层）
+        run: |
+          set -euo pipefail
+          # 【为什么这两个 .mm 不放在 Go 包里】
+          # go/build 只认 .c/.cc/.cpp/.cxx/.m/.h/.f/.s，没有 .mm 这一项 ——
+          # 放在包目录里的 .mm 会被【完全忽略】（实测 go list 的 CXXFiles 是空的），
+          # 于是 AGRecognition / AGImGuiOverlay 到链接期才报未定义。
+          # 所以把它们当普通 ObjC++ 源单独编成静态库，再链进 dylib。
+          SDK_DIR=$(xcrun --sdk iphoneos --show-sdk-path)
+          NATIVE=host/ios/objc
+          OBJ=host/ios/Frameworks/native-objc
+          rm -rf "${OBJ}"; mkdir -p "${OBJ}" host/ios/Frameworks
+          FLAGS="-O2 -std=c++17 -fobjc-arc -isysroot ${SDK_DIR} -mios-version-min=15.0 -arch arm64 \
+            -I sdk/ios/internal/native \
+            -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui -I host/ios/third_party/cimgui/imgui/backends"
+          OPENCV_INC=""
+          if [ -d host/ios/Frameworks/opencv2.framework ]; then
+            OPENCV_INC="-I host/ios/Frameworks/opencv2.framework/Headers"
+          fi
+          for f in ag_rec imgui_overlay; do
+            xcrun --sdk iphoneos clang++ -c ${FLAGS} ${OPENCV_INC} "${NATIVE}/$f.mm" -o "${OBJ}/$f.o"
+          done
+          libtool -static -o host/ios/Frameworks/libagovnative.a "${OBJ}"/*.o
+          ls -lh host/ios/Frameworks/libagovnative.a
+
       - name: Go 出 dylib（c-archive + clang -dynamiclib）
         env:
           SDK: ${{ steps.sdk.outputs.path }}
@@ -288,6 +313,7 @@ jobs:
           fi
           clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
+            host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
@@ -648,6 +674,22 @@ jobs:
             -o host/ios/Frameworks/libimgui.dylib
           file host/ios/Frameworks/libimgui.dylib
 
+      - name: 编 libagovnative.a（模拟器版，ObjC++ 层）
+        run: |
+          set -euo pipefail
+          SDK_DIR=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          XCARCH=${{ steps.arch.outputs.xcarch }}
+          OBJ=host/ios/Frameworks/native-objc-sim
+          rm -rf "${OBJ}"; mkdir -p "${OBJ}" host/ios/Frameworks
+          FLAGS="-O2 -std=c++17 -fobjc-arc -isysroot ${SDK_DIR} -mios-simulator-version-min=15.0 -arch ${XCARCH} \
+            -I sdk/ios/internal/native \
+            -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui -I host/ios/third_party/cimgui/imgui/backends"
+          for f in ag_rec imgui_overlay; do
+            xcrun --sdk iphonesimulator clang++ -c ${FLAGS} "host/ios/objc/$f.mm" -o "${OBJ}/$f.o"
+          done
+          libtool -static -o host/ios/Frameworks/libagovnative.a "${OBJ}"/*.o
+          ls -lh host/ios/Frameworks/libagovnative.a
+
       - name: Go 出模拟器 dylib（归档 + clang -dynamiclib）
         env:
           SDK: ${{ steps.simsdk.outputs.path }}
@@ -668,6 +710,7 @@ jobs:
           clang -dynamiclib -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
             -mios-simulator-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/GoLib/libagovios.a \
+            host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
