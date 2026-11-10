@@ -214,6 +214,21 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: go.sum
 
+      - name: 确定构建架构
+        id: arch
+        run: |
+          MACHINE="$(uname -m)"
+          if [ "${MACHINE}" = "arm64" ]; then
+            echo "goarch=arm64" >> "$GITHUB_OUTPUT"
+            echo "xcarch=arm64" >> "$GITHUB_OUTPUT"
+            echo "other=x86_64" >> "$GITHUB_OUTPUT"
+          else
+            echo "goarch=amd64" >> "$GITHUB_OUTPUT"
+            echo "xcarch=x86_64" >> "$GITHUB_OUTPUT"
+            echo "other=arm64" >> "$GITHUB_OUTPUT"
+          fi
+          echo "跑器架构: ${MACHINE}"
+
       - name: 选一台可用的 iPhone 模拟器
         id: sim
         run: |
@@ -252,7 +267,7 @@ jobs:
         env:
           CGO_ENABLED: '1'
           GOOS: ios
-          GOARCH: arm64
+          GOARCH: ${{ steps.arch.outputs.goarch }}
           SDK: ${{ steps.simsdk.outputs.path }}
           CC_SIM: ${{ steps.simsdk.outputs.cc }}
         run: |
@@ -272,9 +287,13 @@ jobs:
         run: |
           set -o pipefail
           set +e
+          # 只出 arm64：macos-15 跑器是 Apple Silicon，模拟器原生跑 arm64；
+          # 而我们的 Go 归档是 arm64 单架构 —— 默认 xcodebuild 会做 arm64+x86_64
+          # 通用二进制，x86_64 那半在没有归档的情况下必然 undefined symbols。
           xcodebuild -project AgovHost.xcodeproj -scheme AgovHost \
             -sdk iphonesimulator -configuration Debug \
             -derivedDataPath build \
+            ARCHS=${{ steps.arch.outputs.xcarch }} ONLY_ACTIVE_ARCH=YES EXCLUDED_ARCHS=${{ steps.arch.outputs.other }} \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tee sim-build.log
           status=${PIPESTATUS[0]}
