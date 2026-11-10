@@ -159,8 +159,13 @@ jobs:
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           mkdir -p host/ios/Frameworks
-          go build -buildmode=c-archive -trimpath -ldflags "-s -w" \
+            # 注意：不能加 -ldflags "-s -w"。
+            # -s 会去掉符号表，而 agov_ios_invoke/agov_ios_free 是 cgo 导出符号，
+            # 去掉后 dylib 里就没有它们（实测：dlsym 失败 + ld 报 <initial-undefines>）。
+            go build -buildmode=c-archive -trimpath \
             -o host/ios/Frameworks/libagovios.a ./cmd/ioshost
+            echo "归档里的导出符号："
+            nm -gU host/ios/Frameworks/libagovios.a 2>/dev/null | grep -E "agov_ios_(invoke|free)" || echo "  （没找到，后面必然失败）"
           clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
             -framework Foundation -framework UIKit -framework CoreFoundation \
