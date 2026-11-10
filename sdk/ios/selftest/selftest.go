@@ -11,7 +11,7 @@
 //
 // 【安全边界】
 // 会改状态或伤设备的 op（重启、锁屏）不真调，只标 unsafe —— 自检不能把手机弄挂。
-package main
+package selftest
 
 import (
 	"context"
@@ -121,7 +121,7 @@ func probeList() []opProbe {
 }
 
 // SelfTestAll 逐个调 op，返回结构化结果。
-func SelfTestAll(ctx context.Context) map[string]any {
+func All(ctx context.Context) map[string]any {
 	type item struct {
 		Op     string `json:"op"`
 		Status string `json:"status"` // ok / env / missing / unsafe

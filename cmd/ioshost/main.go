@@ -46,6 +46,7 @@ import (
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/selftest"
 	"autogov1/v2/sdk/ios/tunnel"
 )
 
@@ -195,7 +196,7 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 
 	case "runtime.selftest.all":
 		// 全量自检：逐个 op 真调一次，报告 可用/受环境限制/未实现/未验证
-		return okData(SelfTestAll(ctx))
+		return okData(selftest.All(ctx))
 
 	case "runtime.selftest":
 		v, err := device.SelfTest(ctx, num(args, "x", 0.5), num(args, "y", 0.5))
