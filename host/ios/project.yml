@@ -55,5 +55,11 @@ targets:
           - "CoreMedia"
           - "-framework"
           - "CoreVideo"
+          # WebView 控制台（WKWebView）必须显式链 WebKit，否则 ld 报
+          # _OBJC_CLASS_$_WKWebView 之类的未定义符号。
+          - "-framework"
+          - "WebKit"
+          - "-framework"
+          - "Security"
         # Go 的 c-archive 里含 ObjC 类别/符号，需要 -ObjC 才会被链接进来
         OTHER_SWIFT_FLAGS: "$(inherited)"
