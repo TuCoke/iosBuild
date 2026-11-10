@@ -167,8 +167,22 @@ jobs:
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
             -lresolv -lpthread -lm \
+            -Wl,-exported_symbol,_agov_ios_invoke \
+            -Wl,-exported_symbol,_agov_ios_free \
+            -Wl,-exported_symbol,_GoMain \
+            -Wl,-exported_symbol,_AXBootstrap \
+            -Wl,-exported_symbol,_AXSweepNodesJSON \
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
+          # 断言导出符号真的在（dlsym 失败过两次，所以这里必须校验）
+          for sym in _agov_ios_invoke _agov_ios_free _GoMain _AXBootstrap _AXSweepNodesJSON; do
+            if ! nm -gU host/ios/Frameworks/libagovios.dylib | grep -q " $sym$"; then
+              echo "::error::dylib 缺少导出符号 $sym"
+              nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "_agov|_GoMain|_AX" | head -20 || true
+              exit 1
+            fi
+          done
+          echo "✅ 五个入口都导出了"
           # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
           # 然后通过 http://127.0.0.1:8989/{status,task?cmd=} 通信。
           mkdir -p host/ios/Runtime
@@ -464,8 +478,25 @@ jobs:
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
             -lresolv -lpthread -lm \
+            -Wl,-exported_symbol,_agov_ios_invoke \
+            -Wl,-exported_symbol,_agov_ios_free \
+            -Wl,-exported_symbol,_GoMain \
+            -Wl,-exported_symbol,_AXBootstrap \
+            -Wl,-exported_symbol,_AXSweepNodesJSON \
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
+          # 断言导出符号真的在（dlsym 失败过两次，所以这里必须校验）
+          for sym in _agov_ios_invoke _agov_ios_free _GoMain _AXBootstrap _AXSweepNodesJSON; do
+            if ! nm -gU host/ios/Frameworks/libagovios.dylib | grep -q " $sym$"; then
+              echo "::error::dylib 缺少导出符号 $sym"
+              nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "_agov|_GoMain|_AX" | head -20 || true
+              exit 1
+            fi
+          done
+          echo "✅ 五个入口都导出了"
+          mkdir -p host/ios/Runtime
+          go build -buildmode=exe -trimpath -ldflags "-s -w" -o host/ios/Runtime/app ./cmd/runtimeapp || true
+          ls -lh host/ios/Runtime/app 2>/dev/null || echo "（Runtime/app 未生成，模拟器里任务隔离不可用）"
           ls -lh host/ios/Frameworks/libagovios.dylib
 
       - name: 生成 Xcode 工程
@@ -494,18 +525,24 @@ jobs:
             exit "${status}"
           fi
 
-      - name: 把 dylib 放进模拟器 App 包
+      - name: 把 dylib / Runtime/app 放进模拟器 App 包并重签
         run: |
           set -euo pipefail
           APP=$(find host/ios/build -name "AgovHost.app" -maxdepth 8 | head -1)
           [ -d "${APP}" ] || { echo "::error::没找到模拟器产物"; exit 1; }
           if [ -f host/ios/Frameworks/libagovios.dylib ]; then
             cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
-            echo "已放入 libagovios.dylib"; ls -lh "${APP}/libagovios.dylib"
+            echo "已放入 libagovios.dylib"
           else
             echo "::warning::没有模拟器版 dylib"
           fi
-          ls -lh "${APP}"
+          if [ -f host/ios/Runtime/app ]; then
+            mkdir -p "${APP}/Runtime"; cp host/ios/Runtime/app "${APP}/Runtime/app"; chmod +x "${APP}/Runtime/app"
+            echo "已放入 Runtime/app"
+          fi
+          # 往已签名的 app 里塞文件会让签名失效，模拟器也要重签一次
+          codesign -f -s - "${APP}" 2>/dev/null || echo "（重签失败，模拟器通常仍可运行）"
+          ls -lh "${APP}"; ls -lh "${APP}/Runtime" 2>/dev/null || true
 
       - name: 启动模拟器并安装
         id: run

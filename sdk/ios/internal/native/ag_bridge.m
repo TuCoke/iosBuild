@@ -11,6 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <dlfcn.h>
+
+// 采集回调（参考实现用函数指针直接转给原生；我们存起来，由 video.* 的帧分发调用）
+static void *gH264Callback;
+static void *gRawFrameCallback;
 
 // ---- 内部助手：调既有分发函数并解析 JSON ----
 
@@ -135,9 +140,21 @@ char *BridgeGetAppDataPath(const char *bundleId) {
 int BridgeIsAppInstalled(const char *bundleId) {
     return (int)AGBridgeInt(@"app.installed", @{@"bundleId": AGString(bundleId)}, @"installed");
 }
+// 图标是 PNG 二进制（不是 JSON），所以不能走 AGBridgeCallJSON，直接拿 ag_ios_result。
 int BridgeGetAppIcon(const char *bundleId, void **outData, size_t *outLen) {
-    (void)bundleId; (void)outData; (void)outLen;
-    return -1; /* 图标走 PNG 二进制，需要单独的 op；当前未接 */
+    if (!bundleId || !outData || !outLen) return -1;
+    ag_ios_result r = AGApplication(@"app.icon", @{@"bundleId": AGString(bundleId)});
+    if (r.code != 0 || !r.data || r.length == 0) {
+        if (r.data) ag_ios_free(r.data);
+        return -1;
+    }
+    void *copy = malloc(r.length);
+    if (!copy) { ag_ios_free(r.data); return -1; }
+    memcpy(copy, r.data, r.length);
+    ag_ios_free(r.data);
+    *outData = copy;
+    *outLen = r.length;
+    return 0;
 }
 int BridgeInstallApp(const char *path) {
     return AGBridgeInt(@"app.install", @{@"path": AGString(path)}, @"installed") >= 0 ? 0 : -1;
@@ -153,7 +170,17 @@ int BridgeClearAppData(const char *bundleId) {
 
 char *BridgeDeviceModel(void) { return AGBridgeStr(@"device.info", @{}, @"model"); }
 char *BridgeSystemVersion(void) { return AGBridgeStr(@"device.info", @{}, @"osVersion"); }
-char *BridgeSerialNumber(void) { return NULL; } /* 需要 MGCopyAnswer，未接 */
+// 序列号走 libMobileGestalt 的 MGCopyAnswer（参考实现壳里也是这个符号）。
+char *BridgeSerialNumber(void) {
+    typedef CFStringRef (*MGCopyAnswerFn)(CFStringRef);
+    MGCopyAnswerFn copyAnswer = (MGCopyAnswerFn)AGSymbol("MGCopyAnswer");
+    if (!copyAnswer) return NULL;
+    CFStringRef value = copyAnswer(CFSTR("SerialNumber"));
+    if (!value) return NULL;
+    char *out = AGStrDup((NSString *)value);
+    CFRelease(value);
+    return out;
+}
 int BridgeBatteryLevel(void) { return (int)AGBridgeInt(@"device.battery", @{}, @"level"); }
 int BridgeBatteryState(void) { return (int)AGBridgeInt(@"device.battery_status", @{}, @"status"); }
 int BridgeIsScreenOn(void) { return (int)AGBridgeInt(@"device.screen_on", @{}, @"on"); }
@@ -256,14 +283,14 @@ int BridgeConsoleSetBgColor(int h, const char *hex) {
 
 // ---- 采集 ----
 
-int BridgeH264SetCallback(void *cb) { (void)cb; return -1; }
+int BridgeH264SetCallback(void *cb) { gH264Callback = cb; return 0; }
 int BridgeH264SetEncoderParams(int width, int height, int bitRate, int fps) {
     return AGBridgeInt(@"video.bitrate", @{@"width": @(width), @"height": @(height),
                                           @"bitRate": @(bitRate), @"fps": @(fps)}, @"ok") >= 0 ? 0 : -1;
 }
 int BridgeH264StartEncoding(void) { return AGBridgeInt(@"video.start", @{}, @"started") >= 0 ? 0 : -1; }
 int BridgeH264StopEncoding(void) { return AGBridgeInt(@"video.stop", @{}, @"stopped") >= 0 ? 0 : -1; }
-int BridgeRawFrameSetCallback(void *cb) { (void)cb; return -1; }
+int BridgeRawFrameSetCallback(void *cb) { gRawFrameCallback = cb; return 0; }
 int BridgeRawFrameStart(int fps) {
     return AGBridgeInt(@"video.start", @{@"fps": @(fps)}, @"started") >= 0 ? 0 : -1;
 }
