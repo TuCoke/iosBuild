@@ -15,7 +15,10 @@
 #include <signal.h>
 #include <mach-o/dyld.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <mach/mach_time.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern char **environ;
 
@@ -90,7 +93,9 @@ static void AGRunOnMainAndWait(dispatch_block_t block) {
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_main_queue(), ^{ block(); dispatch_semaphore_signal(done); });
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+#if !OS_OBJECT_USE_OBJC
     dispatch_release(done);
+#endif
 }
 
 ag_ios_result AGUtils(NSString *op, NSDictionary *args) {

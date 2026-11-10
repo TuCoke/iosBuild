@@ -10,8 +10,11 @@
 #include <sys/sysctl.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <net/if_dl.h>
 #include <arpa/inet.h>
 #include <mach/mach.h>
+#include <string.h>
+#include <notify.h>
 
 // AGSysctlInt64 读一个 sysctl 整数值（失败返回 -1）。
 static long long AGSysctlInt64(const char *name) {
@@ -98,20 +101,20 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         return AGJSON(@{@"unlocked":@(!locked)});
     }
 
-    // 亮屏态：IOKit 的 IODisplayWrangler 电源状态（需要 IOKit 已加载）。
+    // 亮屏态：用 SpringBoard 的 Darwin 通知 "hasBlankedScreen"。
+    // 走 IOKit 的 IODisplayWrangler 需要 IOKit 类型声明，而 iOS SDK 不带这些头；
+    // notify 是 libSystem 的公开 C 接口，不需要额外框架，也不会因为符号缺失编不过。
     if ([op isEqualToString:@"device.screen_on"]) {
-        CFMutableDictionaryRef (*serviceMatching)(CFStringRef) = AGSymbol("IOServiceMatching");
-        io_service_t (*getService)(mach_port_t, CFDictionaryRef) = AGSymbol("IOServiceGetMatchingService");
-        IOReturn (*getPowerState)(io_registry_entry_t, CFStringRef, CFTypeRef *) = AGSymbol("IORegistryEntryCreateCFProperty");
-        (void)getPowerState;
-        if (!serviceMatching || !getService) return AGError(1,@"IOKit 电源接口不可用");
-        io_service_t service = getService(kIOMainPortDefault, serviceMatching(CFSTR("IODisplayWrangler")));
-        if (!service) return AGJSON(@{@"on":@NO});
-        IOObjectRelease(service);
-        // 能取到 IODisplayWrangler 即认为显示子系统在线；真正的息屏判定要走私有通道。
-        return AGJSON(@{@"on":@YES});
+        int token = 0;
+        if (notify_register_check("com.apple.springboard.hasBlankedScreen", &token) != NOTIFY_STATUS_OK) {
+            return AGError(1,@"亮屏状态接口不可用");
+        }
+        uint64_t blanked = 0;
+        int status = notify_get_state(token, &blanked);
+        notify_cancel(token);
+        if (status != NOTIFY_STATUS_OK) return AGError(1,@"亮屏状态接口不可用");
+        return AGJSON(@{@"on":@(blanked == 0)});
     }
-
     // 内存：不需要主线程，放在 AGOnMain 之前返回更省。
     if ([op isEqualToString:@"device.memory"]) {
         long long total = 0, avail = 0;
