@@ -330,7 +330,12 @@
 
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
     NSMutableArray<NSString *> *limited = [NSMutableArray array];
-    for (NSDictionary *item in payload[@"items"]) {
+    id rawItems = payload[@"items"];
+    NSArray *items = [rawItems isKindOfClass:NSArray.class] ? rawItems : @[];
+    for (NSDictionary *item in items) {
+        if (![item isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
         NSString *status = item[@"status"];
         if ([status isEqualToString:@"missing"]) {
             [missing addObject:item[@"op"] ?: @"?"];

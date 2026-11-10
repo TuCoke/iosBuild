@@ -39,6 +39,7 @@ func main() {
 	checkBridgeParity()
 	checkVersions()
 	checkWorkflowOrder()
+	checkObjCShell()
 
 	fmt.Println()
 	if len(failures) == 0 {
@@ -298,4 +299,72 @@ func checkWorkflowOrder() {
 		fail("dylib 链接缺少 -Wl,-exported_symbol")
 	}
 	ok("workflow 顺序与关键路径检查完成")
+}
+
+// ⑧ 壳的 ObjC 静态检查（没有本地编译器时，能挡掉大部分低级错误）
+//
+// 查四件事：括号是否平衡、NSSelectorFromString 的 selector 是否有实现、
+// 是否混进了 ARC 禁止的手工引用计数、#import 的头文件是否存在。
+func checkObjCShell() {
+	dir := "host/ios/Sources"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		fail("读不到 %s", dir)
+		return
+	}
+	headerSet := map[string]bool{}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		headerSet[e.Name()] = true
+		if strings.HasSuffix(e.Name(), ".m") || strings.HasSuffix(e.Name(), ".h") {
+			files = append(files, e.Name())
+		}
+	}
+
+	stripRe := regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*|"(?:[^"\\]|\\.)*"`)
+	selectorRe := regexp.MustCompile(`NSSelectorFromString\(@"([A-Za-z0-9_]+)"\)`)
+	methodRe := regexp.MustCompile(`(?m)^-\s*\([^)]*\)\s*([A-Za-z0-9_]+)`)
+	importRe := regexp.MustCompile(`(?m)^#import\s+"([^"]+)"`)
+
+	for _, name := range files {
+		raw, _ := os.ReadFile(filepath.Join(dir, name))
+		src := string(raw)
+		clean := stripRe.ReplaceAllString(src, `""`)
+
+		// 括号平衡：字符串和注释已经剥掉，剩下的差异就是真问题
+		for _, pair := range [][2]string{{"{", "}"}, {"[", "]"}, {"(", ")"}} {
+			if d := strings.Count(clean, pair[0]) - strings.Count(clean, pair[1]); d != 0 {
+				fail("%s 括号不平衡：%s%s 差 %d", name, pair[0], pair[1], d)
+			}
+		}
+
+		// ARC 下不允许手工 release/retain
+		for _, bad := range []string{"[retain]", "[release]", "[autorelease]", "retain]"} {
+			if strings.Contains(clean, bad) {
+				fail("%s 出现 %s（壳开了 ARC）", name, bad)
+			}
+		}
+
+		// #import "X.h" 必须存在
+		for _, m := range importRe.FindAllStringSubmatch(src, -1) {
+			if !headerSet[m[1]] {
+				fail("%s 引用了不存在的头文件 %s", name, m[1])
+			}
+		}
+
+		// NSSelectorFromString 指向的方法必须在本文件实现
+		defined := map[string]bool{}
+		for _, m := range methodRe.FindAllStringSubmatch(src, -1) {
+			defined[m[1]] = true
+		}
+		for _, m := range selectorRe.FindAllStringSubmatch(src, -1) {
+			if !defined[m[1]] {
+				fail("%s 里 selector %s 没有对应实现", name, m[1])
+			}
+		}
+	}
+	ok("壳 ObjC 静态检查：%d 个文件（括号/selector/ARC/头文件）", len(files))
 }
