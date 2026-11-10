@@ -228,6 +228,9 @@ jobs:
           # 官方 Metal 后端（参考实现里同样编进去）
           xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -fobjc-arc \
             "${IMGUI}/backends/imgui_impl_metal.mm" -o "${OBJ}/imgui_impl_metal.o"
+          # agIm* 包装层：实现调 ig*，供 Go 的 cgo 使用（Go 包里不能放 .cpp，否则非 cgo 构建报错）
+          xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -I sdk/ios/imgui \
+            "${CIMGUI}/ag_bridge.cpp" -o "${OBJ}/ag_bridge.o"
           # 独立 dylib：libagovios 用 @rpath 链接它（与参考实现的 libimgui.dylib 同形态）
           xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -isysroot "${SDK_DIR}" \
             -mios-version-min=15.0 -install_name @rpath/libimgui.dylib \
