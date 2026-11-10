@@ -103,6 +103,9 @@ struct ContentView: View {
         .onAppear {
             append("AgovHost 启动")
             callCapabilities()
+            // 启动时顺手跑一次自检：这样 CI 截一张图就能看到
+            // "真投一次点击 / 真抓一帧"的实际结果，不用人去点按钮。
+            callSelfTest()
         }
     }
 
