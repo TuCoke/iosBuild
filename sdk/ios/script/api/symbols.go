@@ -39,3 +39,6 @@ var _ = func() bool {
 	}
 	return true
 }()
+
+// SDKPackageCount 返回符号表里登记了多少个 SDK 包（测试与诊断用）。
+func SDKPackageCount() int { return len(SDKPackages) }

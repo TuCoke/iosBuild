@@ -80,6 +80,9 @@ func (r *Runner) ensure() *interp.Interpreter {
 		i.Use(stdlib.Symbols)
 	}
 	i.Use(api.Symbols)
+	// SDK 包符号表：让脚本能直接 import autogov1/v2/sdk/ios/motion 这类包，
+	// 写 motion.Click(500, 800, 0) —— 与参考实现的脚本写法一致。
+	i.Use(api.SDKPackages)
 	r.interp = i
 	return i
 }

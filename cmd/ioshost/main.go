@@ -27,6 +27,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"path/filepath"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -37,9 +40,11 @@ import (
 	"autogov1/v2/sdk/ios/app"
 	"autogov1/v2/sdk/ios/capture"
 	"autogov1/v2/sdk/ios/device"
+	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/task"
 	"autogov1/v2/sdk/ios/tunnel"
 )
 
@@ -151,6 +156,57 @@ func startLocalAPI(port int) error {
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
+// builtinUI 是开箱可见的最小控制台：查状态、点自检、看日志。
+// 真正的界面可以下发到沙盒 UI/index.html 覆盖它（UI 热更）。
+const builtinUI = `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agov 控制台</title>
+<style>
+body{font:14px -apple-system,sans-serif;margin:0;padding:16px;background:#111;color:#eee}
+h1{font-size:16px;margin:0 0 12px}
+button{font:inherit;padding:8px 12px;margin:0 6px 6px 0;border:0;border-radius:8px;background:#2d7df6;color:#fff}
+pre{white-space:pre-wrap;word-break:break-all;background:#1b1b1b;padding:12px;border-radius:8px;font-size:12px}
+</style></head><body>
+<h1>Agov 控制台（内置页）</h1>
+<div>
+<button onclick="call('capabilities')">能力探测</button>
+<button onclick="call('runtime.selftest')">自检</button>
+<button onclick="call('sdk.status')">SDK 状态</button>
+<button onclick="load('/status')">本地状态</button>
+</div>
+<pre id="out">就绪</pre>
+<script>
+async function call(method){
+  const r = await fetch('/invoke?method='+encodeURIComponent(method),
+    {method:'POST', body:'{"x":0.5,"y":0.5}'});
+  document.getElementById('out').textContent = method + ' → ' + await r.text();
+}
+async function load(path){
+  const r = await fetch(path);
+  document.getElementById('out').textContent = await r.text();
+}
+</script></body></html>`
+
+// contentTypeOf 按扩展名给 Content-Type（UI 里主要是 html/css/js）。
+func contentTypeOf(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".html"):
+		return "text/html; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".js"):
+		return "application/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".json"):
+		return "application/json"
+	case strings.HasSuffix(name, ".png"):
+		return "image/png"
+	case strings.HasSuffix(name, ".svg"):
+		return "image/svg+xml"
+	}
+	return "application/octet-stream"
+}
+
 func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	if method == nil {
 		return fail(contextError("缺少方法名"))
@@ -188,6 +244,59 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			return fail(err)
 		}
 		return okData(v)
+
+	case "sdk.status":
+		// 报告当前 SDK 来源：静态（编进主程序）还是动态（dylib）。
+		// 动态库模式下改 SDK 不需要重装 App。
+		plugins := files.Path("Plugins")
+		dylib := files.Path("Plugins/libagovios.dylib")
+		return okData(map[string]any{
+			"pluginsDir":  plugins,
+			"dylibPath":   dylib,
+			"dylibExists": files.Exists(dylib),
+			"dylibBytes":  len(files.ReadBytes(dylib)),
+		})
+
+	case "sdk.install":
+		// 热更入口：把服务端下发的 dylib 落盘到沙盒 Plugins。
+		// 落盘成功后宿主再调 AGSDKReload；若已加载过动态库，iOS 不允许卸载，
+		// 需要 restart_self 重启进程才生效 —— 这一点如实返回，不假装"立即生效"。
+		b64 := str(args, "base64")
+		if b64 == "" {
+			return fail(contextError("缺少 base64"))
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return fail(err)
+		}
+		if len(raw) < 1024 {
+			return fail(contextError("dylib 太小，不像有效产物"))
+		}
+		path := files.Path("Plugins/libagovios.dylib")
+		files.EnsureDir("Plugins")
+		files.WriteBytes(path, raw)
+		if !files.Exists(path) {
+			return fail(contextError("写入 dylib 失败: " + path))
+		}
+		return okData(map[string]any{"path": path, "bytes": len(raw)})
+
+	case "task.run":
+		// 进程隔离执行：脚本跑在子进程里，宿主不会被死循环卡死。
+		source := str(args, "source")
+		if source == "" {
+			source = script.DemoSource
+		}
+		res, err := task.Run(ctx, task.Options{
+			Timeout: time.Duration(num(args, "timeoutMs", 60000)) * time.Millisecond,
+			Params:  args,
+		}, source)
+		if err != nil && !res.OK && res.Error == "" {
+			res.Error = err.Error()
+		}
+		return okData(res)
+
+	case "task.binary":
+		return okData(map[string]any{"path": task.BundleBinary(ctx)})
 
 	case "localapi.start":
 		port := int(num(args, "port", 18989))

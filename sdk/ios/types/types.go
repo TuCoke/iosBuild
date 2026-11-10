@@ -97,4 +97,9 @@ type Capabilities struct {
 	LaunchApp     bool `json:"launchApp"`
 	ForegroundApp bool `json:"foregroundApp"`
 	LockScreen    bool `json:"lockScreen"`
+	// Recognition 表示识别栈（libagovrec.dylib：ppocr/yolo/dotocr）是否就位。
+	// 它是"库在不在"，不是"模型加载成功"——模型是否正确要跑一次 selftest 才知道。
+	Recognition bool `json:"recognition"`
+	// UIAcc 表示控件树采集（Accessibility）是否可用；真机上还要额外授权。
+	UIAcc bool `json:"uiacc"`
 }

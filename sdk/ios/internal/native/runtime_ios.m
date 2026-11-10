@@ -103,7 +103,7 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
                     id workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
                     id workspace = [workspaceClass respondsToSelector:NSSelectorFromString(@"defaultWorkspace")] ? ((id(*)(id,SEL))objc_msgSend)(workspaceClass, NSSelectorFromString(@"defaultWorkspace")) : nil;
                     BOOL capture = AGSymbol("CARenderServerRenderDisplay") != NULL;
-                    return AGJSON(@{@"touch":@(AGInputAvailable(@"touch")),@"keyboard":@(AGInputAvailable(@"keyboard")),@"unicode":@(AGInputAvailable(@"unicode")),@"capture":@(capture),@"video":@(capture),@"launchApp":@([workspace respondsToSelector:NSSelectorFromString(@"openApplicationWithBundleID:")]),@"foregroundApp":@((BOOL)(AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier") != NULL)),@"lockScreen":@((BOOL)(AGSymbol("SBSLockDevice") != NULL))});
+                    return AGJSON(@{@"touch":@(AGInputAvailable(@"touch")),@"keyboard":@(AGInputAvailable(@"keyboard")),@"unicode":@(AGInputAvailable(@"unicode")),@"capture":@(capture),@"video":@(capture),@"launchApp":@([workspace respondsToSelector:NSSelectorFromString(@"openApplicationWithBundleID:")]),@"foregroundApp":@((BOOL)(AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier") != NULL)),@"lockScreen":@((BOOL)(AGSymbol("SBSLockDevice") != NULL)),@"recognition":@(AGRecognitionAvailable()),@"uiacc":@((BOOL)(AGSymbol("AXUIElementCreateApplication") != NULL))});
                 });
             }
             if ([op hasPrefix:@"device."]) return AGDevice(op,args);
@@ -118,6 +118,7 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
             if ([op hasPrefix:@"hud."]) return AGOverlay(op,args);
             if ([op hasPrefix:@"console."]) return AGOverlay(op,args);
             if ([op hasPrefix:@"apkctl."]) return AGAPKCtl(op,args);
+            if ([op hasPrefix:@"ppocr."] || [op hasPrefix:@"yolo."] || [op hasPrefix:@"dotocr."]) return AGRecognition(op,args);
             if ([op isEqualToString:@"runtime.selftest"]) return AGSelfTest(op,args);
             return AGError(1,[NSString stringWithFormat:@"尚未提供此原生能力: %@", op]);
         } @catch (NSException *ex) {
