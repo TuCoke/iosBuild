@@ -60,6 +60,7 @@ struct ContentView: View {
 
             HStack(spacing: 8) {
                 Button("能力探测") { callCapabilities() }
+                Button("自检") { callSelfTest() }
                 Button("设备信息") { callDeviceInfo() }
                 Button("截图") { callScreenshot() }
             }
@@ -112,6 +113,12 @@ struct ContentView: View {
 
     private func callCapabilities() {
         append("capabilities → \(AgovBridge.invoke("capabilities", "{}"))")
+    }
+
+    /// 自检：真投一次点击 + 真抓一帧，把"提交结果"和"可观测结果"分开报。
+    /// 与"能力探测"的区别：能力探测只看符号在不在，自检看做了之后有没有反应。
+    private func callSelfTest() {
+        append("runtime.selftest → \(AgovBridge.invoke("runtime.selftest", "{\"x\":0.5,\"y\":0.5}"))")
     }
 
     private func callDeviceInfo() {

@@ -176,21 +176,75 @@ jobs:
             exit "${status}"
           fi
 
-      - name: 打成未签名 ipa
+      - name: 安装打包工具（ldid / dpkg）
+        run: |
+          set +e
+          brew install ldid 2>&1 | tail -5
+          brew install dpkg 2>&1 | tail -5
+          command -v ldid   && ldid -v 2>&1 | head -2
+          command -v dpkg-deb && dpkg-deb --version | head -1
+          echo "（缺哪个都继续：ldid 缺了就退化成 codesign）"
+
+      - name: 注入 entitlements（platform-application 等 970 行权限）
         run: |
           set -euo pipefail
           APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
           [ -d "${APP}" ] || { echo "::error::没有找到构建产物 ${APP}"; ls -R host/ios/build/Build/Products || true; exit 1; }
+          # 1) 把 entitlements 放进包内：TrollStore 安装时会读取它再签名
+          cp host/ios/entitlements.plist "${APP}/entitlements.plist"
+          # 2) ldif 在就 ldid -S，否则退化成 codesign（两者都能把 entitlements 嵌进签名）
+          if command -v ldid >/dev/null 2>&1; then
+            ldid -Sentitlements.plist "${APP}/AgovHost"
+            echo "签名方式: ldid -S"
+          else
+            codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}"
+            echo "签名方式: codesign ad-hoc"
+          fi
+          # 3) 回读校验：签名里到底有没有 platform-application
+          codesign -d --entitlements :- "${APP}" 2>/dev/null | head -30 || true
+
+      - name: 打成 ipa（含 entitlements）
+        run: |
+          set -euo pipefail
+          APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
           rm -rf out && mkdir -p out/Payload
           cp -R "${APP}" out/Payload/
-          ( cd out && zip -qry AgovHost-unsigned.ipa Payload )
-          ls -lh out/AgovHost-unsigned.ipa
+          ( cd out && zip -qry AgovHost.ipa Payload )
+          ls -lh out/AgovHost.ipa
+          unzip -l out/AgovHost.ipa | head -12
 
-      - name: 上传 ipa
+      - name: 打成 deb（越狱机直装）
+        run: |
+          set -euo pipefail
+          APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
+          if ! command -v dpkg-deb >/dev/null 2>&1; then
+            echo "::warning::没有 dpkg-deb，跳过 deb（ipa 仍然可用）"
+            exit 0
+          fi
+          ROOT="debroot"
+          rm -rf "${ROOT}"
+          mkdir -p "${ROOT}/DEBIAN" "${ROOT}/Applications"
+          cp -R "${APP}" "${ROOT}/Applications/"
+          cat > "${ROOT}/DEBIAN/control" <<'CONTROL'
+          Package: dev.autogov.host
+          Name: AgovHost
+          Version: 0.1.0
+          Architecture: iphoneos-arm64
+          Description: AutoGo 兼容的 iOS 自动化宿主（诊断版）
+          Maintainer: autogov
+          Section: Applications
+          CONTROL
+          dpkg-deb -b --root-owner-group "${ROOT}" out/AgovHost.deb
+          ls -lh out/AgovHost.deb
+
+      - name: 上传 ipa 与 deb
         uses: actions/upload-artifact@v4
         with:
-          name: AgovHost-unsigned-ipa
-          path: out/AgovHost-unsigned.ipa
+          name: AgovHost-signed
+          path: |
+            out/AgovHost.ipa
+            out/AgovHost.deb
+          if-no-files-found: warn
           retention-days: 14
 
   # ── 3. 模拟器冒烟：启动 + 截图 ───────────────────────────────────────

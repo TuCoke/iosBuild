@@ -132,6 +132,13 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(v)
 
+	case "runtime.selftest":
+		v, err := device.SelfTest(ctx, num(args, "x", 0.5), num(args, "y", 0.5))
+		if err != nil {
+			return fail(err)
+		}
+		return okData(v)
+
 	case "motion.tap":
 		if err := motion.Tap(ctx, num(args, "x", 0.5), num(args, "y", 0.5)); err != nil {
 			return fail(err)
