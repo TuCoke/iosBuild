@@ -245,6 +245,9 @@ jobs:
           #   先用 c-archive 产出 .a，再用 clang -dynamiclib 把它包成 dylib。
           # 导出符号不变（agov_ios_invoke / agov_ios_free），宿主照旧 dlopen。
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
+          # CXX 必须显式指向 iOS/simulator 的 clang++：cgo 编 .mm（ag_rec / imgui_overlay）靠它，
+          # 缺省会退回 g++，.mm 直接被跳过 → 链接期报 _AGRecognition 未定义。
+          export CXX="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
@@ -327,6 +330,9 @@ jobs:
           mkdir -p web/frpc/dist
           [ -f web/frpc/dist/index.html ] || echo '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
+          # CXX 必须显式指向 iOS/simulator 的 clang++：cgo 编 .mm（ag_rec / imgui_overlay）靠它，
+          # 缺省会退回 g++，.mm 直接被跳过 → 链接期报 _AGRecognition 未定义。
+          export CXX="${CC_SIM}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
