@@ -210,9 +210,9 @@ jobs:
         run: |
           set -euo pipefail
           IMGUI=host/ios/third_party/imgui
-          # 注意：imgui.cpp 会 #include "imgui_internal.h"，缺它编不过（踩过一次）
-          [ -f "/imgui_internal.h" ] || { echo "::error::缺少 imgui_internal.h"; exit 1; }
           if [ ! -d "${IMGUI}" ]; then echo "::warning::没有 imgui 源码，跳过"; exit 0; fi
+          # imgui.cpp 会 #include "imgui_internal.h"，缺它编不过（踩过一次）
+          [ -f "${IMGUI}/imgui_internal.h" ] || { echo "::error::缺少 imgui_internal.h"; exit 1; }
           SDK_DIR=$(xcrun --sdk iphoneos --show-sdk-path)
           mkdir -p host/ios/Frameworks/imgui-obj
           for f in imgui imgui_draw imgui_tables imgui_widgets; do
