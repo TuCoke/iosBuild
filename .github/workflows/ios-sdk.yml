@@ -238,9 +238,13 @@ jobs:
             -framework Foundation -framework CoreGraphics -lc++ \
             -o host/ios/Frameworks/libimgui.dylib
           file host/ios/Frameworks/libimgui.dylib
+          # 先把符号表落盘再 grep。
+          # 原因：`nm … | grep -q` 在 pipefail 下会假失败 —— grep -q 命中即退出，
+          # nm 收到 SIGPIPE 报 "IO failure on output stream"，整条管道非 0（踩过一次）。
+          nm -gU host/ios/Frameworks/libimgui.dylib > /tmp/imgui-syms.txt 2>/dev/null || true
           for sym in _igNewFrame _igBegin _igEnd _igTextUnformatted _igSetNextWindowPos _igShowDemoWindow; do
-            nm -gU host/ios/Frameworks/libimgui.dylib | grep -q " ${sym}$" \
-              || { echo "::error::libimgui.dylib 缺少 ${sym}"; exit 1; }
+            grep -q " ${sym}$" /tmp/imgui-syms.txt \
+              || { echo "::error::libimgui.dylib 缺少 ${sym}（共 $(grep -c '' /tmp/imgui-syms.txt) 个符号）"; exit 1; }
           done
           echo "✅ libimgui.dylib 导出 ig*（imgui 1.92.5 + cimgui 1.92.5）"
 
@@ -300,10 +304,12 @@ jobs:
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
           # 断言导出符号真的在（dlsym 失败过两次，所以这里必须校验）
+          # 同样先落盘再 grep：`nm | grep -q` 在 pipefail 下会因 SIGPIPE 假失败
+          nm -gU host/ios/Frameworks/libagovios.dylib > /tmp/agov-syms.txt 2>/dev/null || true
           for sym in _agov_ios_invoke _agov_ios_free _GoMain _AXBootstrap _AXSweepNodesJSON; do
-            if ! nm -gU host/ios/Frameworks/libagovios.dylib | grep -q " $sym$"; then
+            if ! grep -q " $sym$" /tmp/agov-syms.txt; then
               echo "::error::dylib 缺少导出符号 $sym"
-              nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "_agov|_GoMain|_AX" | head -20 || true
+              grep -E "_agov|_GoMain|_AX" /tmp/agov-syms.txt | head -20 || true
               exit 1
             fi
           done
@@ -678,10 +684,12 @@ jobs:
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
           # 断言导出符号真的在（dlsym 失败过两次，所以这里必须校验）
+          # 同样先落盘再 grep：`nm | grep -q` 在 pipefail 下会因 SIGPIPE 假失败
+          nm -gU host/ios/Frameworks/libagovios.dylib > /tmp/agov-syms.txt 2>/dev/null || true
           for sym in _agov_ios_invoke _agov_ios_free _GoMain _AXBootstrap _AXSweepNodesJSON; do
-            if ! nm -gU host/ios/Frameworks/libagovios.dylib | grep -q " $sym$"; then
+            if ! grep -q " $sym$" /tmp/agov-syms.txt; then
               echo "::error::dylib 缺少导出符号 $sym"
-              nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "_agov|_GoMain|_AX" | head -20 || true
+              grep -E "_agov|_GoMain|_AX" /tmp/agov-syms.txt | head -20 || true
               exit 1
             fi
           done
