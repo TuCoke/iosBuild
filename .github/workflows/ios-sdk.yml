@@ -318,6 +318,7 @@ jobs:
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
+            -framework QuartzCore \
             -framework Accelerate -framework Metal -framework MetalKit \
             -framework IOKit -framework NetworkExtension \
             ${OPENCV_FLAGS} \
@@ -715,6 +716,7 @@ jobs:
             -framework Foundation -framework UIKit -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
+            -framework QuartzCore \
             -framework Accelerate -framework Metal -framework MetalKit \
             -framework IOKit -framework NetworkExtension \
             ${OPENCV_FLAGS} \

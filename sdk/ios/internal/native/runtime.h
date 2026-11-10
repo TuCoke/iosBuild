@@ -6,6 +6,14 @@
 #include <math.h>
 #include "bridge.h"
 
+// 【必须包 extern "C"】
+// ag_rec.mm / imgui_overlay.mm 是 ObjC++，按 C++ 规则编。
+// 如果这些声明没有 C 链接，ObjC++ 侧会去找 C++ 修饰过的符号（如 AGJSON(objc_object*)），
+// 而实现（runtime_ios.m 等）导出的是 C 符号 _AGJSON —— 链接期就互相找不到。
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 ag_ios_result AGError(int code, NSString *message);
 ag_ios_result AGData(NSData *data);
 ag_ios_result AGJSON(id object);
@@ -31,3 +39,7 @@ ag_ios_result AGSelfTest(NSString *op, NSDictionary *args);
 // 悬浮层（imgui + Metal）：hud.* / console.* 的实现
 ag_ios_result AGImGuiOverlay(NSString *op, NSDictionary *args);
 BOOL AGImGuiOverlayAvailable(void);
+
+#ifdef __cplusplus
+}
+#endif
