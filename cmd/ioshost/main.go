@@ -34,6 +34,7 @@ import (
 	"autogov1/v2/sdk/ios/device"
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
+	"autogov1/v2/sdk/ios/script"
 )
 
 type reply struct {
@@ -138,6 +139,39 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			return fail(err)
 		}
 		return okData(v)
+
+	case "script.run":
+		source := str(args, "source")
+		builtin := source == ""
+		if builtin {
+			source = script.DemoSource
+		}
+		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
+		res, err := runner.Run(ctx, source)
+		if err != nil {
+			// 失败也把脚本日志带回去：排错主要靠它。
+			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})
+		}
+		return okData(map[string]any{
+			"ok":        true,
+			"builtin":   builtin,
+			"logs":      res.Logs,
+			"result":    res.Value,
+			"elapsedMs": res.Elapsed.Milliseconds(),
+		})
+
+	case "script.remote":
+		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
+		res, err := runner.RunRemote(ctx, script.RemoteOptions{
+			URL:       str(args, "url"),
+			SHA256:    str(args, "sha256"),
+			CacheName: str(args, "name"),
+		})
+		if err != nil {
+			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})
+		}
+		return okData(map[string]any{"ok": true, "logs": res.Logs, "result": res.Value,
+			"elapsedMs": res.Elapsed.Milliseconds()})
 
 	case "motion.tap":
 		if err := motion.Tap(ctx, num(args, "x", 0.5), num(args, "y", 0.5)); err != nil {

@@ -68,6 +68,7 @@ struct ContentView: View {
             .padding(.horizontal, 12)
 
             HStack(spacing: 8) {
+                Button("跑脚本") { runScript() }
                 Button("注入点击(中心)") { injectTap() }
                 Button("注入上滑") { injectSwipe() }
                 Button("清空日志") { log.removeAll() }
@@ -106,6 +107,8 @@ struct ContentView: View {
             // 启动时顺手跑一次自检：这样 CI 截一张图就能看到
             // "真投一次点击 / 真抓一帧"的实际结果，不用人去点按钮。
             callSelfTest()
+            // 启动时也跑一次内置脚本：CI 截图即可验证 yaegi 解释器与热更新链路。
+            runScript()
         }
     }
 
@@ -136,6 +139,13 @@ struct ContentView: View {
             image = UIImage(data: data)
             imageInfo = "\(AgovBridge.lastImageWidth)x\(AgovBridge.lastImageHeight)"
         }
+    }
+
+    /// 跑端上脚本：走 yaegi 解释器，脚本内容来自 App 内置示例。
+    /// 这一步通了，就说明"改脚本不重装"的热更新链路成立。
+    private func runScript() {
+        let r = AgovBridge.invoke("script.run", "{\"name\":\"demo\",\"x\":0.5,\"y\":0.5}")
+        append("script.run → \(String(r.prefix(600)))")
     }
 
     private func injectTap() {
