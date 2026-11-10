@@ -192,3 +192,126 @@ jobs:
           name: AgovHost-unsigned-ipa
           path: out/AgovHost-unsigned.ipa
           retention-days: 14
+
+  # ── 3. 模拟器冒烟：启动 + 截图 ───────────────────────────────────────
+  #
+  # 这一轮的用途只有一个：证明 App 能启动、界面正常、Go↔ObjC 桥接通。
+  # 模拟器里没有 IOHIDEvent / CARenderServer / Accessibility，
+  # 所以 capabilities 会全 false —— 那是预期结果，不是失败。
+  ios-sim:
+    name: 模拟器冒烟（启动 + 截图）
+    needs: ios-sdk
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      OBJC_ARC_FLAG: '-fno-objc-arc'
+      IOS_MIN: '14.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: go.sum
+
+      - name: 选一台可用的 iPhone 模拟器
+        id: sim
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available -j > "${RUNNER_TEMP}/devices.json"
+          UDID=$(python3 - "${RUNNER_TEMP}/devices.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          names, udids = [], []
+          for runtime, devices in data.get("devices", {}).items():
+              if "iOS" not in runtime:
+                  continue
+              for d in devices:
+                  if d.get("isAvailable") and d.get("name", "").startswith("iPhone"):
+                      udids.append(d["udid"]); names.append(runtime.split(".")[-1] + "/" + d["name"])
+          if not udids:
+              sys.exit(1)
+          print(udids[0]); print(" + ".join(names[:3]), file=sys.stderr)
+          PY
+          )
+          [ -n "${UDID}" ] || { echo "::error::runner 上没有可用的 iPhone 模拟器"; xcrun simctl list runtimes; exit 1; }
+          echo "udid=${UDID}" >> "$GITHUB_OUTPUT"
+          echo "选中的模拟器: ${UDID}"
+
+      - name: 解析模拟器 SDK
+        id: simsdk
+        run: |
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          echo "path=${SDK}" >> "$GITHUB_OUTPUT"
+          echo "cc=$(xcrun --sdk iphonesimulator -f clang)" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 xcodegen
+        run: brew install xcodegen
+
+      - name: Go 编模拟器 c-archive
+        env:
+          CGO_ENABLED: '1'
+          GOOS: ios
+          GOARCH: arm64
+          SDK: ${{ steps.simsdk.outputs.path }}
+          CC_SIM: ${{ steps.simsdk.outputs.cc }}
+        run: |
+          set -euo pipefail
+          export CC="${CC_SIM}"
+          export CGO_CFLAGS="-isysroot ${SDK} -mios-simulator-version-min=${IOS_MIN} ${OBJC_ARC_FLAG}"
+          mkdir -p host/ios/GoLib
+          go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
+          ls -l host/ios/GoLib
+
+      - name: 生成 Xcode 工程
+        working-directory: host/ios
+        run: xcodegen generate
+
+      - name: 编 App（模拟器）
+        working-directory: host/ios
+        run: |
+          set -o pipefail
+          set +e
+          xcodebuild -project AgovHost.xcodeproj -scheme AgovHost \
+            -sdk iphonesimulator -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee sim-build.log
+          status=${PIPESTATUS[0]}
+          if [ "${status}" -ne 0 ]; then
+            echo "::group::模拟器编译错误"
+            grep -nE "error:|Undefined symbol|ld: " sim-build.log | head -40 || true
+            echo "::endgroup::"
+            exit "${status}"
+          fi
+
+      - name: 启动模拟器并安装
+        id: run
+        run: |
+          set -euo pipefail
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl boot "${UDID}" 2>/dev/null || true
+          xcrun simctl bootstatus "${UDID}" -b
+          APP=$(find host/ios/build -name 'AgovHost.app' -maxdepth 8 | head -1)
+          [ -d "${APP}" ] || { echo "::error::没找到模拟器产物"; ls -R host/ios/build/Build/Products || true; exit 1; }
+          xcrun simctl install "${UDID}" "${APP}"
+          xcrun simctl launch "${UDID}" dev.autogov.host || true
+          sleep 8
+          xcrun simctl io "${UDID}" screenshot "${RUNNER_TEMP}/sim.png"
+          ls -l "${RUNNER_TEMP}/sim.png"
+
+      - name: 抓日志（失败时用）
+        if: always()
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          xcrun simctl spawn "${UDID}" log show --last 2m --style compact \
+            --predicate 'process == "AgovHost"' 2>/dev/null | tail -60 || true
+
+      - name: 上传截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshot
+          path: ${{ runner.temp }}/sim.png
+          if-no-files-found: warn
+          retention-days: 14
