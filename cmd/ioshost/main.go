@@ -42,6 +42,7 @@ import (
 	"autogov1/v2/sdk/ios/app"
 	"autogov1/v2/sdk/ios/capture"
 	"autogov1/v2/sdk/ios/device"
+	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
 	"autogov1/v2/sdk/ios/script"
@@ -198,6 +199,38 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			return fail(err)
 		}
 		return okData(v)
+
+	case "sdk.status":
+		// 报告 SDK 来源：静态（编进主程序）还是动态（dylib，可热更）。
+		dylib := files.Path("Plugins/libagovios.dylib")
+		return okData(map[string]any{
+			"pluginsDir":  files.Path("Plugins"),
+			"dylibPath":   dylib,
+			"dylibExists": files.Exists(dylib),
+			"dylibBytes":  len(files.ReadBytes(dylib)),
+		})
+
+	case "sdk.install":
+		// 热更入口：把下发的 dylib 落盘到沙盒 Plugins。
+		// 已加载过动态库时 iOS 不允许卸载，需要重启进程才生效 —— 如实返回。
+		b64 := str(args, "base64")
+		if b64 == "" {
+			return fail(contextError("缺少 base64"))
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return fail(err)
+		}
+		if len(raw) < 1024 {
+			return fail(contextError("dylib 太小，不像有效产物"))
+		}
+		files.EnsureDir("Plugins")
+		path := files.Path("Plugins/libagovios.dylib")
+		files.WriteBytes(path, raw)
+		if !files.Exists(path) {
+			return fail(contextError("写入 dylib 失败: " + path))
+		}
+		return okData(map[string]any{"path": path, "bytes": len(raw), "needRestart": true})
 
 	case "localapi.start":
 		port := int(num(args, "port", 18989))

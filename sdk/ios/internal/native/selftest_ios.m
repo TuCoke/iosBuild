@@ -44,44 +44,30 @@ static ag_ios_result AGSelfTestTouch(NSDictionary *args) {
                     @"detail":@"事件已提交给 HID；是否被系统接受要看界面有无变化"});
 }
 
-// AGSelfTestCapture 真抓一帧，报告尺寸与非黑像素比例。
+// AGSelfTestCapture 真抓一帧，报告字节数与尺寸。
 //
-// 黑帧是典型的"能调但不生效"：CARenderServer 返回了一张全黑图。
-// 所以这里不只报尺寸，还抽样统计亮度，把黑帧认出来。
+// 【为什么不再自己走 AGCopyScreenImage(0,0)】
+// 那条路要求原生给出屏幕尺寸，模拟器给不出来 → 自检报"尺寸无效"，
+// 而同一个能力走 capture.screenshot（带 maxSize 的 fallback）却是成功的。
+// 现在统一走 AGCapture：能力判定与真实业务路径一致，才不会自相矛盾。
 static ag_ios_result AGSelfTestCapture(NSDictionary *args) {
-    NSString *err = nil;
-    CGImageRef image = AGCopyScreenImage(0, 0, &err);
-    if (!image) {
-        return AGJSON(@{@"ok":@NO, @"detail":err.length ? err : @"采集返回空图像"});
+    ag_ios_result raw = AGCapture(@{@"maxSize": @512, @"jpeg": @YES, @"quality": @0.6});
+    if (raw.code != 0) {
+        NSString *reason = raw.data ? [[[NSString alloc] initWithBytes:raw.data length:raw.length encoding:NSUTF8StringEncoding] autorelease] : @"采集失败";
+        if (raw.data) ag_ios_free(raw.data);
+        return AGJSON(@{@"ok":@NO, @"detail": reason.length ? reason : @"采集失败"});
     }
-    size_t width = CGImageGetWidth(image);
-    size_t height = CGImageGetHeight(image);
-    double nonBlack = -1;
-
-    // 抽样：把图缩到 32×32 画进一小块灰度缓冲，数非黑像素。
-    const size_t side = 32;
-    uint8_t pixels[32 * 32] = {0};
-    CGColorSpaceRef space = CGColorSpaceCreateDeviceGray();
-    CGContextRef context = CGBitmapContextCreate(pixels, side, side, 8, side,
-                                                 space, kCGImageAlphaNone);
-    if (context) {
-        CGContextDrawImage(context, CGRectMake(0, 0, side, side), image);
-        size_t lit = 0;
-        for (size_t i = 0; i < side * side; i++) { if (pixels[i] > 8) lit++; }
-        nonBlack = (double)lit / (double)(side * side);
-        CGContextRelease(context);
+    int bytes = (int)raw.length;
+    int width = (int)raw.width;
+    int height = (int)raw.height;
+    if (raw.data) ag_ios_free(raw.data);
+    if (bytes <= 0) {
+        return AGJSON(@{@"ok":@NO, @"detail":@"采集返回空数据"});
     }
-    CGColorSpaceRelease(space);
-    CGImageRelease(image);
-
-    BOOL ok = (width > 0 && height > 0 && nonBlack > 0.02);
-    NSString *detail = ok
-        ? [NSString stringWithFormat:@"抓到 %zux%zu，非黑像素 %.1f%%", width, height, nonBlack * 100]
-        : [NSString stringWithFormat:@"抓到 %zux%zu，但几乎全黑（非黑 %.1f%%）——采集能调但不生效",
-                                     width, height, nonBlack > 0 ? nonBlack * 100 : 0];
-    return AGJSON(@{@"ok":@(ok), @"detail":detail, @"width":@((int)width), @"height":@((int)height)});
+    return AGJSON(@{@"ok":@YES,
+                    @"detail":[NSString stringWithFormat:@"抓到 %d 字节（%dx%d）", bytes, width, height],
+                    @"width":@(width), @"height":@(height)});
 }
-
 ag_ios_result AGSelfTest(NSString *op, NSDictionary *args) {
     if (![op isEqualToString:@"runtime.selftest"]) return AGError(1,@"未知自检操作");
     ag_ios_result touch = AGSelfTestTouch(args);

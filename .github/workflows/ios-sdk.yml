@@ -46,6 +46,9 @@ jobs:
           sw_vers; uname -m; xcodebuild -version; go version
           xcrun --sdk iphoneos --show-sdk-path
 
+      - name: 静态自检（precheck）
+        run: go run ./cmd/precheck
+
       - name: 解析 iPhoneOS SDK
         id: sdk
         run: |
@@ -118,6 +121,9 @@ jobs:
         with:
           go-version: '1.25.x'
           cache-dependency-path: go.sum
+
+      - name: 静态自检（precheck）
+        run: go run ./cmd/precheck
 
       - name: 解析 iPhoneOS SDK
         id: sdk
