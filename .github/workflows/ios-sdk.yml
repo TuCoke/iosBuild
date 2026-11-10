@@ -220,7 +220,7 @@ jobs:
           OBJ=host/ios/Frameworks/imgui-obj
           rm -rf "${OBJ}"; mkdir -p "${OBJ}" host/ios/Frameworks
           CXXFLAGS="-O2 -std=c++17 -fno-exceptions -isysroot ${SDK_DIR} -mios-version-min=15.0 -arch arm64 -I ${CIMGUI} -I ${IMGUI} -I ${IMGUI}/backends"
-          for f in imgui imgui_draw imgui_tables imgui_widgets; do
+          for f in imgui imgui_draw imgui_tables imgui_widgets imgui_demo; do
             xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} "${IMGUI}/$f.cpp" -o "${OBJ}/$f.o"
           done
           # cimgui：imgui 的 C API（ig* 那一套，与参考实现导出的符号名一致）
@@ -238,7 +238,7 @@ jobs:
             -framework Foundation -framework CoreGraphics -lc++ \
             -o host/ios/Frameworks/libimgui.dylib
           file host/ios/Frameworks/libimgui.dylib
-          for sym in _igNewFrame _igBegin _igEnd _igTextUnformatted _igSetNextWindowPos; do
+          for sym in _igNewFrame _igBegin _igEnd _igTextUnformatted _igSetNextWindowPos _igShowDemoWindow; do
             nm -gU host/ios/Frameworks/libimgui.dylib | grep -q " ${sym}$" \
               || { echo "::error::libimgui.dylib 缺少 ${sym}"; exit 1; }
           done
@@ -629,7 +629,7 @@ jobs:
           OBJ=host/ios/Frameworks/imgui-obj-sim
           rm -rf "${OBJ}"; mkdir -p "${OBJ}" host/ios/Frameworks-sim
           CXXFLAGS="-O2 -std=c++17 -fno-exceptions -isysroot ${SDK_DIR} -mios-simulator-version-min=15.0 -arch ${XCARCH} -I ${CIMGUI} -I ${IMGUI} -I ${IMGUI}/backends"
-          for f in imgui imgui_draw imgui_tables imgui_widgets; do
+          for f in imgui imgui_draw imgui_tables imgui_widgets imgui_demo; do
             xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} "${IMGUI}/$f.cpp" -o "${OBJ}/$f.o"
           done
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} "${CIMGUI}/cimgui.cpp" -o "${OBJ}/cimgui.o"
