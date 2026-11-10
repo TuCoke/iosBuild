@@ -144,6 +144,31 @@ jobs:
           go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
           ls -l host/ios/GoLib
 
+      - name: 编译 frpc（内网穿透客户端，GOOS=ios）
+        env:
+          SDK: ${{ steps.sdk.outputs.path }}
+          CC_IOS: ${{ steps.sdk.outputs.cc }}
+        run: |
+          set -euo pipefail
+          echo "::group::拉 frp 源码"
+          git clone --depth 1 --branch v0.61.1 https://github.com/fatedier/frp "${RUNNER_TEMP}/frp"
+          cd "${RUNNER_TEMP}/frp"
+          git log --oneline -1
+          echo "::endgroup::"
+          echo "::group::为 ios/arm64 编译"
+          # frp 的 go.mod 带 replace，只能在其模块内构建；GOOS=ios 又强制要 cgo，
+          # 所以 CC / CGO_CFLAGS / CGO_LDFLAGS 都要指向 iphoneos SDK 与最低版本。
+          export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
+          export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
+          export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
+          go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
+          file "${RUNNER_TEMP}/frpc-ios"
+          ls -lh "${RUNNER_TEMP}/frpc-ios"
+          echo "::endgroup::"
+          mkdir -p "$GITHUB_WORKSPACE/host/ios/Frameworks"
+          cp "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
+          chmod +x "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
+
       - name: 生成 Xcode 工程
         working-directory: host/ios
         run: |
@@ -192,6 +217,19 @@ jobs:
           [ -d "${APP}" ] || { echo "::error::没有找到构建产物 ${APP}"; ls -R host/ios/build/Build/Products || true; exit 1; }
           # 1) 把 entitlements 放进包内：TrollStore 安装时会读取它再签名
           cp host/ios/entitlements.plist "${APP}/entitlements.plist"
+          # frpc 放进包内并单独签名 —— 包内可执行文件不签，posix_spawn 会被系统拒绝。
+          if [ -f host/ios/Frameworks/frpc-ios ]; then
+            cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"
+            chmod +x "${APP}/frpc-ios"
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -Sentitlements.plist "${APP}/frpc-ios"
+            else
+              codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/frpc-ios"
+            fi
+            echo "frpc-ios 已放进包内并签名"; ls -lh "${APP}/frpc-ios"
+          else
+            echo "::warning::没有 frpc-ios，跳过（隧道功能不可用）"
+          fi
           # 2) ldif 在就 ldid -S，否则退化成 codesign（两者都能把 entitlements 嵌进签名）
           if command -v ldid >/dev/null 2>&1; then
             ldid -Sentitlements.plist "${APP}/AgovHost"

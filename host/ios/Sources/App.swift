@@ -68,6 +68,14 @@ struct ContentView: View {
             .padding(.horizontal, 12)
 
             HStack(spacing: 8) {
+                Button("启动穿透") { startTunnel() }
+                Button("停止穿透") { stopTunnel() }
+                Button("隧道状态") { tunnelStatus() }
+            }
+            .buttonStyle(BorderlessButtonStyle())
+            .padding(.horizontal, 12)
+
+            HStack(spacing: 8) {
                 Button("跑脚本") { runScript() }
                 Button("注入点击(中心)") { injectTap() }
                 Button("注入上滑") { injectSwipe() }
@@ -109,6 +117,8 @@ struct ContentView: View {
             callSelfTest()
             // 启动时也跑一次内置脚本：CI 截图即可验证 yaegi 解释器与热更新链路。
             runScript()
+            // 本地 API：隧道要用它做被映射的本地端口，也供服务端探活。
+            append("localapi.start → \(AgovBridge.invoke("localapi.start", "{\"port\":18989}"))")
         }
     }
 
@@ -146,6 +156,23 @@ struct ContentView: View {
     private func runScript() {
         let r = AgovBridge.invoke("script.run", "{\"name\":\"demo\",\"x\":0.5,\"y\":0.5}")
         append("script.run → \(String(r.prefix(600)))")
+    }
+
+    /// frps 地址：诊断版先写死，接入真实环境时改成配置项。
+    private let frpsHost = "frps.example.com"
+
+    /// 启动内网穿透：把本地 18989 映射到 frps 上。
+    private func startTunnel() {
+        let json = "{\"server\":\"\(frpsHost)\",\"serverPort\":7000,\"localPort\":18989,\"name\":\"agov-demo\"}"
+        append("tunnel.start → \(String(AgovBridge.invoke("tunnel.start", json).prefix(400)))")
+    }
+
+    private func stopTunnel() {
+        append("tunnel.stop → \(String(AgovBridge.invoke("tunnel.stop", "{}").prefix(200)))")
+    }
+
+    private func tunnelStatus() {
+        append("tunnel.status → \(String(AgovBridge.invoke("tunnel.status", "{}").prefix(400)))")
     }
 
     private func injectTap() {

@@ -13,6 +13,8 @@
 #include <sys/resource.h>
 #include <spawn.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <mach-o/dyld.h>
 #include <mach/mach_time.h>
 #include <unistd.h>
@@ -175,6 +177,70 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
         });
         if (wantsInput) return AGJSON(@{@"text":text ?: @"",@"confirm":@(confirmed),@"index":@(index)});
         return AGJSON(@{@"index":@(index)});
+    }
+
+    // ---- 后台进程（frpc 这类常驻进程）----
+    //
+    // 与 utils.exec 的区别：exec 会 waitpid 阻塞到子进程退出，
+    // 常驻进程必须"启动即返回 pid"，所以这里单独一条：
+    //   utils.spawn → posix_spawn + 把 stdout/stderr 重定向到日志文件，返回 pid
+    //   utils.kill  → 先 SIGTERM，宽限期后再 SIGKILL
+    //   utils.alive → kill(pid,0) 判断存活
+    if ([op isEqualToString:@"utils.spawn"]) {
+        NSString *path = args[@"path"];
+        if (path.length == 0) return AGError(2,@"缺少可执行文件路径");
+        if (![[NSFileManager defaultManager] isExecutableFileAtPath:path]) {
+            return AGError(3,@"文件不存在或不可执行");
+        }
+        NSArray *extra = args[@"args"];
+        NSMutableArray *argvList = [NSMutableArray arrayWithObject:path];
+        if ([extra isKindOfClass:[NSArray class]]) {
+            for (id item in extra) [argvList addObject:[item description]];
+        }
+        char **argv = calloc(argvList.count + 1, sizeof(char *));
+        for (NSUInteger i = 0; i < argvList.count; i++) argv[i] = strdup([argvList[i] UTF8String]);
+
+        // 日志重定向：宿主只读这个文件就能看到 frpc 的输出。
+        NSString *logPath = args[@"logPath"];
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        int logFD = -1;
+        if (logPath.length) {
+            logFD = open(logPath.UTF8String, O_CREAT | O_WRONLY | O_APPEND, 0644);
+            if (logFD >= 0) {
+                posix_spawn_file_actions_adddup2(&actions, logFD, STDOUT_FILENO);
+                posix_spawn_file_actions_adddup2(&actions, logFD, STDERR_FILENO);
+            }
+        }
+
+        pid_t child = 0;
+        int rc = posix_spawn(&child, path.UTF8String, &actions, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&actions);
+        if (logFD >= 0) close(logFD);
+        for (NSUInteger i = 0; i < argvList.count; i++) free(argv[i]);
+        free(argv);
+        if (rc != 0) return AGError(3,[NSString stringWithFormat:@"系统拒绝启动进程(rc=%d)，需要 platform-application / run-unsigned-code 权限", rc]);
+        return AGJSON(@{@"pid":@((int)child)});
+    }
+    if ([op isEqualToString:@"utils.kill"]) {
+        int pid = [args[@"pid"] intValue];
+        if (pid <= 0) return AGError(2,@"pid 无效");
+        if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
+            return AGError(3,[NSString stringWithFormat:@"发送终止信号失败(errno=%d)", errno]);
+        }
+        // 给 300ms 收尾时间；还活着就强杀。
+        for (int i = 0; i < 30; i++) {
+            if (kill(pid, 0) != 0) return AGJSON(@{@"ok":@YES, @"killed":@YES, @"forced":@NO});
+            usleep(10 * 1000);
+        }
+        kill(pid, SIGKILL);
+        return AGJSON(@{@"ok":@YES, @"killed":@YES, @"forced":@YES});
+    }
+    if ([op isEqualToString:@"utils.alive"]) {
+        int pid = [args[@"pid"] intValue];
+        if (pid <= 0) return AGJSON(@{@"alive":@NO});
+        BOOL alive = (kill(pid, 0) == 0) || (errno == EPERM);
+        return AGJSON(@{@"alive":@(alive)});
     }
 
     if ([op isEqualToString:@"utils.exec"]) {

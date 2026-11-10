@@ -26,6 +26,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -35,6 +40,7 @@ import (
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/tunnel"
 )
 
 type reply struct {
@@ -102,6 +108,49 @@ func boolean(m map[string]any, key string) bool {
 }
 
 //export agov_ios_invoke
+// ---- 本地 API ----
+//
+// 宿主在 127.0.0.1 上开一个小 HTTP 服务，两个用途：
+//   1. 隧道有东西可暴露（frpc 需要一个 localPort）
+//   2. 服务端经隧道探活，确认设备在线（GET /status）
+//
+// 只监听 127.0.0.1，不监听 0.0.0.0 —— 避免局域网里的人直接连上来。
+var (
+	localAPIMu      sync.Mutex
+	localAPIServer  *http.Server
+	localAPIPort    int
+	localAPIStarted time.Time
+)
+
+func startLocalAPI(port int) error {
+	if port <= 0 {
+		port = 18989
+	}
+	localAPIMu.Lock()
+	defer localAPIMu.Unlock()
+	if localAPIServer != nil {
+		return nil
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"ok":true,"pid":%d,"port":%d,"uptimeSec":%d}`,
+			os.Getpid(), port, int(time.Since(localAPIStarted).Seconds()))
+	})
+	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "pong")
+	})
+	server := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Handler: mux}
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return fmt.Errorf("本地 API 监听失败: %w", err)
+	}
+	localAPIServer = server
+	localAPIPort = port
+	localAPIStarted = time.Now()
+	go func() { _ = server.Serve(listener) }()
+	return nil
+}
 func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	if method == nil {
 		return fail(contextError("缺少方法名"))
@@ -139,6 +188,45 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			return fail(err)
 		}
 		return okData(v)
+
+	case "localapi.start":
+		port := int(num(args, "port", 18989))
+		if err := startLocalAPI(port); err != nil {
+			return fail(err)
+		}
+		return okData(map[string]any{"port": port, "url": fmt.Sprintf("http://127.0.0.1:%d/status", port)})
+
+	case "tunnel.start":
+		cfg := tunnel.Config{
+			Server:     str(args, "server"),
+			ServerPort: int(num(args, "serverPort", 7000)),
+			Token:      str(args, "token"),
+			ProxyName:  str(args, "name"),
+			LocalPort:  int(num(args, "localPort", 18989)),
+			RemotePort: int(num(args, "remotePort", 0)),
+			Type:       str(args, "type"),
+			DisableTLS: boolean(args, "disableTls"),
+		}
+		st, err := tunnel.Start(ctx, cfg)
+		if err != nil {
+			return okData(map[string]any{"ok": false, "error": err.Error(), "status": st,
+				"logs": tunnel.Logs(20)})
+		}
+		return okData(map[string]any{"ok": true, "status": st, "logs": tunnel.Logs(20)})
+
+	case "tunnel.stop":
+		st, err := tunnel.Stop(ctx)
+		if err != nil {
+			return okData(map[string]any{"ok": false, "error": err.Error(), "status": st})
+		}
+		return okData(map[string]any{"ok": true, "status": st})
+
+	case "tunnel.status":
+		st := tunnel.Query(ctx)
+		return okData(map[string]any{"status": st, "logs": tunnel.Logs(30)})
+
+	case "tunnel.logs":
+		return okData(map[string]any{"logs": tunnel.Logs(int(num(args, "lines", 50)))})
 
 	case "script.run":
 		source := str(args, "source")

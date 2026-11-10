@@ -36,6 +36,14 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
         return r;
     }
 
+    // app 包路径：给"执行 app 包内附带的可执行文件"用（例如 frpc-ios）。
+    // 用 NSBundle 而不是猜路径：iOS 上包路径带 UUID，猜必错。
+    if ([op isEqualToString:@"app.bundle_dir"]) {
+        NSString *dir = [[NSBundle mainBundle] bundlePath];
+        if (dir.length == 0) return AGError(3,@"拿不到 app 包路径");
+        return AGJSON(@{@"path":dir});
+    }
+
     // 自身包名不需要任何私有入口。
     if ([op isEqualToString:@"app.self"]) {
         NSString *selfID = [[NSBundle mainBundle] bundleIdentifier];
