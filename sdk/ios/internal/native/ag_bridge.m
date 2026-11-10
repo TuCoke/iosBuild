@@ -274,6 +274,11 @@ int BridgeConsoleLog(int h, const char *text) {
 }
 int BridgeConsoleClear(int h) { return AGBridgeInt(@"console.clear", @{@"id": @(h)}, @"ok") >= 0 ? 0 : -1; }
 int BridgeConsoleSetPosition(int h, int x, int y, int w, int hgt) { return BridgeConsoleShow(h, x, y, w, hgt); }
+// ConsoleSetSize：只改宽高、保持原位置。原生 console.show 是"位置+尺寸一起给"，
+// 所以这里只传 width/height，x/y 交给原生沿用当前值。
+int BridgeConsoleSetSize(int h, int w, int hgt) {
+    return AGBridgeInt(@"console.show", @{@"id": @(h), @"width": @(w), @"height": @(hgt)}, @"ok") >= 0 ? 0 : -1;
+}
 int BridgeConsoleSetFontSize(int h, int size) {
     return AGBridgeInt(@"console.show", @{@"id": @(h), @"textSize": @(size)}, @"ok") >= 0 ? 0 : -1;
 }

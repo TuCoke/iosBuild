@@ -99,6 +99,7 @@ int  BridgeConsoleIsVisible(int h);
 int  BridgeConsoleLog(int h, const char *text);
 int  BridgeConsoleClear(int h);
 int  BridgeConsoleSetPosition(int h, int x, int y, int w, int hgt);
+int  BridgeConsoleSetSize(int h, int w, int hgt);
 int  BridgeConsoleSetFontSize(int h, int size);
 int  BridgeConsoleSetBgColor(int h, const char *hex);
 

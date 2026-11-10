@@ -197,8 +197,9 @@ func checkBridgeParity() {
 		fail("读不到 ag_bridge.h/.m")
 		return
 	}
-	declRe := regexp.MustCompile(`(?m)^\s*(?:int|void|char|double|long long)\s+(Bridge\w+)\(`)
-	defRe := regexp.MustCompile(`(?m)^(?:int|void|char|double|long long)\s+(Bridge\w+)\(`)
+	// 注意 char *BridgeXxx 里的星号：漏了它会把 11 个返回字符串的函数漏掉。
+	defRe := regexp.MustCompile(`(?m)^(?:int|void|char|double|long long)\s*\*?\s*(Bridge\w+)\s*\(`)
+	declRe := regexp.MustCompile(`(?m)^\s*(?:int|void|char|double|long long)\s*\*?\s*(Bridge\w+)\s*\(`)
 	decl := map[string]bool{}
 	def := map[string]bool{}
 	for _, x := range declRe.FindAllStringSubmatch(string(h), -1) {
