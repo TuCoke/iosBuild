@@ -100,7 +100,11 @@ func probeList() []opProbe {
 		{"system.memory", map[string]any{"pid": 1}, false},
 		{"system.cpu", map[string]any{"pid": 1}, false},
 		{"utils.toast", map[string]any{"message": "", "duration": 1}, false},
-		{"utils.alert", map[string]any{"title": "", "content": "", "buttons": []any{}}, false},
+		// utils.alert 会真的弹 UIAlertController：自检跑完会留一个模态框挡在界面上，
+		// 后面的探针、截图全被它盖住（模拟器截图里就出现过空白"确定"弹窗）。
+		// 它和 device.reboot 一样"会改状态"，自检不真调。
+		{"utils.alert", map[string]any{"title": "", "content": "", "buttons": []any{}}, true},
+		{"utils.input_alert", map[string]any{"title": "", "content": "", "placeholder": ""}, true},
 		{"utils.alive", map[string]any{"pid": 1}, false},
 		{"utils.kill", map[string]any{"pid": -1}, false},
 		{"utils.spawn", map[string]any{"path": ""}, false},  // 缺参
