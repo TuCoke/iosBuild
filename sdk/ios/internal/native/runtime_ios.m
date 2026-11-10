@@ -110,6 +110,18 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
             if ([op hasPrefix:@"app."]) return AGApplication(op,args);
             if ([op hasPrefix:@"motion."] || [op hasPrefix:@"ime."]) return AGInput(op,args);
             if ([op isEqualToString:@"capture.image"]) return AGCapture(args);
+            // capture.json：把同一帧包成 base64 JSON，给"只能吃 JSON 的调用方"（脚本 api.Call）用。
+            // capture.image 返回二进制，api.Call 解析 JSON 会报 invalid character —— 踩过。
+            if ([op isEqualToString:@"capture.json"]) {
+                ag_ios_result raw = AGCapture(args);
+                if (raw.code != 0) return raw;
+                NSData *data = raw.data ? [NSData dataWithBytes:raw.data length:raw.length] : [NSData data];
+                if (raw.data) ag_ios_free(raw.data);
+                return AGJSON(@{@"base64": [data base64EncodedStringWithOptions:0],
+                                @"bytes": @(data.length),
+                                @"width": @((int)raw.width),
+                                @"height": @((int)raw.height)});
+            }
             if ([op isEqualToString:@"capture.release"]) { AGReleaseCaptureSurface(); return AGJSON(@{}); }
             if ([op hasPrefix:@"video."]) return AGVideo(op,args);
             if ([op hasPrefix:@"system."]) return AGSystem(op,args);

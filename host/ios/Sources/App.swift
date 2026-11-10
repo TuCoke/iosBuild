@@ -163,6 +163,12 @@ struct ContentView: View {
         if let data = AgovBridge.lastImageData {
             image = UIImage(data: data)
             imageInfo = "\(AgovBridge.lastImageWidth)x\(AgovBridge.lastImageHeight)"
+            // 落盘到 Documents：CI 用 simctl get_app_container 取这个目录当 artifact，
+            // 这样"图"和"日志"能一起下载，不用挤在截图里看。
+            let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("capture.jpg")
+            try? data.write(to: url)
+            append("截图已保存 \(data.count) 字节 → \(url.path)")
         }
     }
 

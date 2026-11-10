@@ -29,10 +29,13 @@ func main() {
 	}
 
 	// 2) 抓一帧（原生 capture.image，返回的是图片数据）
-	if _, err := api.Call("capture.image", map[string]any{"maxSize": 512}); err != nil {
+	shot, err := api.Call("capture.json", map[string]any{"maxSize": 512, "jpeg": true, "quality": 0.6})
+	if err != nil {
 		api.Log("采集失败:", err)
 	} else {
-		api.Log("采集成功")
+		// 只打字节数与尺寸，不打 base64（日志会爆）
+		api.Log(fmt.Sprintf("采集成功: %v 字节 %vx%v",
+			shot["bytes"], shot["width"], shot["height"]))
 	}
 
 	// 3) 投一次点击（走 motion.frame，按下+抬起在原生里完成）
