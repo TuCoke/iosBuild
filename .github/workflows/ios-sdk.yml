@@ -618,6 +618,30 @@ jobs:
       - name: 安装 xcodegen
         run: brew install xcodegen
 
+      - name: 编 libimgui.dylib（模拟器版）
+        run: |
+          set -euo pipefail
+          CIMGUI=host/ios/third_party/cimgui
+          IMGUI="${CIMGUI}/imgui"
+          [ -f "${CIMGUI}/cimgui.cpp" ] || { echo "::error::缺少 cimgui 源码"; exit 1; }
+          SDK_DIR=$(xcrun --sdk iphonesimulator --show-sdk-path)
+          XCARCH=${{ steps.arch.outputs.xcarch }}
+          OBJ=host/ios/Frameworks/imgui-obj-sim
+          rm -rf "${OBJ}"; mkdir -p "${OBJ}" host/ios/Frameworks-sim
+          CXXFLAGS="-O2 -std=c++17 -fno-exceptions -isysroot ${SDK_DIR} -mios-simulator-version-min=15.0 -arch ${XCARCH} -I ${CIMGUI} -I ${IMGUI} -I ${IMGUI}/backends"
+          for f in imgui imgui_draw imgui_tables imgui_widgets; do
+            xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} "${IMGUI}/$f.cpp" -o "${OBJ}/$f.o"
+          done
+          xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} "${CIMGUI}/cimgui.cpp" -o "${OBJ}/cimgui.o"
+          xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_bridge.cpp" -o "${OBJ}/ag_bridge.o"
+          xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -fobjc-arc "${IMGUI}/backends/imgui_impl_metal.mm" -o "${OBJ}/imgui_impl_metal.o"
+          xcrun --sdk iphonesimulator clang++ -dynamiclib -arch "${XCARCH}" -isysroot "${SDK_DIR}" \
+            -mios-simulator-version-min=15.0 -install_name @rpath/libimgui.dylib \
+            "${OBJ}"/*.o -framework Metal -framework MetalKit -framework UIKit \
+            -framework Foundation -framework CoreGraphics -lc++ \
+            -o host/ios/Frameworks/libimgui.dylib
+          file host/ios/Frameworks/libimgui.dylib
+
       - name: Go 出模拟器 dylib（归档 + clang -dynamiclib）
         env:
           SDK: ${{ steps.simsdk.outputs.path }}
@@ -701,8 +725,13 @@ jobs:
           if [ -f host/ios/Frameworks/libagovios.dylib ]; then
             cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
             echo "已放入 libagovios.dylib"
+          fi
+          # imgui：libagovios 的 install_name 是 @rpath/libimgui.dylib，必须和它同目录
+          if [ -f host/ios/Frameworks/libimgui.dylib ]; then
+            cp host/ios/Frameworks/libimgui.dylib "${APP}/libimgui.dylib"
+            echo "已放入 libimgui.dylib（模拟器版）"
           else
-            echo "::warning::没有模拟器版 dylib"
+            echo "::warning::没有模拟器版 libimgui.dylib，dlopen 会失败"
           fi
           if [ -f host/ios/Runtime/app ]; then
             mkdir -p "${APP}/Runtime"; cp host/ios/Runtime/app "${APP}/Runtime/app"; chmod +x "${APP}/Runtime/app"

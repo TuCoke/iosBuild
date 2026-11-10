@@ -6,7 +6,14 @@
 //
 // 注意：cimgui 内部按 "./imgui/..." 引用 imgui，所以 -I 必须包含
 // host/ios/third_party/cimgui（cimgui.h 所在）和 cimgui/imgui（imgui.h 所在）。
+//
+// 【顺序很重要】必须先 include imgui.h + imgui_internal.h，再 include cimgui.h。
+// cimgui.h 里有一批内部类型（ImTextureData / ImGuiTable / ImPool<> / ImSpan<> 等），
+// 它们只在 imgui_internal.h 里定义；只含 cimgui.h 会报一堆
+// "unknown type name 'ImTextureData'"。cimgui.cpp 自己也是这个顺序。
 #include "ag_bridge.h"
+#include "imgui.h"
+#include "imgui_internal.h"
 #include "cimgui.h"
 
 extern "C" {
