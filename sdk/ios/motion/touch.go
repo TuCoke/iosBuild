@@ -139,6 +139,25 @@ func Swipe2(x1, y1, x2, y2, duration, fingerID int) {
 	swipeLine(x1, y1, x2, y2, duration, fingerID, true)
 }
 
+// trajectory 计算二次贝塞尔轨迹上的点（纯函数，可单测）。
+//
+// 抽出来的理由：轨迹生成是整个滑动里唯一需要"算对"的部分，
+// 之前它和 TouchDown/Move/Up 混在一起，只能靠真机看效果，没法测。
+func trajectory(x1, y1, x2, y2 int, frames int, cx, cy float64) [][2]int {
+	if frames < 2 {
+		frames = 2
+	}
+	pts := make([][2]int, 0, frames)
+	for i := 1; i <= frames; i++ {
+		t := float64(i) / float64(frames)
+		u := 1 - t
+		px := u*u*float64(x1) + 2*u*t*cx + t*t*float64(x2)
+		py := u*u*float64(y1) + 2*u*t*cy + t*t*float64(y2)
+		pts = append(pts, [2]int{int(px), int(py)})
+	}
+	return pts
+}
+
 func swipeLine(x1, y1, x2, y2, duration, fingerID int, curved bool) {
 	if duration <= 0 {
 		duration = 400
@@ -162,20 +181,17 @@ func swipeLine(x1, y1, x2, y2, duration, fingerID int, curved bool) {
 		cy += dx / length * offset
 	}
 	TouchDown(x1, y1, fingerID)
-	for i := 1; i <= frames; i++ {
-		t := float64(i) / float64(frames)
-		var px, py float64
-		if curved {
-			// 二次贝塞尔：B(t) = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
-			u := 1 - t
-			px = u*u*float64(x1) + 2*u*t*cx + t*t*float64(x2)
-			py = u*u*float64(y1) + 2*u*t*cy + t*t*float64(y2)
-		} else {
-			px = float64(x1) + dx*t
-			py = float64(y1) + dy*t
+	if curved {
+		for _, p := range trajectory(x1, y1, x2, y2, frames, cx, cy) {
+			TouchMove(p[0], p[1], fingerID)
+			time.Sleep(time.Duration(stepMs) * time.Millisecond)
 		}
-		TouchMove(int(px), int(py), fingerID)
-		time.Sleep(time.Duration(stepMs) * time.Millisecond)
+	} else {
+		for i := 1; i <= frames; i++ {
+			t := float64(i) / float64(frames)
+			TouchMove(int(float64(x1)+dx*t), int(float64(y1)+dy*t), fingerID)
+			time.Sleep(time.Duration(stepMs) * time.Millisecond)
+		}
 	}
 	TouchUp(x2, y2, fingerID)
 }
