@@ -343,7 +343,13 @@ jobs:
           echo "✅ 五个入口都导出了"
           # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
           # 然后通过 http://127.0.0.1:8989/{status,task?cmd=} 通信。
+          #
+          # 它 import 了 sdk/ios/script（解释器）→ 间接拉进 native 层，所以链接时要带：
+          #   host/ios/Frameworks/libagovnative.a  （AGRecognition / AGImGuiOverlay 的定义）
+          #   -L host/ios/Frameworks -limgui        （imgui_overlay.o 调 ImGui::）
+          #   -Wl,-rpath,@executable_path           （libimgui.dylib 与 app 同在 Runtime/）
           mkdir -p host/ios/Runtime
+          export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
           go build -buildmode=exe -trimpath -ldflags "-s -w" \
             -o host/ios/Runtime/app ./cmd/runtimeapp
           file host/ios/Runtime/app
@@ -740,6 +746,7 @@ jobs:
           done
           echo "✅ 五个入口都导出了"
           mkdir -p host/ios/Runtime
+          export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
           go build -buildmode=exe -trimpath -ldflags "-s -w" -o host/ios/Runtime/app ./cmd/runtimeapp || true
           ls -lh host/ios/Runtime/app 2>/dev/null || echo "（Runtime/app 未生成，模拟器里任务隔离不可用）"
           ls -lh host/ios/Frameworks/libagovios.dylib
