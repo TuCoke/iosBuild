@@ -274,62 +274,38 @@ jobs:
           command -v dpkg-deb && dpkg-deb --version | head -1
           echo "（缺哪个都继续：ldid 缺了就退化成 codesign）"
 
-      - name: 注入 entitlements（platform-application 等 970 行权限）
+      - name: 注入 entitlements（签名用 codesign，不用 ldid）
         run: |
           set -euo pipefail
           APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
-          [ -d "${APP}" ] || { echo "::error::没有找到构建产物 ${APP}"; ls -R host/ios/build/Build/Products || true; exit 1; }
-          # 1) 把 entitlements 放进包内：TrollStore 安装时会读取它再签名
-          cp host/ios/entitlements.plist "${APP}/entitlements.plist"
-          # frpc 放进包内并单独签名 —— 包内可执行文件不签，posix_spawn 会被系统拒绝。
-          # 任务执行体：放进包内 Runtime/app（与参考实现同路径），并单独签名
-          if [ -f host/ios/Runtime/app ]; then
-            mkdir -p "${APP}/Runtime"
-            cp host/ios/Runtime/app "${APP}/Runtime/app"
-            chmod +x "${APP}/Runtime/app"
-            if command -v ldid >/dev/null 2>&1; then
-              ldid -S host/ios/entitlements.plist "${APP}/Runtime/app"
-            else
-              codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/Runtime/app"
-            fi
-            echo "Runtime/app 已放进包内并签名"; ls -lh "${APP}/Runtime/app"
-          else
-            echo "::warning::没有 Runtime/app，任务隔离不可用（脚本仍在宿主进程内跑）"
-          fi
-          # SDK 动态库：放在包内，宿主优先加载它；签名后才能在设备上 dlopen
-          if [ -f host/ios/Frameworks/libagovios.dylib ]; then
-            cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
-            if command -v ldid >/dev/null 2>&1; then
-              ldid -S host/ios/entitlements.plist "${APP}/libagovios.dylib"
-            else
-              codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/libagovios.dylib"
-            fi
-            echo "libagovios.dylib 已放进包内并签名"; ls -lh "${APP}/libagovios.dylib"
-          else
-            echo "::warning::没有 libagovios.dylib，热更能力不可用（仍可用静态 SDK）"
-          fi
-          if [ -f host/ios/Frameworks/frpc-ios ]; then
-            cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"
-            chmod +x "${APP}/frpc-ios"
-            if command -v ldid >/dev/null 2>&1; then
-              ldid -S host/ios/entitlements.plist "${APP}/frpc-ios"
-            else
-              codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/frpc-ios"
-            fi
-            echo "frpc-ios 已放进包内并签名"; ls -lh "${APP}/frpc-ios"
-          else
-            echo "::warning::没有 frpc-ios，跳过（隧道功能不可用）"
-          fi
-          # 2) ldif 在就 ldid -S，否则退化成 codesign（两者都能把 entitlements 嵌进签名）
-          if command -v ldid >/dev/null 2>&1; then
-            ldid -S host/ios/entitlements.plist "${APP}/AgovHost"
-            echo "签名方式: ldid -S"
-          else
-            codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}"
-            echo "签名方式: codesign ad-hoc"
-          fi
-          # 3) 回读校验：签名里到底有没有 platform-application
-          codesign -d --entitlements :- "${APP}" 2>/dev/null | head -30 || true
+          ENT="host/ios/entitlements.plist"
+          [ -d "${APP}" ] || { echo "::error::没有 app 产物"; exit 1; }
+          [ -f "${ENT}" ] || { echo "::error::缺少 ${ENT}"; exit 1; }
+
+          # 为什么不用 ldid：实测 ldid.cpp 在解析我们这份 970 行 entitlements 时
+          # 直接 _assert() 崩掉（errno=2 与 assert false 各一次）。
+          # codesign 的 ad-hoc 签名同样能把 entitlements 嵌进签名，
+          # 且 TrollStore 还会读取包内的 entitlements.plist，两条路都在。
+          sign() {
+            echo "签名 $1"
+            codesign -f -s - --entitlements "${ENT}" "$1"
+          }
+
+          # 1) entitlements 放进包内（TrollStore 安装时会读）
+          cp "${ENT}" "${APP}/entitlements.plist"
+
+          # 2) 先签包内的独立二进制（顺序：子 → 主）
+          if [ -f "${APP}/Runtime/app" ]; then sign "${APP}/Runtime/app"; fi
+          if [ -f "${APP}/libagovios.dylib" ]; then sign "${APP}/libagovios.dylib"; fi
+          if [ -f "${APP}/frpc-ios" ]; then sign "${APP}/frpc-ios"; fi
+
+          # 3) 再签主程序与整个包
+          sign "${APP}/AgovHost"
+          sign "${APP}"
+
+          # 4) 回读校验
+          codesign -d --entitlements :- "${APP}" 2>/dev/null | head -20 || true
+          codesign -dv "${APP}/libagovios.dylib" 2>&1 | head -5 || true
 
       - name: 断言 frpc 已进包
         run: |
