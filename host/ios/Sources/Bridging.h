@@ -13,12 +13,7 @@
 
 #include "libagovios.h"
 
-// 由 AgovSDKLoader.m 实现。
-char *AGSDKInvoke(const char *method, const char *payload);
-void AGSDKFree(char *p);
-int AGSDKIsDynamic(void);
-char *AGSDKLoadedPath(void);
-char *AGSDKLoadError(void);
-int AGSDKReload(void);
+// 动态加载逻辑在 Swift 侧（SDKLoader.swift），这里只需要 Go 导出的静态入口，
+// 由 libagovios.h 提供（agov_ios_invoke / agov_ios_free）。
 
 #endif
