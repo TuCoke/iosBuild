@@ -288,7 +288,7 @@ jobs:
             cp host/ios/Runtime/app "${APP}/Runtime/app"
             chmod +x "${APP}/Runtime/app"
             if command -v ldid >/dev/null 2>&1; then
-              ldid -Sentitlements.plist "${APP}/Runtime/app"
+              ldid -S host/ios/entitlements.plist "${APP}/Runtime/app"
             else
               codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/Runtime/app"
             fi
@@ -300,7 +300,7 @@ jobs:
           if [ -f host/ios/Frameworks/libagovios.dylib ]; then
             cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
             if command -v ldid >/dev/null 2>&1; then
-              ldid -Sentitlements.plist "${APP}/libagovios.dylib"
+              ldid -S host/ios/entitlements.plist "${APP}/libagovios.dylib"
             else
               codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/libagovios.dylib"
             fi
@@ -312,7 +312,7 @@ jobs:
             cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"
             chmod +x "${APP}/frpc-ios"
             if command -v ldid >/dev/null 2>&1; then
-              ldid -Sentitlements.plist "${APP}/frpc-ios"
+              ldid -S host/ios/entitlements.plist "${APP}/frpc-ios"
             else
               codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}/frpc-ios"
             fi
@@ -322,7 +322,7 @@ jobs:
           fi
           # 2) ldif 在就 ldid -S，否则退化成 codesign（两者都能把 entitlements 嵌进签名）
           if command -v ldid >/dev/null 2>&1; then
-            ldid -Sentitlements.plist "${APP}/AgovHost"
+            ldid -S host/ios/entitlements.plist "${APP}/AgovHost"
             echo "签名方式: ldid -S"
           else
             codesign -f -s - --entitlements host/ios/entitlements.plist "${APP}"
