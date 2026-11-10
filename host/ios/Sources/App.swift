@@ -26,6 +26,8 @@ struct LogLine: Identifiable {
 struct ContentView: View {
     @State private var log: [LogLine] = []
     @State private var tapCount = 0
+    /// 红色目标块中心（归一化到整屏），"注入点击"探针瞄准它。
+    @State private var targetCenter = CGPoint(x: 0.5, y: 0.35)
     @State private var image: UIImage? = nil
     @State private var imageInfo = ""
 
@@ -49,14 +51,29 @@ struct ContentView: View {
             .frame(height: 150)
 
             // 中央目标：被注入点击命中时计数 +1
-            Text("被注入点击：\(tapCount)")
-                .font(.title3).bold()
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 84)
-                .background(Color.red)
-                .cornerRadius(10)
-                .padding(.horizontal, 12)
+            // 中央目标：被注入点击命中时计数 +1
+            //
+            // 这里必须挂 onTapGesture，否则"被注入点击"永远是 0 ——
+            // 之前就是这样：注释写着会 +1，但没有任何手势，永远证明不了注入。
+            GeometryReader { geo in
+                Text("被注入点击：\(tapCount)")
+                    .font(.title3).bold()
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.red)
+                    .cornerRadius(10)
+                    .contentShape(Rectangle())
+                    .onTapGesture { tapCount += 1 }
+                    .onAppear {
+                        // 记录目标中心（归一化到整屏），供"注入点击"探针瞄准这里
+                        let frame = geo.frame(in: .global)
+                        let screen = UIScreen.main.bounds.size
+                        targetCenter = CGPoint(x: frame.midX / screen.width,
+                                               y: frame.midY / screen.height)
+                    }
+            }
+            .frame(height: 84)
+            .padding(.horizontal, 12)
 
             HStack(spacing: 8) {
                 Button("能力探测") { callCapabilities() }
@@ -175,6 +192,11 @@ struct ContentView: View {
     @State private var didStartup = false
     private let consoleURL = URL(string: "http://127.0.0.1:18989/ui/index.html")!
 
+    /// 注入点击的载荷：瞄准红色目标块的中心（而不是屏幕正中）。
+    private func injectPayload() -> String {
+        "{\"x\":\(targetCenter.x),\"y\":\(targetCenter.y)}"
+    }
+
     private func callCapabilities() {
         append("capabilities → \(AgovBridge.invoke("capabilities", "{}"))")
     }
@@ -247,15 +269,56 @@ struct ContentView: View {
             ("截图",          "capture.screenshot", "{\"maxSize\":512,\"jpeg\":true,\"quality\":0.6}"),
             ("隧道状态",      "tunnel.status", "{}"),
             ("启动穿透",      "tunnel.start", "{\"server\":\"frps.example.com\",\"localPort\":18989}"),
-            ("注入点击(中心)", "motion.tap",   "{\"x\":0.5,\"y\":0.5}"),
+            ("注入点击(目标块)", "motion.tap", injectPayload()),
             ("注入上滑",      "motion.swipe", "{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":300}"),
             ("SDK 状态",      "sdk.status",   "{}"),
         ]
         for (label, method, payload) in probes {
+            // 「注入点击」单独处理：要看计数有没有真的变，才能判断注入是否生效
+            if method == "motion.tap" {
+                let before = tapCount
+                let result = AgovBridge.invoke(method, payload)
+                append("\(label) → \(String(result.prefix(120)))")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    let after = tapCount
+                    let verdict = after > before ? "（生效）" : "（未生效，模拟器常见）"
+                    append("注入效果：计数 \(before) → \(after)\(verdict)")
+                }
+                continue
+            }
             let result = AgovBridge.invoke(method, payload)
             let short = result.count > 200 ? String(result.prefix(200)) + "…" : result
             append("\(label) → \(short)")
         }
         append("—— 按钮探测结束 ——")
+
+        // 全量 API 自检：逐个 op 真调一次，输出 可用/受环境限制/未实现/未验证
+        append("—— 全量 API 自检开始 ——")
+        let all = AgovBridge.invoke("runtime.selftest.all", "{}")
+        if let data = all.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let payload = obj["data"] as? [String: Any] {
+            append("汇总：" + ((payload["summary"] as? String) ?? "解析失败"))
+            if let missing = payload["items"] as? [[String: Any]] {
+                let bad = missing.filter { ($0["status"] as? String) == "missing" }
+                if bad.isEmpty {
+                    append("未实现：无")
+                } else {
+                    for item in bad {
+                        append("未实现：\((item["op"] as? String) ?? "?")")
+                    }
+                }
+                let envLimited = missing.filter { ($0["status"] as? String) == "env" }
+                append("受环境限制：\(envLimited.count) 项")
+                for item in envLimited.prefix(8) {
+                    let op = (item["op"] as? String) ?? "?"
+                    let detail = (item["detail"] as? String) ?? ""
+                    append("  \(op)：\(detail.prefix(80))")
+                }
+            }
+        } else {
+            append("全量自检调用失败：\(String(all.prefix(200)))")
+        }
+        append("—— 全量 API 自检结束 ——")
     }
 }

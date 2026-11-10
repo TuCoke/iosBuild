@@ -24,6 +24,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── 0. Go 单元测试（不需要设备、不需要 macOS，几秒钟出结果）────────
+  go-test:
+    name: Go 单元测试（纯逻辑）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache-dependency-path: go.sum
+
+      - name: 静态自检（precheck）
+        run: go run ./cmd/precheck
+
+      - name: go vet
+        run: go vet ./sdk/...
+
+      - name: go test（非 cgo）
+        run: |
+          set -euo pipefail
+          go test ./sdk/... -count=1 -v 2>&1 | tee test.log
+          echo "---- 汇总 ----"
+          grep -E "^(ok|FAIL|---)" test.log | tail -40
+
+      - name: 上传测试日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-log
+          path: test.log
+          if-no-files-found: warn
+          retention-days: 7
+
   # ── 1. 能力 SDK 自身的编译验证（快，先跑）────────────────────────────
   ios-sdk:
     name: iOS SDK 编译验证
