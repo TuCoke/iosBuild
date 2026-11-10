@@ -246,6 +246,25 @@ jobs:
             exit "${status}"
           fi
 
+      - name: 把三件套放进 app 包
+        run: |
+          set -euo pipefail
+          APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
+          [ -d "${APP}" ] || { echo "::error::没有 app 产物"; exit 1; }
+          # frpc-ios：隧道客户端（预置二进制优先，源码编出来也放同一路径）
+          if [ -f host/ios/Frameworks/frpc-ios ]; then
+            cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"; chmod +x "${APP}/frpc-ios"
+          fi
+          # libagovios.dylib：SDK/解释器（壳运行时 dlopen）
+          if [ -f host/ios/Frameworks/libagovios.dylib ]; then
+            cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
+          fi
+          # Runtime/app：任务执行体（壳 posix_spawn）
+          if [ -f host/ios/Runtime/app ]; then
+            mkdir -p "${APP}/Runtime"; cp host/ios/Runtime/app "${APP}/Runtime/app"; chmod +x "${APP}/Runtime/app"
+          fi
+          echo "放进包内的文件："; ls -lh "${APP}"
+
       - name: 安装打包工具（ldid / dpkg）
         run: |
           set +e
