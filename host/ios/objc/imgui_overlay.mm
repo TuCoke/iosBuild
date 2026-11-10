@@ -49,13 +49,28 @@
 
 // ---- 悬浮层状态 ----
 
-typedef struct {
-    BOOL visible;
-    float x, y, w, h;       // points
-    float fontSize;
-    NSString *background;   // #RRGGBB
-    NSMutableArray<NSString *> *lines;
-} AGPanel;
+// 悬浮层状态：用 ObjC 类而不是 C 结构。
+// 原因：结构体里放 NSMutableArray 会被 ARC 直接拒绝
+// （"ARC forbids Objective-C objects in struct"）；改成类后属性由 ARC 管理。
+@interface AGPanel : NSObject
+@property (nonatomic, assign) BOOL visible;
+@property (nonatomic, assign) float x, y, w, h;      // 单位 points
+@property (nonatomic, assign) float fontSize;
+@property (nonatomic, copy, nullable) NSString *background;   // #RRGGBB
+@property (nonatomic, strong) NSMutableArray<NSString *> *lines;
+@end
+
+@implementation AGPanel
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _visible = YES;
+        _fontSize = 14;
+        _lines = [NSMutableArray array];
+    }
+    return self;
+}
+@end
 
 static AGImGuiOverlayView *gOverlayView;   // 提前声明：下面的 CADisplayLink target 要用
 static UIWindow *gOverlayWindow;
@@ -173,7 +188,7 @@ void AGImGuiRenderFrame(MTKView *view) {
     // imgui 的 y 轴向下、原点是左上，和 UIKit 一致；但坐标用 points
     for (NSNumber *key in gHudPanels) {
         AGPanel *p = AGPanelOf(gHudPanels, key);
-        if (p == NULL || !p.visible) {
+        if (p == nil || !p.visible) {
             continue;
         }
         ImGui::SetNextWindowPos(ImVec2(p.x, p.y), ImGuiCond_Always);
@@ -193,7 +208,7 @@ void AGImGuiRenderFrame(MTKView *view) {
 
     for (NSNumber *key in gConsolePanels) {
         AGPanel *p = AGPanelOf(gConsolePanels, key);
-        if (p == NULL || !p.visible) {
+        if (p == nil || !p.visible) {
             continue;
         }
         ImGui::SetNextWindowPos(ImVec2(p.x, p.y), ImGuiCond_Always);
@@ -246,7 +261,7 @@ ag_ios_result AGImGuiOverlay(NSString *op, NSDictionary *args) {
             return AGOverlayResult(@{@"ok": @YES});
         }
         AGPanel *p = AGPanelOf(gHudPanels, key);
-        if (p == NULL) {
+        if (p == nil) {
             p = AGPanelCreate(gHudPanels, key);
         }
         if ([op isEqualToString:@"hud.hide"]) {
@@ -284,7 +299,7 @@ ag_ios_result AGImGuiOverlay(NSString *op, NSDictionary *args) {
             return AGOverlayResult(@{@"ok": @YES});
         }
         AGPanel *p = AGPanelOf(gConsolePanels, key);
-        if (p == NULL) {
+        if (p == nil) {
             p = AGPanelCreate(gConsolePanels, key);
         }
         if ([op isEqualToString:@"console.hide"]) {
