@@ -125,6 +125,9 @@ struct ContentView: View {
             // 这两行是"壳方案是否生效"的唯一判据，一眼就能看到。
             append("sdk: dynamic=\(AgovBridge.isDynamic) path=\(AgovBridge.loadedPath)")
             if !AgovBridge.loadError.isEmpty { append("sdk loadError=\(AgovBridge.loadError)") }
+            // 逐个按钮探测：把每个按钮背后的 op 各调一次，结果写进日志。
+            // 这样一张截图就能看出"哪些按钮真的可用"，不用人手点。
+            probeAllButtons()
             // 本地 API：隧道要用它做被映射的本地端口，也供服务端探活。
             append("localapi.start → \(AgovBridge.invoke("localapi.start", "{\"port\":18989}"))")
         }
@@ -193,5 +196,27 @@ struct ContentView: View {
 
     private func injectSwipe() {
         append("motion.swipe → \(AgovBridge.invoke("motion.swipe", "{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":400}"))")
+    }
+    /// 把界面上每个按钮对应的 op 各调一次，输出一行结果。
+    ///
+    /// 为什么放在启动时：模拟器里没法点按钮（simctl 不提供点击），
+    /// 而 CI 只能截图；启动时跑一遍才能在一张图里看到全部状态。
+    private func probeAllButtons() {
+        append("—— 按钮探测开始 ——")
+        let probes: [(String, String, String)] = [
+            ("设备信息",      "device.info",  "{}"),
+            ("截图",          "capture.screenshot", "{\"maxSize\":512,\"jpeg\":true,\"quality\":0.6}"),
+            ("隧道状态",      "tunnel.status", "{}"),
+            ("启动穿透",      "tunnel.start", "{\"server\":\"frps.example.com\",\"localPort\":18989}"),
+            ("注入点击(中心)", "motion.tap",   "{\"x\":0.5,\"y\":0.5}"),
+            ("注入上滑",      "motion.swipe", "{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":300}"),
+            ("SDK 状态",      "sdk.status",   "{}"),
+        ]
+        for (label, method, payload) in probes {
+            let result = AgovBridge.invoke(method, payload)
+            let short = result.count > 200 ? String(result.prefix(200)) + "…" : result
+            append("\(label) → \(short)")
+        }
+        append("—— 按钮探测结束 ——")
     }
 }
