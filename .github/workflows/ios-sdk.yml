@@ -537,6 +537,11 @@ jobs:
           [ -d "${APP}" ] || { echo "::error::没有 app 产物"; exit 1; }
           [ -f "${ENT}" ] || { echo "::error::缺少 ${ENT}"; exit 1; }
 
+          # 在签名前统一发布权限：目录可遍历，执行体可执行，动态库可读。
+          find "${APP}" -type d -exec chmod 0755 {} +
+          chmod 0755 "${APP}/AgovHost" "${APP}/Runtime/app" "${APP}/frpc-ios"
+          find "${APP}" -type f -name '*.dylib' -exec chmod 0644 {} +
+
           # 为什么不用 ldid：实测 ldid.cpp 在解析我们这份 970 行 entitlements 时
           # 直接 _assert() 崩掉（errno=2 与 assert false 各一次）。
           # codesign 的 ad-hoc 签名同样能把 entitlements 嵌进签名，
@@ -600,11 +605,22 @@ jobs:
           python3 - <<'PY'
           import stat, zipfile
           with zipfile.ZipFile("out/AgovHost.ipa") as archive:
-              entry = archive.getinfo("Payload/AgovHost.app/frpc-ios")
-              mode = entry.external_attr >> 16
-              if not stat.S_ISREG(mode) or not mode & 0o111:
-                  raise SystemExit(f"frpc-ios 在 IPA 中缺少执行权限: {mode:o}")
-              print(f"frpc-ios IPA 权限校验通过: {mode:o}")
+              root = "Payload/AgovHost.app/"
+              executables = {root + name for name in ("AgovHost", "frpc-ios", "Runtime/app")}
+              for name in executables:
+                  entry = archive.getinfo(name)
+                  mode = entry.external_attr >> 16
+                  if not stat.S_ISREG(mode) or mode & 0o500 != 0o500:
+                      raise SystemExit(f"IPA 执行文件缺少读取/执行权限: {name} {mode:o}")
+              for entry in archive.infolist():
+                  if not entry.filename.startswith(root):
+                      continue
+                  mode = entry.external_attr >> 16
+                  if entry.is_dir() and mode & 0o500 != 0o500:
+                      raise SystemExit(f"IPA 目录不可遍历: {entry.filename} {mode:o}")
+                  if entry.filename.endswith(".dylib") and not mode & 0o400:
+                      raise SystemExit(f"IPA 动态库不可读: {entry.filename} {mode:o}")
+              print("IPA 宿主、frpc、脚本执行体及动态库权限检查通过")
           PY
           ls -lh out/AgovHost.ipa
           unzip -l out/AgovHost.ipa | head -12

@@ -155,6 +155,9 @@ func prepareWorkerBinary(ctx context.Context, paths device.RuntimePaths, sdkLibr
 		if !info.IsDir() {
 			return "", fmt.Errorf("工作进程缓存目录不能是软链接或普通文件: %s", directory)
 		}
+		if err = os.Chmod(directory, 0700); err != nil {
+			return "", fmt.Errorf("修复工作进程目录权限失败: %w", err)
+		}
 	}
 	for _, file := range ordered {
 		if err = installWorkerFile(ctx, file, filepath.Join(dir, file.name)); err != nil {

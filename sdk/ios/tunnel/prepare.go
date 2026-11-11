@@ -40,6 +40,9 @@ func prepareBinary(ctx context.Context, source, directory string) (string, error
 		if !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("frpc 缓存目录不可使用符号链接: %s", path)
 		}
+		if err := os.Chmod(path, 0700); err != nil {
+			return "", fmt.Errorf("修复 frpc 运行目录权限失败: %w", err)
+		}
 	}
 	destination := filepath.Join(directory, "Bin", digest, "frpc-ios")
 	if entry, err := os.Lstat(destination); err == nil {

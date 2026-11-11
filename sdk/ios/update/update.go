@@ -140,6 +140,10 @@ func Install(ctx context.Context, raw []byte, expected string) (map[string]any, 
 			return nil, err
 		}
 	}
+	// 内容相同也要修复权限，不能将文件摘要相同误认为一定可以加载。
+	if err = os.Chmod(filename, 0700); err != nil {
+		return nil, fmt.Errorf("设置 SDK 缓存权限失败: %w", err)
+	}
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}

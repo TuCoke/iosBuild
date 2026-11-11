@@ -23,6 +23,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+// 所有外部执行入口共用检查；只诊断权限，不擅自修改调用方或系统工具文件。
+static NSString *AGExecutableProblem(NSString *path) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSError *error = nil;
+    // 系统工具可能由符号链接提供，检查最终目标，保留原调用路径用于报错。
+    NSString *target = [[path stringByStandardizingPath] stringByResolvingSymlinksInPath];
+    NSDictionary *attrs = [fm attributesOfItemAtPath:target error:&error];
+    if (!attrs) return [NSString stringWithFormat:@"无法读取执行文件 %@：%@", path, error.localizedDescription];
+    if (![attrs[NSFileType] isEqual:NSFileTypeRegular]) return [NSString stringWithFormat:@"执行目标不是常规文件：%@", path];
+    if (![fm isExecutableFileAtPath:path]) return [NSString stringWithFormat:@"没有执行权限: %@ (mode=%o, size=%llu)", path, (unsigned int)([attrs[NSFilePosixPermissions] unsignedLongValue] & 0777), [attrs[NSFileSize] unsignedLongLongValue]];
+    return nil;
+}
+
 extern char **environ;
 
 // libproc 的三个入口 + rusage。自己声明，绕开 proc_info.h 缺失的问题。
@@ -147,10 +160,13 @@ ag_ios_result AGSystem(NSString *op, NSDictionary *args) {
         char path[4096] = {0};
         uint32_t size = sizeof(path);
         if (_NSGetExecutablePath(path, &size) != 0) return AGError(3,@"无法取到自身可执行路径");
+        NSString *problem = AGExecutableProblem([NSString stringWithUTF8String:path]);
+        if (problem) return AGError(3, problem);
         pid_t child = 0;
         char *argv[] = {path, NULL};
-        if (posix_spawn(&child, path, NULL, NULL, argv, environ) != 0) {
-            return AGError(3,@"重启失败：系统拒绝启动进程");
+        int rc = posix_spawn(&child, path, NULL, NULL, argv, environ);
+        if (rc != 0) {
+            return AGError(3,[NSString stringWithFormat:@"重启失败：%s（posix_spawn rc=%d）",strerror(rc),rc]);
         }
         // 新实例已经拉起，旧进程退出前给一点时间让句柄交接。
         usleep(200 * 1000);
@@ -264,17 +280,8 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"utils.spawn"]) {
         NSString *path = args[@"path"];
         if (path.length == 0) return AGError(2,@"缺少可执行文件路径");
-        // 检查失败时把"到底哪里不对"说清楚：不存在？不是普通文件？没有执行位？
-        NSFileManager *fm = [NSFileManager defaultManager];
-        if (![fm fileExistsAtPath:path]) {
-            return AGError(3,[NSString stringWithFormat:@"文件不存在: %@", path]);
-        }
-        if (![fm isExecutableFileAtPath:path]) {
-            NSDictionary *attrs = [fm attributesOfItemAtPath:path error:NULL];
-            unsigned long mode = [attrs[NSFilePosixPermissions] unsignedLongValue];
-            return AGError(3,[NSString stringWithFormat:@"没有执行权限: %@ (mode=%o, size=%llu)",
-                                    path, (unsigned int)(mode & 0777), [attrs[NSFileSize] unsignedLongLongValue]]);
-        }
+        NSString *problem = AGExecutableProblem(path);
+        if (problem) return AGError(3, problem);
         NSArray *extra = args[@"args"];
         NSMutableArray *argvList = [NSMutableArray arrayWithObject:path];
         if ([extra isKindOfClass:[NSArray class]]) {
@@ -349,6 +356,8 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"utils.exec"]) {
         NSString *path = args[@"path"];
         if (path.length == 0) return AGError(2,@"缺少可执行文件路径");
+        NSString *problem = AGExecutableProblem(path);
+        if (problem) return AGError(3, problem);
         NSArray *extra = args[@"args"];
         NSMutableArray *argvList = [NSMutableArray arrayWithObject:path];
         if ([extra isKindOfClass:[NSArray class]]) {
@@ -360,7 +369,7 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
         int rc = posix_spawn(&child, path.UTF8String, NULL, NULL, argv, environ);
         for (NSUInteger i = 0; i < argvList.count; i++) free(argv[i]);
         free(argv);
-        if (rc != 0) return AGError(3,@"系统拒绝启动进程（需要 platform-application 权限）");
+        if (rc != 0) return AGError(3,[NSString stringWithFormat:@"启动进程 %@ 失败：%s（posix_spawn rc=%d）",path,strerror(rc),rc]);
         int status = 0;
         pid_t waited;do{waited=waitpid(child,&status,0);}while(waited<0&&errno==EINTR);
         if(waited<0)return AGError(3,@"等待子进程失败");
