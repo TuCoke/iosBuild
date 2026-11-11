@@ -312,7 +312,7 @@ func checkWorkflowOrder() {
 	if strings.Contains(src, "stat -f%z") || strings.Contains(src, "优先用包内预置") {
 		fail("frpc 构建仍允许跳过源码校验并使用预置二进制")
 	}
-	for _, required := range []string{"FRP_COMMIT: 63a21198138e2ca57031eb8c9c2c4f7255586554", "frpc-verify\" verify -c", "frpc-build-info.txt"} {
+	for _, required := range []string{"FRP_COMMIT: 5f575b84420a19350467290c5c2bf9f4c7b27e57", "frpc-verify\" verify -c", "frpc-build-info.txt", "python3 tools/verify_frpc_source.py", "SOURCE=\"$GITHUB_WORKSPACE/third_party/frp\""} {
 		if !strings.Contains(src, required) {
 			fail("frpc 构建缺少来源或命令行校验: %s", required)
 		}

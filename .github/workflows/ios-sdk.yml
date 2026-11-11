@@ -18,6 +18,9 @@ on:
       - 'tools/native_resources.py'
       - 'tools/imgui_bindings.py'
       - 'tools/debugapi_smoke.py'
+      - 'tools/verify_frpc_source.py'
+      - 'third_party/frp/**'
+      - 'third_party/frp-source.lock.json'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
@@ -33,6 +36,9 @@ on:
       - 'tools/native_resources.py'
       - 'tools/imgui_bindings.py'
       - 'tools/debugapi_smoke.py'
+      - 'tools/verify_frpc_source.py'
+      - 'third_party/frp/**'
+      - 'third_party/frp-source.lock.json'
   workflow_dispatch:
 
 permissions:
@@ -51,10 +57,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 校验仓库内 frp 源码（先失败，避免等待原生编译）
+        run: python3 tools/verify_frpc_source.py
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 静态自检（precheck）
         run: go run ./cmd/precheck
@@ -92,7 +103,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 环境自检
         run: |
@@ -184,7 +197,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 静态自检（precheck）
         run: go run ./cmd/precheck
@@ -383,22 +398,22 @@ jobs:
           nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "agov_ios_(invoke|free)" || true
 
 
-      - name: 从锁定的官方源码构建 frpc（禁止使用预置成品）
+      - name: 从仓库内锁定的官方源码构建 frpc
         env:
           SDK: ${{ steps.sdk.outputs.path }}
           CC_IOS: ${{ steps.sdk.outputs.cc }}
-          FRP_COMMIT: 63a21198138e2ca57031eb8c9c2c4f7255586554
+          FRP_COMMIT: 5f575b84420a19350467290c5c2bf9f4c7b27e57
         run: |
           set -euo pipefail
-          SOURCE="${RUNNER_TEMP}/agov-frp-source"
-          git clone --depth 1 --branch v0.67.0 https://github.com/fatedier/frp "${SOURCE}"
+          python3 tools/verify_frpc_source.py
+          SOURCE="$GITHUB_WORKSPACE/third_party/frp"
+          export GOWORK=off
           cd "${SOURCE}"
-          [ "$(git rev-parse HEAD)" = "${FRP_COMMIT}" ] || { echo "::error::frp 源码版本不符合锁定值"; exit 1; }
           # 只嵌入占位页面，不启用 frpc Web 管理面板。
           mkdir -p web/frpc/dist
           printf '%s' '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
           # 先编本机版，实际验证 -c 参数和 TOML，避免再次装入不兼容的定制客户端。
-          CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOHOSTARCH)" go build -trimpath -o "${RUNNER_TEMP}/frpc-verify" ./cmd/frpc
+          CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOHOSTARCH)" go build -mod=readonly -trimpath -o "${RUNNER_TEMP}/frpc-verify" ./cmd/frpc
           [ "$("${RUNNER_TEMP}/frpc-verify" --version)" = "0.67.0" ]
           cat > "${RUNNER_TEMP}/frpc-check.toml" <<'TOML'
           serverAddr = "127.0.0.1"
@@ -422,9 +437,10 @@ jobs:
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
           export CGO_CXXFLAGS="${CGO_CFLAGS}"
           export CGO_LDFLAGS="${CGO_CFLAGS}"
-          go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
+          go build -mod=readonly -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
           go version -m "${RUNNER_TEMP}/frpc-ios" | tee "${RUNNER_TEMP}/frpc-build-info.txt"
           grep -F 'github.com/fatedier/frp/cmd/frpc' "${RUNNER_TEMP}/frpc-build-info.txt"
+          cp "$GITHUB_WORKSPACE/third_party/frp-source.lock.json" "${RUNNER_TEMP}/frpc-source.lock.json"
           file "${RUNNER_TEMP}/frpc-ios"
           mkdir -p "$GITHUB_WORKSPACE/host/ios/Frameworks"
           install -m 0755 "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
@@ -688,7 +704,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 确定构建架构
         id: arch
