@@ -473,6 +473,16 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 		}
 		return okData(v)
 
+	case "app.list":
+		// 必须走显式分支：默认分支用 script/api 的 Session.Call，
+		// 它的返回类型是 map[string]any，而 app.list 返回的是数组，
+		// 真机实测会报 "cannot unmarshal array into Go value of type map[string]interface {}"。
+		list, err := app.List(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(list)
+
 	case "app.launch":
 		if err := app.LaunchBundle(ctx, str(args, "bundleId")); err != nil {
 			return fail(err)

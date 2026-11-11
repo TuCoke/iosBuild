@@ -32,7 +32,8 @@ type Server struct {
 }
 
 // 只允许已审查的调试能力，不暴露 shell、任意文件、卸载、重启、清数据或 SDK 安装。
-var allowed = strings.Fields(`capabilities device.info device.display device.battery device.battery_status device.screen_on device.unlocked device.brightness_get device.memory device.ip device.vpn_status device.keep_awake device.brightness device.button device.lock device.wake device.clipget device.clipset app.foreground app.self app.list app.info app.installed app.bundle_path app.data_path app.bundle_dir app.icon app.launch app.open_url motion.tap motion.longpress motion.swipe motion.frame motion.configure motion.key ime.text ime.key capture.json uiacc.snapshot system.pid system.memory system.cpu resources.status sdk.status script.status tunnel.status apkctl.selftest`)
+// tunnel.start/stop/logs 用于真机联调：入站连接被 iOS 限制，必须能远程拉起 frpc 验证穿透。
+var allowed = strings.Fields(`capabilities device.info device.display device.battery device.battery_status device.screen_on device.unlocked device.brightness_get device.memory device.ip device.vpn_status device.keep_awake device.brightness device.button device.lock device.wake device.clipget device.clipset app.foreground app.self app.list app.info app.installed app.bundle_path app.data_path app.bundle_dir app.icon app.launch app.open_url motion.tap motion.longpress motion.swipe motion.frame motion.configure motion.key ime.text ime.key capture.json uiacc.snapshot system.pid system.memory system.cpu resources.status sdk.status script.status tunnel.status tunnel.start tunnel.stop tunnel.logs apkctl.selftest`)
 var routes = map[string]string{
 	"/status": "device.info", "/capabilities": "capabilities", "/selftest": "runtime.selftest.all",
 	"/diagnostics": "runtime.diagnostics", "/diagnostics/worker": "runtime.diagnostics.worker",
