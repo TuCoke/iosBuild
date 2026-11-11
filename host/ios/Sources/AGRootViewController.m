@@ -10,8 +10,12 @@
 #import "AGRootViewController.h"
 #import "AGBridge.h"
 #import "AGWebConsoleViewController.h"
+// 取 Wi-Fi 地址 + 触发本地网络授权用（getifaddrs / inet_ntop / sockaddr_in）
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
-@interface AGRootViewController () <UITextViewDelegate>
+@interface AGRootViewController () <UITextViewDelegate, NSNetServiceDelegate>
 @property (nonatomic, strong) UITextView *logView;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) UIImageView *shotView;
@@ -20,6 +24,7 @@
 @property (nonatomic, assign) CGPoint targetCenter;
 @property (nonatomic, assign) BOOL didStartup;
 @property (nonatomic, strong) dispatch_queue_t sdkQueue;
+@property (nonatomic, strong) NSNetService *debugService;
 @end
 
 @implementation AGRootViewController
@@ -56,7 +61,74 @@
     [self runNativeDiagnostics];
     [self append:[NSString stringWithFormat:@"localapi.start → %@",
                   [AGBridge invoke:@"localapi.start" payload:@"{}"]]];
+    // 调试服务在启动自检结束后开放，避免接入时与初始化争用设备。
+    NSString *debugRaw=[AGBridge invoke:@"debugapi.start" payload:@"{}"];
+    [self append:[@"debugapi.start → " stringByAppendingString:debugRaw]];
+    NSDictionary *debugReply=[NSJSONSerialization JSONObjectWithData:[debugRaw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if([debugReply[@"ok"] boolValue])dispatch_async(dispatch_get_main_queue(),^{
+        self.debugService=[[NSNetService alloc] initWithDomain:@"local." type:@"_agovhost._tcp." name:@"" port:18990];
+        self.debugService.delegate=self;
+        // TXT 不发布 token、设备标识或文件路径；发现服务之后仍需鉴权。
+        [self.debugService setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:@{@"version":[@"1" dataUsingEncoding:NSUTF8StringEncoding]}]];
+        [self.debugService publish];
+        // 主动发起一次"到本机局域网地址"的请求，触发 iOS 的「本地网络」授权询问。
+        // 只监听 + 发布 Bonjour 时，某些环境下系统不会弹窗，权限停留在"未询问"，
+        // 表现就是外部 SYN 被静默丢弃（真机实测：ping 通、:80 回 RST、:18990 超时）。
+        [self triggerLocalNetworkAccess];
     });
+    });
+}
+
+// Bonjour 发布失败不影响通过已知 IP 访问；权限提示被拒绝时保留明确日志。
+- (void)netServiceDidPublish:(NSNetService *)sender {
+    [self append:[NSString stringWithFormat:@"mDNS 已发布：%@.%@%@ :18990",sender.name,sender.type,sender.domain]];
+}
+
+// triggerLocalNetworkAccess 主动连一次自己的局域网地址，逼出「本地网络」授权弹窗。
+//
+// 为什么需要：iOS 14+ 起，App 与同一局域网内其它设备的通信要用户授权。
+// 只 bind 0.0.0.0 + 发 Bonjour 时，授权弹窗不一定出现（TrollStore 签名环境实测如此），
+// 未授权时系统会【静默丢弃】外部来的 SYN —— 外部看到的是"端口超时"而不是"拒绝"。
+// 这里用一次主动连接触发系统判定，弹窗出现后用户允许即可。
+- (void)triggerLocalNetworkAccess {
+    // 测试宿主：调试期间不让屏幕休眠，否则息屏后监听会被系统挂起。
+    [UIApplication sharedApplication].idleTimerDisabled = YES;
+
+    NSString *ip = [self wifiIPv4];
+    if (ip.length == 0) {
+        [self append:@"本地网络授权：没取到 Wi-Fi 地址，跳过主动触发"];
+        return;
+    }
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"http://%@:18990/ping", ip]];
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
+        completionHandler:^(NSData *data, NSURLResponse *resp, NSError *error) {
+            NSString *detail = error ? error.localizedDescription : @"已连通本机调试口";
+            [self append:[NSString stringWithFormat:@"本地网络授权自检（%@）：%@", ip, detail]];
+        }];
+    [task resume];
+}
+
+// wifiIPv4 取当前 en0（Wi-Fi）的 IPv4 地址。
+- (NSString *)wifiIPv4 {
+    struct ifaddrs *list = NULL;
+    if (getifaddrs(&list) != 0 || list == NULL) { return nil; }
+    NSString *found = nil;
+    for (struct ifaddrs *p = list; p != NULL; p = p->ifa_next) {
+        if (p->ifa_addr == NULL || p->ifa_addr->sa_family != AF_INET) { continue; }
+        if (strncmp(p->ifa_name, "en0", 3) != 0) { continue; }
+        char buf[INET_ADDRSTRLEN] = {0};
+        struct sockaddr_in *sin = (struct sockaddr_in *)p->ifa_addr;
+        if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)) != NULL) {
+            found = [NSString stringWithUTF8String:buf];
+            break;
+        }
+    }
+    freeifaddrs(list);
+    return found;
+}
+
+- (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary<NSString *, NSNumber *> *)errorDict {
+    [self append:[NSString stringWithFormat:@"mDNS 发布失败（仍可尝试 IP 直连）：%@",errorDict]];
 }
 
 #pragma mark - 界面
@@ -395,7 +467,11 @@
         NSDictionary *envelope=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
         NSDictionary *report=[envelope isKindOfClass:NSDictionary.class] ? envelope[@"data"] : nil;
         if([entry[0] isEqualToString:@"worker"] && [report isKindOfClass:NSDictionary.class])report=report[@"result"];
-        if(![report isKindOfClass:NSDictionary.class]){[self append:[NSString stringWithFormat:@"原生诊断(%@)失败：%@",entry[0],[self shorten:raw to:300]]];continue;}
+        if(![report isKindOfClass:NSDictionary.class]){
+            // 失败回执不含图片；保留完整 dyld 原因，避免截断掉 attempted paths 或签名错误。
+            [self append:[NSString stringWithFormat:@"原生诊断(%@)失败（完整结果=%@）：%@",entry[0],filename,raw]];
+            continue;
+        }
         NSDictionary *capture=report[@"capture"],*ax=report[@"ax"];
         [self append:[NSString stringWithFormat:@"原生诊断(%@)：截图=%@；AX=%@；完整结果=%@",entry[0],[capture[@"ok"] boolValue] ? @"成功" : @"失败",[ax[@"ok"] boolValue] ? [NSString stringWithFormat:@"%@ 节点",ax[@"nodeCount"]] : @"失败",filename]];
         if([capture[@"ok"] boolValue]){
