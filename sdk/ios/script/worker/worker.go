@@ -228,6 +228,8 @@ func prepareWorkerBinary(paths device.RuntimePaths) (string, error) {
 	dst := filepath.Join(dir, "app")
 	if old, err := os.ReadFile(dst); err == nil && len(old) == len(data) {
 		if err := os.Chmod(dst, 0755); err == nil {
+			// 二进制没变也要确保依赖库在位（用户可能手动清过 Documents）
+			copyWorkerDylibs(paths.Bundle, dir)
 			return dst, nil
 		}
 	}
@@ -237,5 +239,36 @@ func prepareWorkerBinary(paths device.RuntimePaths) (string, error) {
 	if err := os.Chmod(dst, 0755); err != nil {
 		return "", fmt.Errorf("设置工作进程执行权限失败: %w", err)
 	}
+	// 【必须把依赖库一起搬过来】
+	// 真机日志实测：工作进程从 Documents/Worker 启动后
+	//   dlopen(bundle/libagovios.dylib) → "Library not loaded: @rpath/libimgui.dylib"
+	// 原因：libagovios.dylib 的 install_name 是 @rpath/libimgui.dylib，
+	//      dyld 只用【可执行文件】的 rpath 解析（这里是 Documents/Worker），
+	//      而 libimgui.dylib 在 App 包根目录，找不到。
+	// 处理：把包里会被 @rpath 引用的 dylib 复制到工作进程同目录。
+	copyWorkerDylibs(paths.Bundle, dir)
 	return dst, nil
+}
+
+// copyWorkerDylibs 把 App 包里会被 @rpath 引用的动态库复制到工作进程目录。
+//
+// 目前是 libimgui.dylib（libagovios.dylib 的依赖）。
+// 识别栈的 libppocr/libncnn/libopencv_* 由 ag_rec 用绝对路径 dlopen，
+// 不经过 @rpath，所以不在这里搬。
+// 复制失败不致命：工作进程会给出明确的 dlopen 错误，便于排查。
+func copyWorkerDylibs(bundleDir, workerDir string) {
+	for _, name := range []string{"libimgui.dylib"} {
+		data, err := os.ReadFile(filepath.Join(bundleDir, name))
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		dst := filepath.Join(workerDir, name)
+		if old, err := os.ReadFile(dst); err == nil && len(old) == len(data) {
+			_ = os.Chmod(dst, 0755)
+			continue
+		}
+		if err := os.WriteFile(dst, data, 0755); err == nil {
+			_ = os.Chmod(dst, 0755)
+		}
+	}
 }
