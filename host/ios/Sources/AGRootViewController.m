@@ -10,6 +10,7 @@
 #import "AGRootViewController.h"
 #import "AGBridge.h"
 #import "AGWebConsoleViewController.h"
+#import "AGTunnelSettingsViewController.h"
 // 取 Wi-Fi 地址 + 触发本地网络授权用（getifaddrs / inet_ntop / sockaddr_in）
 #include <ifaddrs.h>
 #include <arpa/inet.h>
@@ -34,6 +35,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"AgovHost";
+    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"穿透设置" style:UIBarButtonItemStylePlain target:self action:@selector(tunnelSettings)];
     // 调试宿主在前台时保持亮屏，避免等待远程请求期间自动息屏。
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.sdkQueue=dispatch_queue_create("agov.host.sdk.actions",DISPATCH_QUEUE_SERIAL);
@@ -318,9 +320,33 @@
     [self presentViewController:nav animated:YES completion:nil];
 }
 
+- (void)tunnelSettings {
+    AGTunnelSettingsViewController *settings=[[AGTunnelSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    [self presentViewController:[[UINavigationController alloc] initWithRootViewController:settings] animated:YES completion:nil];
+}
+
 - (void)tunnelStart {
-    [self append:[NSString stringWithFormat:@"启动穿透 → %@",
-                  [AGBridge invoke:@"tunnel.start" payload:@"{}"]]];
+    NSError *error=nil;
+    NSDictionary *config=[AGTunnelSettingsViewController configurationWithError:&error];
+    if(!config || ![AGTunnelSettingsViewController validateConfiguration:config error:&error]){
+        [self append:[@"启动穿透失败：" stringByAppendingString:error.localizedDescription ?: @"请先填写穿透设置"]];
+        dispatch_async(dispatch_get_main_queue(),^{[self tunnelSettings];});
+        return;
+    }
+    // 保存只改变下一次启动的参数；不重复创建 frpc，也不偷偷断开现有隧道。
+    NSString *statusRaw=[AGBridge invoke:@"tunnel.status" payload:@"{}"];
+    NSDictionary *status=[NSJSONSerialization JSONObjectWithData:[statusRaw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if(![status[@"ok"] boolValue] || [status[@"data"][@"status"][@"lastError"] length]){
+        [self append:@"启动穿透失败：无法确认现有进程状态，请查看隧道状态后重试"];return;
+    }
+    if([status[@"data"][@"status"][@"running"] boolValue]){
+        [self append:@"穿透进程已运行；修改配置后请先停止，再启动。进程运行不代表已连接 frps，请查看隧道日志。"];return;
+    }
+    NSData *data=[NSJSONSerialization dataWithJSONObject:config options:0 error:&error];
+    if(!data){[self append:error.localizedDescription];return;}
+    NSString *payload=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    // 不记录 payload，避免 frps token 进入界面与 app.log。
+    [self append:[NSString stringWithFormat:@"启动穿透 → %@",[AGBridge invoke:@"tunnel.start" payload:payload]]];
 }
 
 - (void)tunnelStop {
@@ -382,7 +408,6 @@
         @[@"设备信息", @"device.info", @"{}"],
         @[@"截图", @"capture.screenshot", @"{\"maxSize\":512,\"jpeg\":true,\"quality\":0.6}"],
         @[@"隧道状态", @"tunnel.status", @"{}"],
-        @[@"启动穿透", @"tunnel.start", @"{}"],
         @[@"注入点击(目标块)", @"motion.tap", [self injectPayload]],
         @[@"注入上滑", @"motion.swipe", @"{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":300}"],
         @[@"SDK 状态", @"sdk.status", @"{}"],

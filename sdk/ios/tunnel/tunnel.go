@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"autogov1/v2/sdk/ios/device"
 	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/internal/native"
 )
@@ -71,6 +72,35 @@ const (
 )
 
 var mu sync.Mutex
+var activePID int
+var directoryMu sync.Mutex
+var documentRoot string
+
+// 穿透运行文件固定放 Documents，不复用脚本 files.SetRoot 的全局目录。
+func ensureDirectory(ctx context.Context) error {
+	directoryMu.Lock()
+	defer directoryMu.Unlock()
+	if documentRoot != "" {
+		return nil
+	}
+	if ctx == nil {
+		return fmt.Errorf("穿透 context 不能为空")
+	}
+	paths, err := device.Paths(ctx)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(paths.Documents) {
+		return fmt.Errorf("穿透缺少 Documents 绝对路径")
+	}
+	documentRoot = paths.Documents
+	return nil
+}
+func tunnelPath(relative string) string {
+	directoryMu.Lock()
+	defer directoryMu.Unlock()
+	return filepath.Join(documentRoot, relative)
+}
 
 // BundleBinary 返回 app 包里 frpc 可执行文件的路径（找不到返回空串）。
 //
@@ -153,6 +183,9 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 		return Status{}, fmt.Errorf("缺少 localPort（要被映射出去的本地端口）")
 	}
 
+	if err := ensureDirectory(ctx); err != nil {
+		return Status{LastError: err.Error()}, err
+	}
 	binary := BundleBinary(ctx)
 	if binary == "" {
 		// 把"在哪找过"一起报出来，否则只看到"找不到"没法排查。
@@ -164,10 +197,18 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 			fmt.Errorf("找不到 frpc-ios（bundle=%s）", dir.Path)
 	}
 
-	files.EnsureDir(workDir)
-	configPath := files.Path(configRel)
-	logPath := files.Path(logRel)
-	files.Write(configPath, Render(cfg))
+	configPath := tunnelPath(configRel)
+	logPath := tunnelPath(logRel)
+	if err := os.MkdirAll(tunnelPath(workDir), 0700); err != nil {
+		return Status{}, fmt.Errorf("创建穿透运行目录失败: %w", err)
+	}
+	// frpc 必须读取明文 token 配置；仅本机账户可读，不静默忽略写入错误。
+	if err := os.WriteFile(configPath, []byte(Render(cfg)), 0600); err != nil {
+		return Status{}, fmt.Errorf("保存 frpc 配置失败: %w", err)
+	}
+	if err := os.Chmod(configPath, 0600); err != nil {
+		return Status{}, fmt.Errorf("设置 frpc 配置权限失败: %w", err)
+	}
 
 	var out struct {
 		PID int `json:"pid"`
@@ -187,7 +228,10 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 		return Status{Config: configPath, LogPath: logPath, Binary: binary,
 			LastError: "进程没有返回 pid"}, fmt.Errorf("启动失败")
 	}
-	files.Write(files.Path(pidRel), strconv.Itoa(out.PID))
+	activePID = out.PID
+	if err := os.WriteFile(tunnelPath(pidRel), []byte(strconv.Itoa(out.PID)), 0600); err != nil {
+		return Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}, fmt.Errorf("frpc 已启动但 PID 文件保存失败；请停止后重试")
+	}
 	return Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}, nil
 }
 
@@ -196,6 +240,9 @@ func Stop(ctx context.Context) (Status, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if err := ensureDirectory(ctx); err != nil {
+		return Status{LastError: err.Error()}, err
+	}
 	pid := readPID()
 	if pid <= 0 {
 		return Status{Running: false}, nil
@@ -208,7 +255,8 @@ func Stop(ctx context.Context) (Status, error) {
 	if err := native.Call(stopCtx, "utils.kill", map[string]any{"pid": pid}, &out); err != nil {
 		return Status{Running: true, PID: pid, LastError: err.Error()}, err
 	}
-	files.Remove(files.Path(pidRel))
+	activePID = 0
+	files.Remove(tunnelPath(pidRel))
 	return Status{Running: false, PID: pid}, nil
 }
 
@@ -217,8 +265,11 @@ func Query(ctx context.Context) Status {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if err := ensureDirectory(ctx); err != nil {
+		return Status{LastError: err.Error()}
+	}
 	pid := readPID()
-	status := Status{PID: pid, Config: files.Path(configRel), LogPath: files.Path(logRel), Binary: BundleBinary(ctx)}
+	status := Status{PID: pid, Config: tunnelPath(configRel), LogPath: tunnelPath(logRel), Binary: BundleBinary(ctx)}
 	if pid <= 0 {
 		return status
 	}
@@ -233,17 +284,23 @@ func Query(ctx context.Context) Status {
 	}
 	status.Running = out.Alive
 	if !out.Alive {
-		files.Remove(files.Path(pidRel))
+		activePID = 0
+		files.Remove(tunnelPath(pidRel))
 	}
 	return status
 }
 
 // Logs 读最后 n 行日志（frpc 的输出被重定向到这里）。
 func Logs(n int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if ensureDirectory(ctx) != nil {
+		return ""
+	}
 	if n <= 0 {
 		n = 50
 	}
-	text := files.Read(files.Path(logRel))
+	text := files.Read(tunnelPath(logRel))
 	if text == "" {
 		return ""
 	}
@@ -256,11 +313,19 @@ func Logs(n int) string {
 
 // ClearLogs 清空日志（换配置重启时用，避免新旧混在一起）。
 func ClearLogs() {
-	files.Write(files.Path(logRel), "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if ensureDirectory(ctx) != nil {
+		return
+	}
+	files.Write(tunnelPath(logRel), "")
 }
 
 func readPID() int {
-	text := strings.TrimSpace(files.Read(files.Path(pidRel)))
+	if activePID > 0 {
+		return activePID
+	}
+	text := strings.TrimSpace(files.Read(tunnelPath(pidRel)))
 	if text == "" {
 		return 0
 	}
