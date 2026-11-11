@@ -2,6 +2,7 @@
 
 #import "runtime.h"
 #import <ImageIO/ImageIO.h>
+#import <mach/mach.h>
 #include <pthread.h>
 
 // 【IOSurface 在 iOS 上不是公开头文件】
@@ -144,6 +145,27 @@ ag_ios_result AGCapture(NSDictionary *args) {
     ag_ios_result result = AGData(encoded); result.width = w; result.height = h; return result;
 }
 
+static NSDictionary *AGRenderFailureDetail(CFStringRef name,IOSurfaceRef candidate) {
+    // 实测外层函数把内部非零结果统一转换成 1。以下 ABI 来自该外层实际调用点：
+    // 原三个参数 + 五个寄存器参数 + 三个栈参数；额外参数均为零，不改变渲染路线。
+    typedef uintptr_t (*RenderDetailed)(uint32_t,CFStringRef,IOSurfaceRef,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uint32_t);
+    void *entry=AGSymbol("CARenderServerRenderDisplay_");Dl_info detailed={0},publicEntry={0};
+    void *wrapper=AGSymbol("CARenderServerRenderDisplay");
+    if(!entry || !wrapper || !dladdr(entry,&detailed) || !dladdr(wrapper,&publicEntry) || detailed.dli_fbase!=publicEntry.dli_fbase)
+        return @{@"available":@NO};
+    uintptr_t raw=((RenderDetailed)entry)(0,name,candidate,0,0,0,0,0,0,0,0);
+    NSMutableDictionary *report=[NSMutableDictionary dictionaryWithDictionary:@{@"available":@YES,@"rawHex":[NSString stringWithFormat:@"%llx",(unsigned long long)raw]}];
+    // 尚不假定内部返回值的对象类型。只通过自己的 task 安全读取，能解码的 C 字符串才展示。
+    if(raw>4096){
+        char bytes[512]={0};vm_size_t count=0;
+        if(vm_read_overwrite(mach_task_self(),(vm_address_t)raw,sizeof(bytes),(vm_address_t)bytes,&count)==KERN_SUCCESS){
+            size_t length=strnlen(bytes,count);
+            if(length>0 && length<count){NSString *message=[[[NSString alloc] initWithBytes:bytes length:length encoding:NSUTF8StringEncoding] autorelease];if(message.length)report[@"message"]=message;}
+        }
+    }
+    return report;
+}
+
 // 仅供诊断：沿用样本的同一渲染接口，比较四项原始属性与现有显式行宽属性。
 // 使用独立 surface，不替换生产采集资源，也不采用其他截图通道。
 NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
@@ -165,6 +187,7 @@ NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
         else{
             int status=render(0,(CFStringRef)name,candidate,0,0);
             item[@"renderStatus"]=@(status);item[@"ok"]=@(status==0);item[@"actualBytesPerRow"]=@(surfaceBytesPerRow(candidate));
+            if(status!=0)item[@"internalDetail"]=AGRenderFailureDetail((CFStringRef)name,candidate);
             CFRelease(candidate);
         }
         [attempts addObject:item];
