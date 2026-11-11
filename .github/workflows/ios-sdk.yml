@@ -596,6 +596,16 @@ jobs:
           rm -rf out && mkdir -p out/Payload
           cp -R "${APP}" out/Payload/
           ( cd out && zip -qry AgovHost.ipa Payload )
+          # 安装器仍可能丢失执行位；此处先保证我们发布的 IPA 权限正确。
+          python3 - <<'PY'
+          import stat, zipfile
+          with zipfile.ZipFile("out/AgovHost.ipa") as archive:
+              entry = archive.getinfo("Payload/AgovHost.app/frpc-ios")
+              mode = entry.external_attr >> 16
+              if not stat.S_ISREG(mode) or not mode & 0o111:
+                  raise SystemExit(f"frpc-ios 在 IPA 中缺少执行权限: {mode:o}")
+              print(f"frpc-ios IPA 权限校验通过: {mode:o}")
+          PY
           ls -lh out/AgovHost.ipa
           unzip -l out/AgovHost.ipa | head -12
 

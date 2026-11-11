@@ -78,6 +78,7 @@ const (
 
 var mu sync.Mutex
 var activePID int
+var activeBinary string
 var lastStartError string
 var lastExitedPID int
 var lastExitCode *int
@@ -233,6 +234,12 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 	if err := os.MkdirAll(tunnelPath(workDir), 0700); err != nil {
 		return Status{}, fmt.Errorf("创建穿透运行目录失败: %w", err)
 	}
+	prepared, err := prepareBinary(ctx, binary, tunnelPath(workDir))
+	if err != nil {
+		return Status{Binary: binary}, fmt.Errorf("准备 frpc 可执行文件失败: %w", err)
+	}
+	binary = prepared
+	activeBinary = binary
 	// frpc 必须读取明文 token 配置；仅本机账户可读，不静默忽略写入错误。
 	if err := os.WriteFile(configPath, []byte(Render(cfg)), 0600); err != nil {
 		return Status{}, fmt.Errorf("保存 frpc 配置失败: %w", err)
@@ -356,6 +363,9 @@ func Query(ctx context.Context) Status {
 	}
 	pid := readPID()
 	status := Status{PID: pid, Config: tunnelPath(configRel), LogPath: tunnelPath(logRel), Binary: BundleBinary(ctx), StartError: lastStartError}
+	if activeBinary != "" {
+		status.Binary = activeBinary
+	}
 	if pid <= 0 {
 		status.ExitedPID = lastExitedPID
 		status.ExitCode = lastExitCode
