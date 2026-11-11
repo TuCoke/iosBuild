@@ -308,7 +308,7 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
         if (logFD >= 0) close(logFD);
         for (NSUInteger i = 0; i < argvList.count; i++) free(argv[i]);
         free(argv);
-        if (rc != 0) return AGError(3,[NSString stringWithFormat:@"系统拒绝启动进程(rc=%d)，需要 platform-application / run-unsigned-code 权限", rc]);
+        if (rc != 0) return AGError(3,[NSString stringWithFormat:@"启动进程 %@ 失败：%s（posix_spawn rc=%d）",path,strerror(rc),rc]);
         AGWatchChild(child);
         return AGJSON(@{@"pid":@((int)child)});
     }

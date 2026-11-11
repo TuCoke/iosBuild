@@ -6,9 +6,10 @@
 //
 // 【为什么不把 frp 编进 SDK】frpc 是独立可执行文件（AutoGo 那份 12.8 MB），
 // 单独放着有三个好处：
-//   · 编不过 iOS 的 cgo 检查时不影响主程序
-//   · 可以单独替换版本（热更新）
-//   · 崩了不影响宿主，宿主重启它即可
+//
+//	· 编不过 iOS 的 cgo 检查时不影响主程序
+//	· 可以单独替换版本（热更新）
+//	· 崩了不影响宿主，宿主重启它即可
 //
 // 【已知前提】启动外部可执行文件需要 platform-application / run-unsigned-code
 // 权限（TrollStore 或越狱环境）；普通签名下 posix_spawn 会被系统拒绝，
@@ -53,13 +54,15 @@ type Config struct {
 
 // Status 是当前隧道状态。
 type Status struct {
-	Running   bool   `json:"running"`
-	PID       int    `json:"pid"`
-	Config    string `json:"config"`
-	LogPath   string `json:"logPath"`
-	Binary    string `json:"binary"`
-	LastError string `json:"lastError,omitempty"`
-	ExitCode  *int   `json:"exitCode,omitempty"`
+	Running    bool   `json:"running"`
+	PID        int    `json:"pid"`
+	Config     string `json:"config"`
+	LogPath    string `json:"logPath"`
+	Binary     string `json:"binary"`
+	LastError  string `json:"lastError,omitempty"`
+	ExitCode   *int   `json:"exitCode,omitempty"`
+	StartError string `json:"startError,omitempty"`
+	ExitedPID  int    `json:"exitedPid,omitempty"`
 }
 
 const (
@@ -75,6 +78,9 @@ const (
 
 var mu sync.Mutex
 var activePID int
+var lastStartError string
+var lastExitedPID int
+var lastExitCode *int
 var directoryMu sync.Mutex
 var documentRoot string
 
@@ -176,9 +182,30 @@ func Render(cfg Config) string {
 // Start 写配置、拉进程、记 pid。
 //
 // 返回的 Status 里 PID 为 0 且 LastError 非空，说明没起来（原因写在 LastError）。
-func Start(ctx context.Context, cfg Config) (Status, error) {
+func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 	mu.Lock()
 	defer mu.Unlock()
+	lastStartError = ""
+	lastExitedPID = 0
+	lastExitCode = nil
+	defer func() {
+		if startErr == nil {
+			return
+		}
+		lastStartError = startErr.Error()
+		result.StartError = lastStartError
+		// 调用方可能是远程脚本，启动失败也必须留给界面的后续状态查询和日志。
+		directoryMu.Lock()
+		ready := documentRoot != ""
+		directoryMu.Unlock()
+		if ready {
+			f, err := os.OpenFile(tunnelPath(logRel), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+			if err == nil {
+				_, _ = fmt.Fprintf(f, "[宿主] %s frpc 启动失败：%s\n", time.Now().Format(time.RFC3339), lastStartError)
+				_ = f.Close()
+			}
+		}
+	}()
 
 	if cfg.Server == "" {
 		return Status{}, fmt.Errorf("缺少 serverAddr")
@@ -251,13 +278,53 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 	if err := os.WriteFile(tunnelPath(pidRel), []byte(strconv.Itoa(out.PID)), 0600); err != nil {
 		return Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}, fmt.Errorf("frpc 已启动但 PID 文件保存失败；请停止后重试")
 	}
-	return Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}, nil
+	result = Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}
+	// 观察短暂启动窗口，配置错误/加载失败导致的立即退出不能冒充稳定运行。
+	timer := time.NewTimer(300 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return result, fmt.Errorf("frpc 已返回 PID，但启动观察被取消：%w", ctx.Err())
+	case <-timer.C:
+	}
+	var exited struct {
+		Finished bool `json:"finished"`
+		Code     int  `json:"code"`
+	}
+	if err := native.Call(ctx, "utils.wait", map[string]any{"pid": out.PID}, &exited); err != nil {
+		return result, fmt.Errorf("无法确认 frpc 启动结果：%w", err)
+	}
+	if exited.Finished {
+		code := exited.Code
+		lastExitedPID = out.PID
+		lastExitCode = &code
+		activePID = 0
+		files.Remove(tunnelPath(pidRel))
+		result.Running = false
+		result.ExitedPID = out.PID
+		result.ExitCode = &code
+		return result, fmt.Errorf("frpc 启动后立即退出（退出码=%d），请查看 frpc.log", code)
+	}
+	var alive struct {
+		Alive bool `json:"alive"`
+	}
+	if err := native.Call(ctx, "utils.alive", map[string]any{"pid": out.PID}, &alive); err != nil {
+		return result, fmt.Errorf("无法读取 frpc 存活状态：%w", err)
+	}
+	result.Running = alive.Alive
+	if !alive.Alive {
+		return result, fmt.Errorf("frpc 在启动观察期间退出，退出码待回收，请查看 frpc.log")
+	}
+	return result, nil
 }
 
 // Stop 停掉隧道（没有在跑就返回 ok）。
 func Stop(ctx context.Context) (Status, error) {
 	mu.Lock()
 	defer mu.Unlock()
+	lastStartError = ""
+	lastExitedPID = 0
+	lastExitCode = nil
 
 	if err := ensureDirectory(ctx); err != nil {
 		return Status{LastError: err.Error()}, err
@@ -288,8 +355,21 @@ func Query(ctx context.Context) Status {
 		return Status{LastError: err.Error()}
 	}
 	pid := readPID()
-	status := Status{PID: pid, Config: tunnelPath(configRel), LogPath: tunnelPath(logRel), Binary: BundleBinary(ctx)}
+	status := Status{PID: pid, Config: tunnelPath(configRel), LogPath: tunnelPath(logRel), Binary: BundleBinary(ctx), StartError: lastStartError}
 	if pid <= 0 {
+		status.ExitedPID = lastExitedPID
+		status.ExitCode = lastExitCode
+		if lastExitedPID > 0 && lastExitCode == nil {
+			var exited struct {
+				Finished bool `json:"finished"`
+				Code     int  `json:"code"`
+			}
+			if native.Call(ctx, "utils.wait", map[string]any{"pid": lastExitedPID}, &exited) == nil && exited.Finished {
+				code := exited.Code
+				lastExitCode = &code
+				status.ExitCode = lastExitCode
+			}
+		}
 		return status
 	}
 	var out struct {
@@ -311,6 +391,9 @@ func Query(ctx context.Context) Status {
 		if native.Call(ctx, "utils.wait", map[string]any{"pid": pid}, &exited) == nil && exited.Finished {
 			status.ExitCode = &exited.Code
 		}
+		lastExitedPID = pid
+		lastExitCode = status.ExitCode
+		status.ExitedPID = pid
 		activePID = 0
 		files.Remove(tunnelPath(pidRel))
 	}

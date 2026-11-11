@@ -175,9 +175,11 @@
     if(pid>0 && pid!=self.lastTunnelPID)self.lastTunnelExitCode=nil;
     if([status[@"exitCode"] isKindOfClass:NSNumber.class])self.lastTunnelExitCode=status[@"exitCode"];
     if(pid>0 && !running)self.lastTunnelPID=pid;
+    if(!running && [status[@"exitedPid"] integerValue]>0)self.lastTunnelPID=[status[@"exitedPid"] integerValue];
     NSString *message;
     if(![envelope[@"ok"] boolValue] || !status)message=[@"frpc 状态读取失败：" stringByAppendingString:envelope[@"error"] ?: @"返回内容无效"];
     else if([status[@"lastError"] length])message=[@"frpc 状态读取失败：" stringByAppendingString:status[@"lastError"]];
+    else if(!running && [status[@"startError"] length])message=[@"frpc 启动失败：" stringByAppendingString:status[@"startError"]];
     else if(running){self.lastTunnelPID=pid;message=[NSString stringWithFormat:@"frpc 运行中 · PID %ld（连接/注册结果见下方日志）",(long)pid];}
     else if(self.lastTunnelPID>0)message=[NSString stringWithFormat:@"frpc 已退出 · PID %ld · 退出码 %@（请查看最后日志）",(long)self.lastTunnelPID,self.lastTunnelExitCode ?: @"未知"];
     else message=@"frpc 未运行 · 请配置后点击启动穿透";
