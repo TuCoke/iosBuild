@@ -23,4 +23,8 @@ result, err = runner.RunProject(ctx, sourceFS, "main.go")
 
 Go context 可以中断解释器计算与 api.Sleep，不能强行打断正在执行的 C、系统 API 或所有宿主 Go 函数。需要可强制终止时，交给任务进程执行并由宿主看护；不得把超时响应当作动作已经停止。标准库导出不是沙箱，只供可信任务使用。
 
-`remote.go` 尚有短 SHA、下载取消和缓存发布缺陷，已在技术核查登记；不要把当前远程缓存描述成完整回滚机制。
+`remote.go` 已修复摘要格式、context 取消、缓存越界和发布次序。下载或哈希失败可以读取已有缓存；新脚本已经执行后失败时不会重放旧脚本，避免重复动作。仅成功执行的远端版本才原子替换缓存。这不是业务动作回滚。
+
+宿主 `script.run` 通过 `script/worker` 使用 posix_spawn 启动 `Runtime/app`，传入 Go 文件或 ZIP、参数文件和结果文件；任务完成后进程退出。宿主使用 waitpid 状态确认回收，超时会终止该工作进程。Go SDK 的 Runner 仍可嵌入执行，原生函数的硬中止保证只来自独立工作进程。
+
+`apkctl` 使用样本的本机 8990 TCP 二进制协议连接宿主 JavaScriptCore；解释器为每次运行绑定独立 Session，关闭时释放回调和未完成请求。完整的原生 JS UI 结构/动作桥仍未提供。

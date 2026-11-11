@@ -131,12 +131,17 @@ func All(ctx context.Context) map[string]any {
 		Detail string `json:"detail"`
 	}
 	var items []item
-	counts := map[string]int{"ok": 0, "env": 0, "missing": 0, "unsafe": 0}
+	counts := map[string]int{"ok": 0, "env": 0, "missing": 0, "unsafe": 0, "invalid": 0, "unverified": 0}
 
 	for _, p := range probeList() {
 		if p.unsafe {
 			items = append(items, item{Op: p.op, Status: "unsafe", Detail: "会改状态，自检不调"})
 			counts["unsafe"]++
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
+			counts["unverified"]++
 			continue
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -146,6 +151,12 @@ func All(ctx context.Context) map[string]any {
 		case err == nil:
 			items = append(items, item{Op: p.op, Status: "ok"})
 			counts["ok"]++
+		case errors.Is(err, types.ErrInvalid):
+			items = append(items, item{Op: p.op, Status: "invalid", Detail: "只验证了参数拒绝，未验证能力成功: " + err.Error()})
+			counts["invalid"]++
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
+			counts["unverified"]++
 		case errors.Is(err, types.ErrUnsupported):
 			items = append(items, item{Op: p.op, Status: "missing", Detail: err.Error()})
 			counts["missing"]++
@@ -165,8 +176,9 @@ func All(ctx context.Context) map[string]any {
 		"env":     counts["env"],
 		"missing": counts["missing"],
 		"unsafe":  counts["unsafe"],
-		"items":   items,
-		"summary": fmt.Sprintf("共 %d 项：可用 %d / 受环境限制 %d / 未实现 %d / 未验证 %d",
-			len(items), counts["ok"], counts["env"], counts["missing"], counts["unsafe"]),
+		"invalid": counts["invalid"], "unverified": counts["unverified"],
+		"items": items,
+		"summary": fmt.Sprintf("共 %d 项：调用成功 %d / 环境失败 %d / 不支持 %d / 跳过有副作用 %d / 仅参数拒绝 %d / 未验证 %d",
+			len(items), counts["ok"], counts["env"], counts["missing"], counts["unsafe"], counts["invalid"], counts["unverified"]),
 	}
 }

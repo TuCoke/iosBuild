@@ -26,7 +26,7 @@
 | uiacc | AX 私有快照、坐标补采、共享刷新、带 context 查询、任务结束释放 | 本轮原生重写尚待 Apple 编译、权限与跨 App 真机验收 |
 | images | Lanczos、任意角度旋转、透明度灰度、样本阈值语义、连续帧回调 | 找色与闭源样本尚未逐像素比对；完整 OpenCV Go 绑定仍未提供 |
 | OCR/YOLO | Go API 与识别胶水已有；独立镜像构建引用 iOS 预编译识别库 | 模型、来源、C++ ABI 和真实识别结果待验收，不能复用安卓二进制 |
-| script | 独立任务状态、SDK 类型绑定、取消、工程/ZIP/import/embed | 原生阻塞需要进程看护；远端下载/缓存仍有已登记缺陷 |
+| script | 独立任务状态、SDK 类型绑定、取消、工程/ZIP/import/embed | 宿主已接工作进程看护；完整 Yaegi 分支、第三方绑定仍待对齐 |
 
 `Capabilities` 返回的是运行时入口可用性，不表示授权成功、注入生效或业务达成。控件树必须实际采集成功，不能仅看类是否存在。非 iOS 或关闭 cgo 时，设备调用返回 `types.ErrUnsupported`，不会假装成功。
 

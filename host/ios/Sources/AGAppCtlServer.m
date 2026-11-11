@@ -100,10 +100,10 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
 - (BOOL)start:(NSError **)error {
  @synchronized(self){
     if(_listener>=0)return YES;
-    int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0)goto failed;
+    int fd=socket(AF_INET,SOCK_STREAM,0);if(fd<0){if(error)*error=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];return NO;}
     int yes=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
     struct sockaddr_in address={0};address.sin_len=sizeof(address);address.sin_family=AF_INET;address.sin_port=htons(8990);address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
-    if(bind(fd,(struct sockaddr *)&address,sizeof(address))!=0 || listen(fd,8)!=0){int saved=errno;close(fd);errno=saved;goto failed;}
+    if(bind(fd,(struct sockaddr *)&address,sizeof(address))!=0 || listen(fd,8)!=0){int saved=errno;close(fd);if(error)*error=[NSError errorWithDomain:NSPOSIXErrorDomain code:saved userInfo:nil];return NO;}
     _listener=fd;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
       for(;;){int client=accept(fd,NULL,NULL);if(client<0){if(errno==EINTR)continue;break;}
@@ -115,8 +115,7 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
       }
     });
     return YES;
-failed:
-    if(error)*error=[NSError errorWithDomain:NSPOSIXErrorDomain code:errno userInfo:nil];return NO;
+
  }
 }
 - (void)emitLifecycle:(NSString *)name {

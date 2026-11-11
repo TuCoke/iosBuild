@@ -274,7 +274,7 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 
 	case "script.run":
 		source := str(args, "source")
-		builtin := source == ""
+		builtin := source == "" && str(args, "path") == ""
 		if builtin {
 			source = script.DemoSource
 		}
@@ -295,10 +295,12 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		return okData(worker.Status())
 	case "script.remote":
 		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
-		res, err := runner.RunRemote(ctx, script.RemoteOptions{
+		res, err := runner.RunRemoteWithExecutor(ctx, script.RemoteOptions{
 			URL:       str(args, "url"),
 			SHA256:    str(args, "sha256"),
 			CacheName: str(args, "name"),
+		}, func(runCtx context.Context, source string) (script.Result, error) {
+			return worker.Run(runCtx, source, "", args)
 		})
 		if err != nil {
 			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})

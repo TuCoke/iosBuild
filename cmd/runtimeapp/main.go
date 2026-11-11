@@ -28,7 +28,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := options.Parse(args); err != nil {
 		return 2
 	}
-	if options.NArg() != 1 {
+	if options.NArg() != 1 || *timeout <= 0 {
 		fmt.Fprintln(stderr, "用法: Runtime/app [--result 文件] [--params 文件] [--timeout 2m] 脚本.go|工程.zip")
 		return 2
 	}

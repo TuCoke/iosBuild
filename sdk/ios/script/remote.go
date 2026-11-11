@@ -43,6 +43,15 @@ func cacheFilename(name string) (string, error) {
 func (r *Runner) cachePath(name string) string { p, _ := cacheFilename(name); return p }
 
 func (r *Runner) RunRemote(ctx context.Context, opts RemoteOptions) (Result, error) {
+	return r.RunRemoteWithExecutor(ctx, opts, r.Run)
+}
+
+// RunRemoteWithExecutor 使远端下载/缓存与宿主的工作进程隔离共用同一执行入口。
+func (r *Runner) RunRemoteWithExecutor(ctx context.Context, opts RemoteOptions, execute func(context.Context, string) (Result, error)) (Result, error) {
+	if execute == nil {
+		return Result{}, fmt.Errorf("缺少脚本执行器")
+	}
+
 	if ctx == nil {
 		return Result{}, fmt.Errorf("脚本 context 不能为空")
 	}
@@ -51,7 +60,7 @@ func (r *Runner) RunRemote(ctx context.Context, opts RemoteOptions) (Result, err
 		return Result{}, err
 	}
 	if opts.URL == "" {
-		return r.RunCache(ctx, opts.CacheName)
+		return r.runCacheUsing(ctx, opts.CacheName, execute)
 	}
 	expected := strings.ToLower(opts.SHA256)
 	if expected != "" {
@@ -73,7 +82,7 @@ func (r *Runner) RunRemote(ctx context.Context, opts RemoteOptions) (Result, err
 		if e := ctx.Err(); e != nil {
 			return Result{}, e
 		}
-		res, e := r.RunCache(ctx, opts.CacheName)
+		res, e := r.runCacheUsing(ctx, opts.CacheName, execute)
 		res.Logs = append([]string{reason + "，回退本地缓存"}, res.Logs...)
 		return res, e
 	}
@@ -98,7 +107,7 @@ func (r *Runner) RunRemote(ctx context.Context, opts RemoteOptions) (Result, err
 		return fallback("脚本哈希不符")
 	}
 	// 新脚本已经执行过时不能再自动重跑旧脚本，否则会重复触发设备操作。
-	res, err := r.Run(ctx, string(body))
+	res, err := execute(ctx, string(body))
 	res.Logs = append([]string{fmt.Sprintf("脚本来自远端(%d 字节，SHA256=%s)", len(body), actual)}, res.Logs...)
 	if err != nil {
 		return res, err
@@ -132,6 +141,9 @@ func atomicCache(filename string, body []byte) error {
 	return os.Rename(temp.Name(), filename)
 }
 func (r *Runner) RunCache(ctx context.Context, name string) (Result, error) {
+	return r.runCacheUsing(ctx, name, r.Run)
+}
+func (r *Runner) runCacheUsing(ctx context.Context, name string, execute func(context.Context, string) (Result, error)) (Result, error) {
 	filename, err := cacheFilename(name)
 	if err != nil {
 		return Result{}, err
@@ -140,7 +152,7 @@ func (r *Runner) RunCache(ctx context.Context, name string) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("读取缓存脚本失败: %w", err)
 	}
-	res, err := r.Run(ctx, string(body))
+	res, err := execute(ctx, string(body))
 	res.Logs = append([]string{"脚本来自本地缓存"}, res.Logs...)
 	return res, err
 }
