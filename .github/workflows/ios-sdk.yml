@@ -833,13 +833,17 @@ jobs:
           xcrun simctl launch "${UDID}" dev.autogov.host || true
           # 安装后执行真正的工作进程和宿主 JS 检查；不再固定睡 8 秒便宣称成功。
           CONTAINER=$(xcrun simctl get_app_container "${UDID}" dev.autogov.host data)
-          for attempt in $(seq 1 60); do
-            [ -f "${CONTAINER}/Documents/script-check.json" ] && [ -f "${CONTAINER}/Documents/js-check.json" ] && break
+          for attempt in $(seq 1 90); do
+            [ -f "${CONTAINER}/Documents/script-check.json" ] && [ -f "${CONTAINER}/Documents/js-check.json" ] && [ -f "${CONTAINER}/Documents/native-diagnostics.done" ] && break
             sleep 1
           done
           python3 - "${CONTAINER}/Documents" <<'PY'
           import json, pathlib, sys
           root=pathlib.Path(sys.argv[1])
+          assert (root/'native-diagnostics.done').exists(), '截图/AX 专项诊断未完成，不能只收集半份结果'
+          for context in ['host','worker']:
+              report=json.loads((root/f'native-diagnostics-{context}.json').read_text())
+              print('原生诊断',context,'调用完成:',report.get('ok'), '；采集成功与否以完整 JSON 为准')
           script=json.loads((root/'script-check.json').read_text())
           data=script.get('data',{})
           assert script.get('ok') and data.get('ok'), '工作进程执行失败: '+str(data.get('error',script.get('error')))

@@ -119,8 +119,8 @@ func boolean(m map[string]any, key string) bool {
 // ---- 本地 API ----
 //
 // 宿主在 127.0.0.1 上开一个小 HTTP 服务，两个用途：
-//   1. 隧道有东西可暴露（frpc 需要一个 localPort）
-//   2. 服务端经隧道探活，确认设备在线（GET /status）
+//  1. 隧道有东西可暴露（frpc 需要一个 localPort）
+//  2. 服务端经隧道探活，确认设备在线（GET /status）
 //
 // 只监听 127.0.0.1，不监听 0.0.0.0 —— 避免局域网里的人直接连上来。
 var (
@@ -166,6 +166,7 @@ func startLocalAPI(port int) error {
 // 注意：//export 必须【紧邻】函数声明，cgo 才会生成导出符号。
 // 之前它被上面新加的代码隔开了，结果归档里只有 agov_ios_free、没有 invoke，
 // 表现就是 clang 报 <initial-undefines> / dlsym 失败 —— 踩过一次，别再挪。
+//
 //export agov_ios_invoke
 func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	if method == nil {
@@ -206,6 +207,21 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(v)
 
+	case "runtime.diagnostics":
+		report, err := selftest.Diagnostics(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(report)
+	case "runtime.diagnostics.worker":
+		executionControl.RLock()
+		defer executionControl.RUnlock()
+		result, err := worker.Run(ctx, selftest.DiagnosticSource, "", map[string]any{})
+		response := reply{OK: err == nil, Data: map[string]any{"processId": result.ProcessID, "elapsedMs": result.Elapsed.Milliseconds(), "logs": result.Logs, "result": result.Value}}
+		if err != nil {
+			response.Error = err.Error()
+		}
+		return encode(response)
 	case "runtime.selftest.all":
 		// 全量自检：逐个 op 真调一次，报告 可用/受环境限制/未实现/未验证
 		return okData(selftest.All(ctx))

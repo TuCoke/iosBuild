@@ -101,6 +101,7 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
         NSDictionary *args = [value isKindOfClass:[NSDictionary class]] ? value : @{};
         AGLoadFrameworks();
         @try {
+            if ([op isEqualToString:@"runtime.diagnostics"]) return AGDiagnostics();
             if ([op isEqualToString:@"runtime.paths"]) {
                 Dl_info image={0};dladdr((const void *)&ag_ios_call,&image);
                 NSString *loaded=image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @"";

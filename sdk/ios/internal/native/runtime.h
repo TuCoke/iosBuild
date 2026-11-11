@@ -30,6 +30,8 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args);
 ag_ios_result AGInput(NSString *op, NSDictionary *args);
 BOOL AGInputAvailable(NSString *kind);
 ag_ios_result AGCapture(NSDictionary *args);
+ag_ios_result AGDiagnostics(void);
+NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height);
 // 返回独立拥有的图像，调用者必须 CGImageRelease；采集资源在内部串行保护。
 CGImageRef AGCopyScreenImage(int width, int height, NSString **error);
 void AGReleaseCaptureSurface(void);

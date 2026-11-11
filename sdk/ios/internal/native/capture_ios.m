@@ -143,3 +143,32 @@ ag_ios_result AGCapture(NSDictionary *args) {
     if (!ok) return AGError(3, @"图片编码失败");
     ag_ios_result result = AGData(encoded); result.width = w; result.height = h; return result;
 }
+
+// 仅供诊断：沿用样本的同一渲染接口，比较四项原始属性与现有显式行宽属性。
+// 使用独立 surface，不替换生产采集资源，也不采用其他截图通道。
+NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
+    RenderDisplay render=AGSymbol("CARenderServerRenderDisplay");
+    if(!render || !AGScreenSurfaceReady())return @{@"ok":@NO,@"error":@"截图符号不完整"};
+    if(width<=0 || height<=0 || width>8192 || height>8192 || (uint64_t)width*height*4>64*1024*1024)return @{@"ok":@NO,@"error":@"屏幕尺寸无效"};
+    NSMutableArray *attempts=[NSMutableArray array];
+    for(NSString *name in displayNames){
+      if(![name isKindOfClass:NSString.class] || !name.length)continue;
+      for(int explicitStride=0;explicitStride<=1;explicitStride++){
+        size_t stride=((size_t)width*4+63)&~(size_t)63;
+        NSMutableDictionary *attrs=[NSMutableDictionary dictionaryWithDictionary:@{
+            @"IOSurfaceWidth":@(width),@"IOSurfaceHeight":@(height),
+            @"IOSurfaceBytesPerElement":@4,@"IOSurfacePixelFormat":@((uint32_t)0x42475241)}];
+        if(explicitStride){attrs[@"IOSurfaceBytesPerRow"]=@(stride);attrs[@"IOSurfaceAllocSize"]=@(stride*height);}
+        IOSurfaceRef candidate=surfaceCreate((CFDictionaryRef)attrs);
+        NSMutableDictionary *item=[NSMutableDictionary dictionaryWithDictionary:@{@"display":name,@"attributes":attrs,@"mode":explicitStride ? @"explicit_stride" : @"sample_four_attributes"}];
+        if(!candidate){item[@"ok"]=@NO;item[@"error"]=@"IOSurfaceCreate 失败";}
+        else{
+            int status=render(0,(CFStringRef)name,candidate,0,0);
+            item[@"renderStatus"]=@(status);item[@"ok"]=@(status==0);item[@"actualBytesPerRow"]=@(surfaceBytesPerRow(candidate));
+            CFRelease(candidate);
+        }
+        [attempts addObject:item];
+      }
+    }
+    return @{@"attempts":attempts,@"width":@(width),@"height":@(height),@"note":@"渲染返回 0 不等同于图像内容和业务结果已验证"};
+}

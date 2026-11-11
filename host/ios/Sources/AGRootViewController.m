@@ -53,6 +53,7 @@
     [self append:[AGBridge statusLine]];
     [self probeAllButtons];
     [self runAllAPITest];
+    [self runNativeDiagnostics];
     [self append:[NSString stringWithFormat:@"localapi.start → %@",
                   [AGBridge invoke:@"localapi.start" payload:@"{}"]]];
     });
@@ -346,6 +347,7 @@
     [self append:@"—— 全量 API 自检开始 ——"];
     NSString *raw = [AGBridge invoke:@"runtime.selftest.all" payload:@"{}"];
     NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    [data writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"selftest-all.json"] atomically:YES];
     NSDictionary *obj = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
     NSDictionary *payload = [obj isKindOfClass:NSDictionary.class] ? obj[@"data"] : nil;
     if (![payload isKindOfClass:NSDictionary.class]) {
@@ -371,14 +373,38 @@
         }
     }
     NSString *missingLine = missing.count == 0
-        ? @"未实现：无"
-        : [@"未实现：" stringByAppendingString:[missing componentsJoinedByString:@", "]];
+        ? @"当前构建或环境不支持：无"
+        : [@"当前构建或环境不支持：" stringByAppendingString:[missing componentsJoinedByString:@", "]];
     [self append:missingLine];
     [self append:[NSString stringWithFormat:@"受环境限制：%lu 项", (unsigned long)limited.count]];
     for (NSUInteger i = 0; i < MIN(limited.count, (NSUInteger)8); i++) {
         [self append:[NSString stringWithFormat:@"  %@", [self shorten:limited[i] to:80]]];
     }
     [self append:@"—— 全量 API 自检结束 ——"];
+}
+
+
+// 保存宿主与任务进程的完整对照结果；界面不展开节点树和图片 base64。
+- (void)runNativeDiagnostics {
+    NSArray *entries=@[@[@"host",@"runtime.diagnostics"],@[@"worker",@"runtime.diagnostics.worker"]];
+    for(NSArray *entry in entries){
+        NSString *raw=[AGBridge invoke:entry[1] payload:@"{}"];
+        NSData *data=[raw dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *filename=[NSString stringWithFormat:@"native-diagnostics-%@.json",entry[0]];
+        [data writeToFile:[[self documentsDir] stringByAppendingPathComponent:filename] atomically:YES];
+        NSDictionary *envelope=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        NSDictionary *report=[envelope isKindOfClass:NSDictionary.class] ? envelope[@"data"] : nil;
+        if([entry[0] isEqualToString:@"worker"] && [report isKindOfClass:NSDictionary.class])report=report[@"result"];
+        if(![report isKindOfClass:NSDictionary.class]){[self append:[NSString stringWithFormat:@"原生诊断(%@)失败：%@",entry[0],[self shorten:raw to:300]]];continue;}
+        NSDictionary *capture=report[@"capture"],*ax=report[@"ax"];
+        [self append:[NSString stringWithFormat:@"原生诊断(%@)：截图=%@；AX=%@；完整结果=%@",entry[0],[capture[@"ok"] boolValue] ? @"成功" : @"失败",[ax[@"ok"] boolValue] ? [NSString stringWithFormat:@"%@ 节点",ax[@"nodeCount"]] : @"失败",filename]];
+        if([capture[@"ok"] boolValue]){
+            NSString *base64=capture[@"data"][@"base64"];
+            NSData *image=[[NSData alloc] initWithBase64EncodedString:base64 options:0];
+            [image writeToFile:[[self documentsDir] stringByAppendingPathComponent:[NSString stringWithFormat:@"native-capture-%@.jpg",entry[0]]] atomically:YES];
+        }
+    }
+    [@"done" writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"native-diagnostics.done"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
 #pragma mark - 日志

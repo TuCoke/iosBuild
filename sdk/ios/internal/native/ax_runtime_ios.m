@@ -224,7 +224,7 @@ NSArray *AGAXCollectNodes(NSUInteger limit, NSString **error) {
             }];
             return nodes;
         } @catch(NSException *exception) {
-            if(error)*error=[NSString stringWithFormat:@"AX 采集异常: %@",exception.reason];return nil;
+            if(error)*error=[NSString stringWithFormat:@"AX 采集异常: %@; name=%@; pid=%d; euid=%d; thread=%@; stack=%@",exception.reason,exception.name,getpid(),geteuid(),NSThread.isMainThread ? @"main" : @"background",exception.callStackSymbols];return nil;
         }
     }
 }

@@ -5,9 +5,10 @@
 // 【为什么要做】
 // 逐个按钮点只能看到几个功能；用户真正关心的是"所有 API 都能用吗"。
 // 这里按 op 列表逐个调，三类结论：
-//   ok        —— 调用成功
-//   env       —— 已实现，但当前环境拿不到（例：模拟器没有 render server）
-//   missing   —— 当前构建或系统不支持（返回"尚未提供此原生能力"）
+//
+//	ok        —— 调用成功
+//	env       —— 已实现，但当前环境拿不到（例：模拟器没有 render server）
+//	missing   —— 当前构建或系统不支持（返回"尚未提供此原生能力"）
 //
 // 【安全边界】
 // 会改状态或伤设备的 op（重启、锁屏）不真调，只标 unsafe —— 自检不能把手机弄挂。
@@ -163,8 +164,9 @@ func All(ctx context.Context) map[string]any {
 		default:
 			// 已实现，但这次调用的参数/环境不满足（越界、缺参、无权限、未装库…）
 			detail := err.Error()
-			if text := []rune(detail); len(text) > 120 {
-				detail = string(text[:120])
+			// 完整错误保留到 JSON，不能在界面缩略之前丢掉根因。
+			if text := []rune(detail); len(text) > 16384 {
+				detail = string(text[:16384])
 			}
 			items = append(items, item{Op: p.op, Status: "env", Detail: detail})
 			counts["env"]++
@@ -182,3 +184,15 @@ func All(ctx context.Context) map[string]any {
 			len(items), counts["ok"], counts["env"], counts["unsupported"], counts["unsafe"], counts["invalid"], counts["unverified"]),
 	}
 }
+
+// Diagnostics 在当前进程执行相同的原生诊断；也供独立任务进程调用。
+func Diagnostics(ctx context.Context) (map[string]any, error) {
+	var report map[string]any
+	err := native.Call(ctx, "runtime.diagnostics", nil, &report)
+	return report, err
+}
+
+const DiagnosticSource = `package main
+import "autogov1/v2/sdk/ios/script/api"
+func main(){report,err:=api.Call("runtime.diagnostics",nil);if err!=nil{panic(err)};api.SetResult(report)}
+`
