@@ -105,6 +105,9 @@
 
 截图误判已定位并修复：真机样本以 0 继续读取，iOS 18.5 模拟器的同名外层函数却把有效内部应答转换成非零布尔值。此前把模拟器返回的 1 当成错误，导致在读取图像前退出。现在只在 iOS SDK 内按构建目标解释返回值，截图路线、对外 API 与 Agent 调用方式不变。
 
-[9a1900d 最终验证](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 四项全部通过：宿主生成 JPEG 235×512 / 36782 字节，独立任务生成 235×512 / 38120 字节，已人工查看确认真实界面与方向正常。AX 为 79 / 80 个实际节点，真实按钮断言通过。脚本 PID 7949、258ms 完成，capture.json 返回 23318 字节，captureSucceeded=true、result.ok=true；effectVerified 仍未验证，不改成成功。
+[9a1900d 最终验证](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 四项全部通过：宿主生成 JPEG 235×512 / 36782 字节，独立任务生成 235×512 / 38120 字节，已查看确认真实界面与方向正常。AX 为 79 / 80 个实际节点，真实按钮断言通过。脚本 PID 7949、258ms 完成，capture.json 返回 23318 字节，captureSucceeded=true、result.ok=true；effectVerified 仍未验证，不改成成功。
 
 最终探针计数为调用成功 40、环境失败 4、不支持 2、跳过有副作用 6、仅参数拒绝 18、未运行 0。没有据此宣称所有 SDK 功能或真实 iPhone 已通过。专项验证分支为 `codex/ios-capture-ax-diagnostics-20261111`，完整调用点、对照实验和更正记录见专项说明。
+
+
+收尾复核 70e5445：内部渲染 ABI 探针已限定于模拟器。[最新构建](https://github.com/TuCoke/iosBuild/actions/runs/42988971066) 四项通过；首次模拟器启动遇到 FrontBoard 应用未注册，单独重跑通过，未放宽 SDK 断言。

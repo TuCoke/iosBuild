@@ -147,6 +147,9 @@ Windows/Go 1.25.1、GOWORK=off：运行相关 Go 测试、SDK Go 构建和静态
 
 ## 2026-11-11 截图与 AX 后续验收
 
-[9a1900d 构建记录](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 四项全部通过。此前 SDK 截图把模拟器的成功布尔返回误当成真机错误码，现已修正：宿主和独立任务均实际生成 235×512 JPEG，人工查看图像内容和方向正常；AX 分别取得 79 / 80 个真实节点。脚本内 capture.json 也已通过。前文较早构建记录中的“截图尚未通过”已被本次专项验收更新。
+[9a1900d 构建记录](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 四项全部通过。此前 SDK 截图把模拟器的成功布尔返回误当成真机错误码，现已修正：宿主和独立任务均实际生成 235×512 JPEG，查看图像内容和方向正常；AX 分别取得 79 / 80 个真实节点。脚本内 capture.json 也已通过。前文较早构建记录中的“截图尚未通过”已被本次专项验收更新。
 
 完整调用点、对照实验和更正记录见 [截图与节点树失败定位](ios-capture-ax-diagnostics.md)。真机保持样本返回约定，仍未做实体 iPhone 验收，不能将本轮模拟器结果推广到全部真机能力。
+
+
+收尾复核 70e5445：内部渲染 ABI 探针已限定于模拟器。[最新构建](https://github.com/TuCoke/iosBuild/actions/runs/42988971066) 四项通过；首次模拟器启动遇到 FrontBoard 应用未注册，单独重跑通过，未放宽 SDK 断言。

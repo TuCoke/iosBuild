@@ -78,10 +78,16 @@ AutoGo 真机样本的函数指针确实直接由 dlsym(CARenderServerRenderDisp
 | 界面宿主 | JPEG 235×512，36782 字节 | 79 |
 | 独立任务进程（PID 8296） | JPEG 235×512，38120 字节 | 80 |
 
-已人工查看产物 `native-capture-host.jpg` 与 `native-capture-worker.jpg`：两图均可见 AgovHost 标题、四行测试文字、红色点击计数区和按钮，方向正常、不是空白图。图片由 SDK 的 CARenderServer / IOSurface / 图像编码生成，`sim.png` 不计入这一结果。
+已逐张查看产物 `native-capture-host.jpg` 与 `native-capture-worker.jpg`：两图均可见 AgovHost 标题、四行测试文字、红色点击计数区和按钮，方向正常、不是空白图。图片由 SDK 的 CARenderServer / IOSurface / 图像编码生成，`sim.png` 不计入这一结果。
 
 脚本进程 PID 7949，258ms 完成；实际调用 capture.json 返回 23318 字节、235×512，result.captureSucceeded=true、result.ok=true。effectVerified 仍为 false，因为该字段未验证具体业务效果，未将其改成成功。
 
 AX 继续通过“真实按钮文字 + 按钮属性 + 有效坐标”断言；节点数量会随界面日志变化，79/80 与先前 81/82 不构成回归。全量探针为调用成功 40、环境失败 4、不支持 2、跳过有副作用 6、仅参数拒绝 18、未运行 0，不能解释成 70 项能力全部已验收。
 
 结论：本次两个故障分别为 AX 的调用线程边界和模拟器的渲染返回值解释，均已修复。uid 501 环境下截图实际通过，因此不把 root 启动差异归为本次模拟器截图的原因。真机保持样本返回约定，仍需真机分别验收输入、截图、视频、AX 与识别能力；本轮没有继承 AutoGo 的真机测试结论。
+
+## 收尾复核（70e5445）
+
+内部渲染 ABI 探针已限定为模拟器，不在未核实的真机环境执行该内部调用。[最新构建 42988971066](https://github.com/TuCoke/iosBuild/actions/runs/42988971066) 四项全部通过，包含同一套原生 JPEG、脚本截图和 AX 真实按钮断言。
+
+该构建第一次模拟器任务在启动时收到 FrontBoard `Application is unknown`，未执行到 SDK，故未产生诊断；保留失败日志后单独重跑模拟器任务通过。没有为此放宽任何 SDK 断言，也没有把未启动应用的情况记为 SDK 通过。
