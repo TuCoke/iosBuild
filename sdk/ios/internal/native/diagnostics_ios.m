@@ -42,10 +42,16 @@ static NSDictionary *AGDiagnosticSymbol(const char *name) {
                 int64_t displacement=(int64_t)(immediate>>6)*4;
                 uintptr_t target=(uintptr_t)pointer+i+displacement;Dl_info callee={0};
                 if(!dladdr((void *)target,&callee) || callee.dli_fbase!=image.dli_fbase)continue;
-                uint8_t code[256]={0};vm_size_t count=0;
+                uint8_t code[4096]={0};vm_size_t count=0;
                 if(vm_read_overwrite(mach_task_self(),(vm_address_t)target,sizeof(code),(vm_address_t)code,&count)!=KERN_SUCCESS)continue;
                 NSMutableString *codeHex=[NSMutableString string];for(vm_size_t j=0;j<count;j++)[codeHex appendFormat:@"%02x",code[j]];
-                [branches addObject:@{@"addressHex":[NSString stringWithFormat:@"%llx",(unsigned long long)target],@"symbol":callee.dli_sname ? [NSString stringWithUTF8String:callee.dli_sname] : @"",@"bytesHex":codeHex}];
+                NSMutableDictionary *labels=[NSMutableDictionary dictionary];
+                for(vm_size_t j=0;j+4<=count;j+=4){
+                    uint32_t op=0;memcpy(&op,code+j,4);if((op&0xfc000000)!=0x94000000)continue;
+                    int32_t immediate=(int32_t)(op<<6);uintptr_t called=target+j+(int64_t)(immediate>>6)*4;Dl_info label={0};
+                    if(dladdr((void *)called,&label) && label.dli_sname)labels[[NSString stringWithFormat:@"%llx",(unsigned long long)called]]=[NSString stringWithUTF8String:label.dli_sname];
+                }
+                [branches addObject:@{@"addressHex":[NSString stringWithFormat:@"%llx",(unsigned long long)target],@"symbol":callee.dli_sname ? [NSString stringWithUTF8String:callee.dli_sname] : @"",@"bytesHex":codeHex,@"callLabels":labels}];
             }
             result[@"directBranches"]=branches;
 #endif

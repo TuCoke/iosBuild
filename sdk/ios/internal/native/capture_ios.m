@@ -204,6 +204,16 @@ NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
         else{
             int status=render(0,(CFStringRef)name,candidate,0,0);
             item[@"renderStatus"]=@(status);item[@"ok"]=@(status==0);item[@"actualBytesPerRow"]=@(surfaceBytesPerRow(candidate));
+            item[@"surfaceTypeID"]=@(CFGetTypeID(candidate));
+            CFTypeID (*expectedType)(void)=(CFTypeID(*)(void))AGSymbol("IOSurfaceGetTypeID");
+            if(expectedType)item[@"expectedSurfaceTypeID"]=@(expectedType());
+            // 记录分配后的真实属性，避免只凭传入字典判断缓冲区是否符合系统要求。
+            for(NSString *property in @[@"IOSurfaceGetWidth",@"IOSurfaceGetHeight",@"IOSurfaceGetAllocSize"]){
+                size_t (*getter)(IOSurfaceRef)=(size_t(*)(IOSurfaceRef))AGSymbol(property.UTF8String);
+                if(getter)item[property]=@(getter(candidate));
+            }
+            uint32_t (*format)(IOSurfaceRef)=(uint32_t(*)(IOSurfaceRef))AGSymbol("IOSurfaceGetPixelFormat");
+            if(format)item[@"actualPixelFormat"]=@(format(candidate));
             if(status!=0)item[@"internalDetail"]=AGRenderFailureDetail((CFStringRef)name,candidate);
             CFRelease(candidate);
         }
