@@ -90,8 +90,10 @@ ag_ios_result AGOnMain(ag_ios_result (^work)(void)) {
 
 ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length) {
     @autoreleasepool {
-        if (!method || length > 1024 * 1024) return AGError(2, @"请求参数过大或方法缺失");
+        if (!method || length > 48 * 1024 * 1024) return AGError(2, @"请求参数过大或方法缺失");
         NSString *op = [NSString stringWithUTF8String:method];
+        BOOL imageInput=[op hasPrefix:@"ppocr."] || [op hasPrefix:@"yolo."] || [op hasPrefix:@"dotocr."];
+        if(!imageInput && length>1024*1024)return AGError(2,@"请求参数过大");
         NSData *data = [NSData dataWithBytes:json length:length];
         NSError *error = nil;
         id value = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingFragmentsAllowed error:&error];

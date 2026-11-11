@@ -11,13 +11,14 @@ package uiacc
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"autogov1/v2/sdk/ios/internal/bridge"
 	"autogov1/v2/sdk/ios/motion"
+	"autogov1/v2/sdk/ios/types"
 )
 
 // Rect 与 Android 版字段完全对齐，单位是物理像素。
@@ -37,29 +38,29 @@ type Rect struct {
 //   - value           → Desc（AutoGo 把 accessibilityValue 对齐 contentDescription）
 //   - role / class2   → ClassName（class2 为空时回退 role）
 type axNode struct {
-	Text      string  `json:"text"`
-	Value     string  `json:"value"`
+	Text       string `json:"text"`
+	Value      string `json:"value"`
 	Identifier string `json:"identifier"`
-	Class     string  `json:"class"`
-	Role      string  `json:"role"`
-	Bundle    string  `json:"bundle"`
-	Left      int     `json:"left"`
-	Top       int     `json:"top"`
-	Right     int     `json:"right"`
-	Bottom    int     `json:"bottom"`
-	ParentL   int     `json:"parentLeft"`
-	ParentT   int     `json:"parentTop"`
-	ParentR   int     `json:"parentRight"`
-	ParentB   int     `json:"parentBottom"`
-	Index     int     `json:"index"`
-	Children  int     `json:"childCount"`
-	Clickable bool    `json:"clickable"`
-	Selected  bool    `json:"selected"`
-	Enabled   bool    `json:"enabled"`
-	Scrollable bool   `json:"scrollable"`
-	Editable  bool    `json:"editable"`
-	Checked   bool    `json:"checked"`
-	Password  bool    `json:"password"`
+	Class      string `json:"class"`
+	Role       string `json:"role"`
+	Bundle     string `json:"bundle"`
+	Left       int    `json:"left"`
+	Top        int    `json:"top"`
+	Right      int    `json:"right"`
+	Bottom     int    `json:"bottom"`
+	ParentL    int    `json:"parentLeft"`
+	ParentT    int    `json:"parentTop"`
+	ParentR    int    `json:"parentRight"`
+	ParentB    int    `json:"parentBottom"`
+	Index      int    `json:"index"`
+	Children   int    `json:"childCount"`
+	Clickable  *bool  `json:"clickable"`
+	Selected   *bool  `json:"selected"`
+	Enabled    *bool  `json:"enabled"`
+	Scrollable *bool  `json:"scrollable"`
+	Editable   *bool  `json:"editable"`
+	Checked    *bool  `json:"checked"`
+	Password   *bool  `json:"password"`
 }
 
 // Uiacc 是一个选择器：每个方法都是"加一个条件"，链式直到 Find/WaitFor/Click。
@@ -67,15 +68,38 @@ type Uiacc struct {
 	mu sync.Mutex
 	// 文本类条件：mode 0=等于 1=包含 2=前缀 3=后缀 4=正则
 	text, desc, id, class, pkg string
+
 	textMode, descMode, idMode, classMode, pkgMode int
+
 	bounds, boundsInside, boundsContains *Rect
+
 	clickable, selected, enabled, scrollable, editable, checked, password *bool
-	index   *int
+
+	index *int
+
 	released bool
+	lease    *snapshotLoop
+	lastErr  error
+	life     context.Context
+	cancel   context.CancelFunc
 }
 
 // New 创建一个选择器实例。
-func New() *Uiacc { return &Uiacc{} }
+func New() *Uiacc { return NewWithContext(context.Background()) }
+
+// NewWithContext 将选择器引用绑定到任务；任务结束自动释放，避免脚本漏写 Release 后持续采集。
+func NewWithContext(ctx context.Context) *Uiacc {
+	if ctx == nil {
+		return &Uiacc{released: true, lastErr: types.ErrInvalid}
+	}
+	if err := ctx.Err(); err != nil {
+		return &Uiacc{released: true, lastErr: err}
+	}
+	life, cancel := context.WithCancel(ctx)
+	u := &Uiacc{lease: sharedSnapshots.acquire(), life: life, cancel: cancel}
+	context.AfterFunc(life, u.Release)
+	return u
+}
 
 // Release 释放引用；之后的选择器调用无效。
 func (u *Uiacc) Release() {
@@ -83,8 +107,17 @@ func (u *Uiacc) Release() {
 		return
 	}
 	u.mu.Lock()
+	if u.released {
+		u.mu.Unlock()
+		return
+	}
 	u.released = true
+	lease := u.lease
 	u.mu.Unlock()
+	sharedSnapshots.release(lease)
+	if u.cancel != nil {
+		u.cancel()
+	}
 }
 
 // ---- 文本 / 描述 / id / 类名 / 包名（各 5 种匹配）----
@@ -107,11 +140,14 @@ func (u *Uiacc) IdStartsWith(v string) *Uiacc { u.setText(&u.id, &u.idMode, v, 2
 func (u *Uiacc) IdEndsWith(v string) *Uiacc   { u.setText(&u.id, &u.idMode, v, 3); return u }
 func (u *Uiacc) IdMatches(p string) *Uiacc    { u.setText(&u.id, &u.idMode, p, 4); return u }
 
-func (u *Uiacc) ClassName(v string) *Uiacc           { u.setText(&u.class, &u.classMode, v, 0); return u }
-func (u *Uiacc) ClassNameContains(v string) *Uiacc   { u.setText(&u.class, &u.classMode, v, 1); return u }
-func (u *Uiacc) ClassNameStartsWith(v string) *Uiacc { u.setText(&u.class, &u.classMode, v, 2); return u }
-func (u *Uiacc) ClassNameEndsWith(v string) *Uiacc   { u.setText(&u.class, &u.classMode, v, 3); return u }
-func (u *Uiacc) ClassNameMatches(p string) *Uiacc    { u.setText(&u.class, &u.classMode, p, 4); return u }
+func (u *Uiacc) ClassName(v string) *Uiacc         { u.setText(&u.class, &u.classMode, v, 0); return u }
+func (u *Uiacc) ClassNameContains(v string) *Uiacc { u.setText(&u.class, &u.classMode, v, 1); return u }
+func (u *Uiacc) ClassNameStartsWith(v string) *Uiacc {
+	u.setText(&u.class, &u.classMode, v, 2)
+	return u
+}
+func (u *Uiacc) ClassNameEndsWith(v string) *Uiacc { u.setText(&u.class, &u.classMode, v, 3); return u }
+func (u *Uiacc) ClassNameMatches(p string) *Uiacc  { u.setText(&u.class, &u.classMode, p, 4); return u }
 
 func (u *Uiacc) PackageName(v string) *Uiacc           { u.setText(&u.pkg, &u.pkgMode, v, 0); return u }
 func (u *Uiacc) PackageNameContains(v string) *Uiacc   { u.setText(&u.pkg, &u.pkgMode, v, 1); return u }
@@ -182,24 +218,36 @@ func (u *Uiacc) Index(v int) *Uiacc {
 
 // ---- 查找与等待 ----
 
-// snapshot 向原生要一份当前节点表；失败返回 nil。
-func (u *Uiacc) snapshot() []axNode {
+// Error 返回最近一次查找的错误，区分“没匹配”与“采集失败”。
+func (u *Uiacc) Error() error {
 	if u == nil {
-		return nil
+		return types.ErrClosed
 	}
 	u.mu.Lock()
-	released := u.released
+	defer u.mu.Unlock()
+	return u.lastErr
+}
+func (u *Uiacc) snapshot(ctx context.Context) ([]axNode, error) {
+	if u == nil {
+		return nil, types.ErrClosed
+	}
+	u.mu.Lock()
+	released, lease, life := u.released, u.lease, u.life
 	u.mu.Unlock()
 	if released {
-		return nil
+		return nil, types.ErrClosed
 	}
-	var out struct {
-		Nodes []axNode `json:"nodes"`
+	if lease == nil {
+		return nil, fmt.Errorf("请使用 uiacc.New 创建选择器")
 	}
-	if !bridge.DoTimeout("uiacc.snapshot", nil, &out, 15*time.Second) {
-		return nil
+	if life == nil {
+		return lease.snapshot(ctx)
 	}
-	return out.Nodes
+	merged, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(life, cancel)
+	defer stop()
+	defer cancel()
+	return lease.snapshot(merged)
 }
 
 // match 判断单个节点是否满足当前全部条件。
@@ -240,13 +288,13 @@ func (u *Uiacc) match(n *axNode) bool {
 	}
 	for _, pair := range []struct {
 		want *bool
-		got  bool
+		got  *bool
 	}{
 		{u.clickable, n.Clickable}, {u.selected, n.Selected}, {u.enabled, n.Enabled},
 		{u.scrollable, n.Scrollable}, {u.editable, n.Editable}, {u.checked, n.Checked},
 		{u.password, n.Password},
 	} {
-		if pair.want != nil && *pair.want != pair.got {
+		if pair.want != nil && (pair.got == nil || *pair.want != *pair.got) {
 			return false
 		}
 	}
@@ -265,38 +313,102 @@ func className(n *axNode) string {
 
 // Click 先按 text 匹配、再按 desc 匹配（与 AutoGo 一致），命中即点。
 func (u *Uiacc) Click(text string) bool {
-	if text == "" {
+	if u == nil || text == "" {
 		return false
 	}
-	for _, candidate := range []*Uiacc{u.Text(text), u.Desc(text)} {
-		if obj := candidate.FindOnce(); obj != nil {
-			return obj.Click()
+	// 两次查询各自加条件，不把 Text 与 Desc 同时积累到原选择器上。
+	nodes, err := u.snapshot(context.Background())
+	if err != nil {
+		u.mu.Lock()
+		u.lastErr = err
+		u.mu.Unlock()
+		return false
+	}
+	u.mu.Lock()
+	u.lastErr = nil
+	if u.released {
+		u.lastErr = types.ErrClosed
+		u.mu.Unlock()
+		return false
+	}
+	var selected *UiObject
+	for _, desc := range []bool{false, true} {
+		for i := range nodes {
+			if u.match(&nodes[i]) && ((!desc && nodes[i].Text == text) || (desc && nodes[i].Value == text)) {
+				selected = &UiObject{node: nodes[i]}
+				break
+			}
+		}
+		if selected != nil {
+			break
 		}
 	}
-	return false
+	u.mu.Unlock()
+	if selected == nil {
+		return false
+	}
+	ctx := u.life
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	err = selected.ClickContext(ctx)
+	u.mu.Lock()
+	u.lastErr = err
+	u.mu.Unlock()
+	return err == nil
 }
 
-// WaitFor 轮询直到出现，timeout=0 表示一直等；超时返回 nil。
+// WaitFor 的毫秒参数保持不变；新增带 context 入口用于任务取消。
 func (u *Uiacc) WaitFor(timeout int) *UiObject {
-	deadline := time.Time{}
+	ctx := context.Background()
+	var cancel context.CancelFunc
 	if timeout > 0 {
-		deadline = time.Now().Add(time.Duration(timeout) * time.Millisecond)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Millisecond)
+		defer cancel()
+	}
+	obj, _ := u.WaitForContext(ctx)
+	return obj
+}
+func (u *Uiacc) WaitForContext(ctx context.Context) (*UiObject, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("查找 context 不能为空")
 	}
 	for {
-		if obj := u.FindOnce(); obj != nil {
-			return obj
+		all, err := u.FindContext(ctx)
+		if err != nil {
+			return nil, err
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			return nil
+		if len(all) > 0 {
+			return all[0], nil
 		}
-		time.Sleep(200 * time.Millisecond)
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			return nil
+		timer := time.NewTimer(100 * time.Millisecond)
+		u.mu.Lock()
+		lease, life := u.lease, u.life
+		u.mu.Unlock()
+		var lifeDone <-chan struct{}
+		if life != nil {
+			lifeDone = life.Done()
+		}
+		if lease == nil {
+			timer.Stop()
+			return nil, types.ErrClosed
+		}
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-lifeDone:
+			timer.Stop()
+			return nil, types.ErrClosed
+		case <-lease.ctx.Done():
+			timer.Stop()
+			return nil, types.ErrClosed
+		case <-timer.C:
 		}
 	}
 }
-
-// FindOnce 返回第一个匹配节点（查询瞬间的快照）。
 func (u *Uiacc) FindOnce() *UiObject {
 	all := u.Find()
 	if len(all) == 0 {
@@ -304,17 +416,32 @@ func (u *Uiacc) FindOnce() *UiObject {
 	}
 	return all[0]
 }
-
-// Find 返回全部匹配节点。
-func (u *Uiacc) Find() []*UiObject {
-	nodes := u.snapshot()
+func (u *Uiacc) Find() []*UiObject { all, _ := u.FindContext(context.Background()); return all }
+func (u *Uiacc) FindContext(ctx context.Context) ([]*UiObject, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("查找 context 不能为空")
+	}
+	nodes, err := u.snapshot(ctx)
+	if u == nil {
+		return nil, err
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.lastErr = err
+	if err != nil {
+		return nil, err
+	}
+	if u.released {
+		u.lastErr = types.ErrClosed
+		return nil, u.lastErr
+	}
 	out := make([]*UiObject, 0, 4)
 	for i := range nodes {
 		if u.match(&nodes[i]) {
 			out = append(out, &UiObject{node: nodes[i]})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // UiObject 是查询瞬间的节点快照；后续页面变化不会更新它。
@@ -322,17 +449,23 @@ type UiObject struct {
 	node axNode
 }
 
-// Click 点击该控件中心；返回是否真的发出了点击。
+// Click 请求点击控件中心，返回动作调用是否成功；业务结果仍需另行验证。
 func (n *UiObject) Click() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return n.ClickContext(ctx) == nil
+}
+
+// ClickContext 保留原生错误；返回成功表示动作调用完成，不能代替业务成功验证。
+func (n *UiObject) ClickContext(ctx context.Context) error {
 	if n == nil {
-		return false
+		return types.ErrInvalid
 	}
 	x, y := n.node.CenterX()
-	if x == 0 && y == 0 {
-		return false
+	if n.node.Right <= n.node.Left || n.node.Bottom <= n.node.Top {
+		return types.ErrInvalid
 	}
-	motion.Click(x, y, 0)
-	return true
+	return motion.ClickContext(ctx, x, y, 0, 20)
 }
 
 // CenterX / CenterY 在 Rect 之外给节点用（保持在 uiacc 内部，不污染公开 Rect）。
@@ -394,13 +527,17 @@ func (n *UiObject) GetClassName() string {
 	return className(&n.node)
 }
 
-func (n *UiObject) GetClickable() bool  { return n != nil && n.node.Clickable }
-func (n *UiObject) GetSelected() bool   { return n != nil && n.node.Selected }
-func (n *UiObject) GetEnabled() bool    { return n != nil && n.node.Enabled }
-func (n *UiObject) GetScrollable() bool { return n != nil && n.node.Scrollable }
-func (n *UiObject) GetEditable() bool   { return n != nil && n.node.Editable }
-func (n *UiObject) GetChecked() bool    { return n != nil && n.node.Checked }
-func (n *UiObject) GetPassword() bool   { return n != nil && n.node.Password }
+func (n *UiObject) GetClickable() bool {
+	return n != nil && n.node.Clickable != nil && *n.node.Clickable
+}
+func (n *UiObject) GetSelected() bool { return n != nil && n.node.Selected != nil && *n.node.Selected }
+func (n *UiObject) GetEnabled() bool  { return n != nil && n.node.Enabled != nil && *n.node.Enabled }
+func (n *UiObject) GetScrollable() bool {
+	return n != nil && n.node.Scrollable != nil && *n.node.Scrollable
+}
+func (n *UiObject) GetEditable() bool { return n != nil && n.node.Editable != nil && *n.node.Editable }
+func (n *UiObject) GetChecked() bool  { return n != nil && n.node.Checked != nil && *n.node.Checked }
+func (n *UiObject) GetPassword() bool { return n != nil && n.node.Password != nil && *n.node.Password }
 
 func (n *UiObject) GetChildCount() int {
 	if n == nil {
@@ -448,6 +585,3 @@ func itoa(v int) string {
 	}
 	return string(buf[i:])
 }
-
-// 保证 context 引入被使用（snapshot 走 bridge 的固定超时，这里保留扩展位）。
-var _ = context.Background

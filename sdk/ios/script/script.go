@@ -1,117 +1,172 @@
-// Package script 是端上 Go 脚本解释器（yaegi）。
-//
-// 【为什么必须要有它】没有解释器，改一行脚本就得重新打包安装 ——
-// 线上调一次采集坐标要等一次发版，这条链路根本没法用。
-// 有了它，脚本作为"数据"下发，App 只管执行，热更新才成立。
-//
-// 【选择 yaegi 而不是内置 JS 引擎】脚本要直接调 SDK 的全部原生能力，
-// 用 Go 写脚本就是"零翻译"地调 Go 函数；JS 引擎还得再维护一层绑定表。
-// 代价是解释器体积（约几 MB）与首次编译开销，这两点在 iOS 上可接受。
-//
-// 【已知限制，先写在最前面】
-//  1. 解释执行无法抢占：脚本里写死循环，宿主杀不掉（yaegi 没有中断入口）。
-//     对策是把"长任务"拆成多次调用，宿主侧用超时+看门狗判断卡死。
-//  2. 解释执行里不能用 cgo / unsafe：脚本只能调我们导出的 api 包。
-//  3. 首次 Eval 有编译开销（几十~几百 ms），所以 Runner 复用同一个解释器实例。
+// Package script 执行 Go 脚本和工程。每次任务独立解释器，原生阻塞仍需进程看护兜底。
 package script
 
 import (
 	"context"
 	"fmt"
-	"sync"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 
+	"autogov1/v2/sdk/ios/ppocr"
 	"autogov1/v2/sdk/ios/script/api"
+	"autogov1/v2/sdk/ios/script/embedfs"
+	"autogov1/v2/sdk/ios/uiacc"
+	"autogov1/v2/sdk/ios/yolo"
 )
 
-// Options 控制一次脚本运行。
 type Options struct {
-	// Params 是脚本可读的参数（api.Param 取）。
-	Params map[string]any
-	// Timeout 是软超时：超过后 api.Call / api.Sleep 会返回超时错误，
-	// 但已经在跑的纯计算代码无法被打断（见包注释的限制 1）。
-	Timeout time.Duration
-	// NoStdlib 关闭标准库符号表（fmt/strings/time 等都用不了）。
-	//
-	// 默认是"加载"：脚本写日志、拼字符串几乎一定会用到 fmt/strings，
-	// 关掉会让人第一行就撞墙。代价是解释器多占几 MB，iOS 上可以接受。
-	NoStdlib bool
+	Params        map[string]any
+	Timeout       time.Duration
+	NoStdlib      bool
+	ImportAliases map[string]string
 }
-
-// Result 是一次脚本执行的结果。
 type Result struct {
-	// Value 是脚本通过 api.SetResult 交回的值（没交回就是 nil）。
-	Value any
-	// Logs 是脚本 api.Log 出来的行。
-	Logs []string
-	// Elapsed 是执行耗时。
+	Value   any
+	Logs    []string
 	Elapsed time.Duration
 }
-
-// Runner 持有一个可复用的解释器实例。
-//
-// 复用而不是每次新建：新建要重新装载符号表（标准库那部分尤其慢），
-// 一次运行几十毫秒的开销对热更新来说是灾难。
 type Runner struct {
-	mu     sync.Mutex
-	interp *interp.Interpreter
-	opts   Options
+	opts Options
+	gate chan struct{}
 }
 
-// New 建一个 Runner。第一次 Eval 时才真正装载符号表。
 func New(opts Options) *Runner {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 60 * time.Second
 	}
-	return &Runner{opts: opts}
+	return &Runner{opts: opts, gate: make(chan struct{}, 1)}
 }
-
-// ensure 惰性初始化解释器。
-func (r *Runner) ensure() *interp.Interpreter {
-	if r.interp != nil {
-		return r.interp
+func (r *Runner) execute(ctx context.Context, filesystem fs.FS, entry, source string) (result Result, err error) {
+	if ctx == nil {
+		return result, fmt.Errorf("脚本 context 不能为空")
 	}
-	i := interp.New(interp.Options{})
+	runCtx, cancel := context.WithTimeout(ctx, r.opts.Timeout)
+	defer cancel()
+	select {
+	case r.gate <- struct{}{}:
+		defer func() { <-r.gate }()
+	case <-runCtx.Done():
+		return result, runCtx.Err()
+	}
+	if err = runCtx.Err(); err != nil {
+		return result, err
+	}
+	session, err := api.NewSession(runCtx, r.opts.Params)
+	if err != nil {
+		return result, err
+	}
+	started := time.Now()
+	defer func() {
+		result.Logs = session.Logs()
+		result.Value = session.Result()
+		result.Elapsed = time.Since(started)
+		if v := recover(); v != nil {
+			err = fmt.Errorf("脚本宿主异常: %v", v)
+		}
+	}()
+	i := interp.New(interp.Options{GoPath: ".", SourcecodeFilesystem: filesystem, Stdout: session, Stderr: session})
 	if !r.opts.NoStdlib {
-		i.Use(stdlib.Symbols)
+		if err = i.Use(stdlib.Symbols); err != nil {
+			return result, err
+		}
 	}
-	i.Use(api.Symbols)
-	// SDK 包符号表：脚本可以 import autogov1/v2/sdk/ios/motion 这类包，
-	// 写 motion.Click(500, 800, 0) —— 与参考实现的脚本写法一致。
-	i.Use(api.SDKPackages)
-	r.interp = i
-	return i
-}
+	if err = i.Use(session.Symbols()); err != nil {
+		return result, err
+	}
+	// 每次运行复制绑定表，只覆盖需要任务生命周期的构造器，不能改动全局注册表。
+	sdkSymbols := make(interp.Exports, len(api.SDKPackages))
+	for key, values := range api.SDKPackages {
+		sdkSymbols[key] = values
+	}
+	const uiKey = "autogov1/v2/sdk/ios/uiacc/uiacc"
+	uiSymbols := make(map[string]reflect.Value, len(api.SDKPackages[uiKey]))
+	for name, value := range api.SDKPackages[uiKey] {
+		uiSymbols[name] = value
+	}
+	uiSymbols["New"] = reflect.ValueOf(func() *uiacc.Uiacc { return uiacc.NewWithContext(runCtx) })
+	sdkSymbols[uiKey] = uiSymbols
+	// 模型也属于任务资源：脚本遗漏 Close 时，在任务 context 结束后回收自己的实例。
+	for key, constructor := range map[string]reflect.Value{
+		"autogov1/v2/sdk/ios/ppocr/ppocr": reflect.ValueOf(func(version string) *ppocr.Ppocr {
+			engine := ppocr.New(version)
+			context.AfterFunc(runCtx, engine.Close)
+			return engine
+		}),
+		"autogov1/v2/sdk/ios/yolo/yolo": reflect.ValueOf(func(version string, threads int, param, bin, labels string) *yolo.Yolo {
+			engine := yolo.New(version, threads, param, bin, labels)
+			context.AfterFunc(runCtx, engine.Close)
+			return engine
+		}),
+	} {
+		values := make(map[string]reflect.Value, len(sdkSymbols[key]))
+		for name, value := range sdkSymbols[key] {
+			values[name] = value
+		}
+		values["New"] = constructor
+		sdkSymbols[key] = values
+	}
 
-// Run 执行一段脚本源码。
-//
-// 脚本的入口约定为 func main()：源码里定义 main，Run 负责调用它。
-// 这样脚本可以有自己的辅助函数，不用把所有逻辑塞在一个 Eval 里。
+	if err = i.Use(sdkSymbols); err != nil {
+		return result, err
+	}
+	if err = i.Use(interp.Exports{"autogov1/v2/sdk/ios/script/embedfs/embedfs": {"FS": reflect.ValueOf((*embedfs.FS)(nil)), "New": reflect.ValueOf(embedfs.New)}}); err != nil {
+		return result, err
+	}
+	for alias, target := range r.opts.ImportAliases {
+		var symbols interp.Exports
+		for key, values := range sdkSymbols {
+			if key == target+"/"+path.Base(target) {
+				symbols = interp.Exports{alias + "/" + path.Base(target): values}
+				break
+			}
+		}
+		if symbols == nil {
+			return result, fmt.Errorf("脚本别名目标未注册: %s", target)
+		}
+		if err = i.Use(symbols); err != nil {
+			return result, err
+		}
+	}
+	// Yaegi 有取消检查；已经进入的原生函数不一定立即停止，因此超时后不能复用解释器。
+	if entry != "" {
+		_, err = i.EvalPathWithContext(runCtx, entry)
+	} else {
+		_, err = i.EvalWithContext(runCtx, source)
+	}
+	if err != nil {
+		return result, fmt.Errorf("脚本执行失败: %w", err)
+	}
+	if err = session.Error(); err != nil {
+		return result, err
+	}
+	return result, nil
+}
 func (r *Runner) Run(ctx context.Context, source string) (Result, error) {
 	if source == "" {
 		return Result{}, fmt.Errorf("脚本内容为空")
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	runCtx, cancel := context.WithTimeout(ctx, r.opts.Timeout)
-	defer cancel()
-
-	// 让 api 层知道这一轮的上下文与参数。
-	api.Reset(runCtx, r.opts.Params)
-
-	started := time.Now()
-	i := r.ensure()
-
-	// yaegi 在求值 `package main` 时会【自动执行】main()，
-	// 所以这里只 Eval 一次，绝不能再显式调 main() ——
-	// 否则脚本会跑两遍（实测日志里出现两段"脚本开始执行"）。
-	if _, err := i.Eval(source); err != nil {
-		return Result{Logs: api.Logs(), Elapsed: time.Since(started)}, fmt.Errorf("脚本执行失败: %w", err)
+	if len(source) > 4<<20 {
+		return Result{}, fmt.Errorf("脚本超过 4 MiB")
 	}
-	return Result{Value: api.Result(), Logs: api.Logs(), Elapsed: time.Since(started)}, nil
-}
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", source, parser.ParseComments)
+	if err != nil {
+		return Result{}, fmt.Errorf("脚本解析失败: %w", err)
+	}
+	for _, group := range file.Comments {
+		for _, comment := range group.List {
+			if strings.HasPrefix(comment.Text, "//go:embed ") {
+				return Result{}, fmt.Errorf("包含 go:embed 的脚本请使用 RunFile、RunProject 或 RunZip 提供资源")
+			}
+		}
+	}
 
+	return r.execute(ctx, nil, "", source)
+}

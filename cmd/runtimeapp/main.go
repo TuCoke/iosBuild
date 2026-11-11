@@ -1,21 +1,21 @@
-//go:build ios && cgo
-
 // Runtime/app —— 任务执行体（与参考实现同名同路径）。
 //
 // 【为什么是这个形状】
 // 参考实现的壳用 posix_spawn 拉起 Runtime/app，然后通过
-//   GET http://127.0.0.1:8989/status
-//   GET http://127.0.0.1:8989/task?cmd=…
+//
+//	GET http://127.0.0.1:8989/status
+//	GET http://127.0.0.1:8989/task?cmd=…
+//
 // 跟它通信（这两个 URL 是从它壳的二进制里读出来的）。
 // 我们照抄这个形状：同样的路径、同样的端口、同样的两个接口。
 //
 // 【为什么放在独立进程】
-// 脚本由 yaegi 解释执行，无法抢占：脚本里写死循环，宿主就跟着卡死。
+// 解释器可检查 context，但原生阻塞不能强制抢占；进程隔离供宿主超时终止兜底。
 // 放到 Runtime/app 里，宿主超时可以直接 kill 掉再拉一个，App 本体不受影响。
+// HTTP 与解释器入口可在其他系统编译检查；设备能力仍由 iOS+cgo 实现，其他系统返回不支持。
 package main
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -47,7 +47,9 @@ type reply struct {
 	ElapsedMs int64          `json:"elapsedMs"`
 }
 
-func main() {
+func main() { runWithMainLoop(serve) }
+
+func serve() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +87,7 @@ func main() {
 
 		startedAt := time.Now()
 		runner := script.New(script.Options{Timeout: 120 * time.Second})
-		res, err := runner.Run(context.Background(), string(source))
+		res, err := runner.Run(r.Context(), string(source))
 		out := reply{Logs: res.Logs, ElapsedMs: time.Since(startedAt).Milliseconds()}
 		if err != nil {
 			out.Error = err.Error()

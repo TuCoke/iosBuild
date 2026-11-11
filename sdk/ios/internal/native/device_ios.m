@@ -86,21 +86,18 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"device.button"]) return AGInput(op,args);
 
     if ([op isEqualToString:@"device.lock"]) {
-        void (*lock)(void) = AGSymbol("SBSLockDevice");
+        void (*lock)(BOOL) = AGSymbol("SBSLockDevice");
         if (!lock) return AGError(1,@"SBSLockDevice 不可用");
-        lock();
+        lock(YES);
         return AGJSON(@{@"submitted":@YES});
     }
 
-    // 解锁态：SpringBoardServices 的 SBSGetScreenLockStatus 是布尔输出参数。
-    if ([op isEqualToString:@"device.unlocked"]) {
-        void (*getLockStatus)(BOOL *) = AGSymbol("SBSGetScreenLockStatus");
-        if (!getLockStatus) return AGError(1,@"锁屏状态接口不可用");
-        BOOL locked = NO;
-        getLockStatus(&locked);
-        return AGJSON(@{@"unlocked":@((BOOL)(!locked))});
+    // 样本通过 Darwin lockstate 通知读取状态，不调用猜测签名的 SBSGetScreenLockStatus。
+    if([op isEqualToString:@"device.unlocked"]){
+        int token=0;if(notify_register_check("com.apple.springboard.lockstate",&token)!=NOTIFY_STATUS_OK)return AGError(3,@"锁屏状态读取失败");
+        uint64_t locked=0;int status=notify_get_state(token,&locked);notify_cancel(token);
+        return status==NOTIFY_STATUS_OK?AGJSON(@{@"unlocked":@(locked==0)}):AGError(3,@"锁屏状态读取失败");
     }
-
     // 亮屏态：用 SpringBoard 的 Darwin 通知 "hasBlankedScreen"。
     // 走 IOKit 的 IODisplayWrangler 需要 IOKit 类型声明，而 iOS SDK 不带这些头；
     // notify 是 libSystem 的公开 C 接口，不需要额外框架，也不会因为符号缺失编不过。
@@ -145,21 +142,12 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         ((void(*)(id,SEL))objc_msgSend)(manager, target);
         return AGJSON(@{@"ok":@YES});
     }
-    if ([op isEqualToString:@"device.wifi_set"]) {
-        // 系统 WiFi 开关没有公开 API；这里走 ControlCenter 的私有服务，
-        // 不同版本符号名不同，逐个试，全都没有就如实报不可用。
-        BOOL enabled = [args[@"enabled"] boolValue];
-        Class ccClass = NSClassFromString(@"CCUIConnectivityManager");
-        SEL shared = NSSelectorFromString(@"sharedInstance");
-        if ([ccClass respondsToSelector:shared]) {
-            id manager = ((id(*)(id,SEL))objc_msgSend)(ccClass, shared);
-            SEL toggle = NSSelectorFromString(enabled ? @"setWiFiEnabled:" : @"setWiFiEnabled:");
-            if ([manager respondsToSelector:toggle]) {
-                ((void(*)(id,SEL,BOOL))objc_msgSend)(manager, toggle, enabled);
-                return AGJSON(@{@"ok":@YES});
-            }
-        }
-        return AGError(1,@"WiFi 开关接口不可用（需要私有服务授权）");
+    if([op isEqualToString:@"device.wifi_set"]){
+        dlopen("/System/Library/PrivateFrameworks/MobileWiFi.framework/MobileWiFi",RTLD_LAZY|RTLD_GLOBAL);
+        CFTypeRef (*create)(CFAllocatorRef,int)=AGSymbol("WiFiManagerClientCreate");
+        void (*set)(CFTypeRef,CFStringRef,CFTypeRef)=AGSymbol("WiFiManagerClientSetProperty");
+        if(!create || !set)return AGError(1,@"MobileWiFi 接口不可用");CFTypeRef manager=create(kCFAllocatorDefault,0);if(!manager)return AGError(3,@"WiFi 客户端创建失败");
+        set(manager,CFSTR("AllowEnable"),[args[@"enabled"] boolValue]?kCFBooleanTrue:kCFBooleanFalse);CFRelease(manager);return AGJSON(@{@"submitted":@YES});
     }
     if ([op isEqualToString:@"device.reboot"]) {
         int (*rebootFn)(int) = AGSymbol("reboot");
@@ -191,10 +179,9 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
     }
 
     return AGOnMain(^{
-        UIScreen *screen = [UIScreen mainScreen];
-        CGRect bounds = screen.nativeBounds;
-        NSDictionary *display = @{@"width":@((int)bounds.size.width),@"height":@((int)bounds.size.height),
-                                  @"scale":@(screen.nativeScale),@"rotation":@(0)};
+        UIScreen *screen=UIScreen.mainScreen;
+        ag_ios_result geometry=AGDisplayInfo();if(geometry.code)return geometry;
+        NSDictionary *display=[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:geometry.data length:geometry.length] options:0 error:NULL];free(geometry.data);
         if ([op isEqualToString:@"device.display"]) return AGJSON(display);
         if ([op isEqualToString:@"device.info"]) {
             UIDevice *device = [UIDevice currentDevice];
@@ -229,9 +216,9 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
             [UIApplication sharedApplication].idleTimerDisabled = on;
             return AGJSON(@{@"submitted":@YES});
         }
-        if ([op isEqualToString:@"device.wake"]) {
-            screen.brightness = screen.brightness; // 触碰一下，确保屏幕已点亮
-            return AGJSON(@{@"submitted":@YES});
+        if([op isEqualToString:@"device.wake"]){
+            void (*unlock)(BOOL,int)=AGSymbol("SBSUnlockDevice");if(!unlock)return AGError(1,@"SBSUnlockDevice 不可用");
+            unlock(YES,0);return AGJSON(@{@"submitted":@YES});
         }
         if ([op isEqualToString:@"device.clipget"]) return AGJSON(@{@"text":[UIPasteboard generalPasteboard].string ?: @""});
         if ([op isEqualToString:@"device.clipset"]) {

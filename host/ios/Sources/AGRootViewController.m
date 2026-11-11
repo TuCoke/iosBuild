@@ -15,10 +15,11 @@
 @property (nonatomic, strong) UITextView *logView;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) UIImageView *shotView;
-@property (nonatomic, assign) NSInteger tapCount;
+@property (atomic, assign) NSInteger tapCount;
 /// 目标块中心（归一化到整屏），注入点击瞄准这里
 @property (nonatomic, assign) CGPoint targetCenter;
 @property (nonatomic, assign) BOOL didStartup;
+@property (nonatomic, strong) dispatch_queue_t sdkQueue;
 @end
 
 @implementation AGRootViewController
@@ -28,6 +29,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"AgovHost";
+    self.sdkQueue=dispatch_queue_create("agov.host.sdk.actions",DISPATCH_QUEUE_SERIAL);
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.targetCenter = CGPointMake(0.5, 0.35);
     [self buildUI];
@@ -43,6 +45,8 @@
     self.didStartup = YES;
     [self resetLogFile];
     [self append:@"AgovHost 启动（ObjC 壳）"];
+    // SDK 调用不能堵住 UIKit 主线程，解释器和原生采集都可能需要回到主线程。
+    dispatch_async(self.sdkQueue, ^{
     [self callCapabilities];
     [self callSelfTest];
     [self runScript];
@@ -51,6 +55,7 @@
     [self runAllAPITest];
     [self append:[NSString stringWithFormat:@"localapi.start → %@",
                   [AGBridge invoke:@"localapi.start" payload:@"{}"]]];
+    });
 }
 
 #pragma mark - 界面
@@ -150,7 +155,17 @@
         b.titleLabel.font = [UIFont systemFontOfSize:14];
         b.titleLabel.adjustsFontSizeToFitWidth = YES;
         SEL sel = NSSelectorFromString(pair.lastObject);
-        [b addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
+        __weak typeof(self) weakSelf=self;__weak UIButton *weakButton=b;
+        [b addAction:[UIAction actionWithHandler:^(UIAction *action){
+            typeof(self) controller=weakSelf;UIButton *button=weakButton;if(!controller || !button)return;
+            if([pair.lastObject isEqualToString:@"openWebConsole"]){[controller openWebConsole];return;}
+            button.enabled=NO;
+            dispatch_async(controller.sdkQueue,^{
+                @try{NSMethodSignature *signature=[controller methodSignatureForSelector:sel];if(signature){NSInvocation *invocation=[NSInvocation invocationWithMethodSignature:signature];invocation.target=controller;invocation.selector=sel;[invocation invoke];}}
+                @catch(NSException *exception){[controller append:exception.reason ?: @"SDK 调用异常"];}
+                dispatch_async(dispatch_get_main_queue(),^{button.enabled=YES;});
+            });
+        }] forControlEvents:UIControlEventTouchUpInside];
         [row addArrangedSubview:b];
     }
     [row.heightAnchor constraintEqualToConstant:34].active = YES;
@@ -167,6 +182,7 @@
 
 /// 目标块中心换算成"归一化到整屏"的坐标：注入接口要的就是这个。
 - (CGPoint)currentTargetCenter {
+    if(!NSThread.isMainThread){__block CGPoint result;dispatch_sync(dispatch_get_main_queue(),^{result=[self currentTargetCenter];});return result;}
     if (self.counterLabel.window == nil) {
         return self.targetCenter;
     }
@@ -212,8 +228,7 @@
     NSData *data = [self dataFromBase64InJSON:r];
     if (data.length > 0) {
         UIImage *img = [UIImage imageWithData:data];
-        self.shotView.image = img;
-        self.shotView.hidden = (img == nil);
+        dispatch_async(dispatch_get_main_queue(),^{self.shotView.image=img;self.shotView.hidden=(img==nil);});
         NSString *path = [[self documentsDir] stringByAppendingPathComponent:@"capture.jpg"];
         [data writeToFile:path atomically:YES];
         [self append:[NSString stringWithFormat:@"截图已保存 %lu 字节 → %@",
@@ -385,6 +400,7 @@
 }
 
 - (void)appendToFile:(NSString *)line {
+ @synchronized(self){
     NSString *path = [[self documentsDir] stringByAppendingPathComponent:@"app.log"];
     NSString *text = [line stringByAppendingString:@"\n"];
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
@@ -405,6 +421,7 @@
     } @finally {
         [fh closeFile];
     }
+ }
 }
 
 - (NSString *)shorten:(NSString *)s to:(NSUInteger)max {

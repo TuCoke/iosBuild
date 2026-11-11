@@ -10,10 +10,11 @@ import (
 )
 
 type Options struct {
-	Rotation int     `json:"rotation"`
-	MaxSize  int     `json:"maxSize"`
-	JPEG     bool    `json:"jpeg"`
-	Quality  float64 `json:"quality"`
+	AutoRotation bool    `json:"autoRotation"`
+	Rotation     int     `json:"rotation"`
+	MaxSize      int     `json:"maxSize"`
+	JPEG         bool    `json:"jpeg"`
+	Quality      float64 `json:"quality"`
 }
 type Frame struct {
 	Data          []byte

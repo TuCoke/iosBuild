@@ -3,9 +3,11 @@ package script
 // DemoSource 是内置示例脚本。
 //
 // 它同时充当"解释器是否装好"的验收用例：跑通就说明
-//   · yaegi 能装载我们的符号表
-//   · 脚本能通过 api.Call 打到原生能力
-//   · 日志与结果能回传给宿主
+//
+//	· yaegi 能装载我们的符号表
+//	· 脚本能通过 api.Call 打到原生能力
+//	· 日志与结果能回传给宿主
+//
 // 三条都成立，热更新链路才是通的。
 const DemoSource = `package main
 

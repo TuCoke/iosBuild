@@ -2,6 +2,7 @@
 
 #import "runtime.h"
 #include <mach/mach_time.h>
+#include <unistd.h>
 
 // 私有入口只在运行时解析。函数声明参考公开的 WebKit IOKit SPI，未复制闭源实现。
 typedef CFTypeRef Event;
@@ -19,7 +20,8 @@ typedef void (*SetSender)(Event,uint64_t);
 static NSLock *inputLock;
 static NSMutableDictionary *contacts;
 static Event client;
-static uint64_t senderID;
+// 样本事件构造使用的来源常量，不代表取得了设备真实硬件身份。
+static uint64_t senderID = UINT64_C(0x8000000817319372);
 static CreateClient createClient;
 static CreateHand createHand;
 static CreateFinger createFinger;
@@ -58,11 +60,15 @@ static ag_ios_result SendKey(uint32_t page,uint32_t usage) {
     Event down = createKey(kCFAllocatorDefault,mach_absolute_time(),page,usage,1,0);
     Event up = createKey(kCFAllocatorDefault,mach_absolute_time(),page,usage,0,0);
     if (!down || !up) { if (down) CFRelease(down); if (up) CFRelease(up); return AGError(3,@"无法创建键盘事件"); }
-    dispatchEvent(client,down); dispatchEvent(client,up);
+    dispatchEvent(client,down);
+    usleep(100000); // 样本 BridgePressKey / BridgePressHome 的按下保持时间。
+    Event currentUp=createKey(kCFAllocatorDefault,mach_absolute_time(),page,usage,0,0);
+    if(currentUp){CFRelease(up);up=currentUp;}
+    dispatchEvent(client,up);
     CFRelease(down); CFRelease(up);
     return AGJSON(@{@"submitted":@YES});
 }
-static ag_ios_result SendFrame(NSArray *points) {
+static ag_ios_result SendFrameWithReleases(NSArray *points,NSDictionary *released) {
     if (!AGInputAvailable(@"touch")) return AGError(1,@"多指触摸接口不可用");
     if (![points isKindOfClass:[NSArray class]] || points.count > 10) return AGError(2,@"手指列表无效");
     NSMutableDictionary *next = [NSMutableDictionary dictionary];
@@ -75,25 +81,53 @@ static ag_ios_result SendFrame(NSArray *points) {
     uint64_t timestamp = mach_absolute_time();
     uint32_t mask = 4;
     if (contacts.count != next.count || ![[NSSet setWithArray:contacts.allKeys] isEqualToSet:[NSSet setWithArray:next.allKeys]]) mask |= 3;
-    Event parent = createHand(kCFAllocatorDefault,timestamp,3,0,0,mask,0,0,0,0,0,0,next.count > 0,next.count > 0,0x80000);
+    Event parent = createHand(kCFAllocatorDefault,timestamp,3,0,0,mask,0,0,0,0,0,0,next.count > 0,next.count > 0,0);
     if (!parent) return AGError(3,@"无法创建触摸父事件");
     // DigitizerIsDisplayIntegrated 字段；事件仍需系统授权，符号存在不表示注入已生效。
+    setInteger(parent,4,next.count);
     setInteger(parent,0xb0019,1);
     if (senderID && setSender) setSender(parent,senderID);
     NSMutableSet *all = [NSMutableSet setWithArray:contacts.allKeys]; [all addObjectsFromArray:next.allKeys];
     for (NSNumber *finger in [[all allObjects] sortedArrayUsingSelector:@selector(compare:)]) {
         NSDictionary *old = contacts[finger], *current = next[finger];
-        NSDictionary *p = current ?: old;
+        NSDictionary *p = current ?: released[finger] ?: old;
         BOOL down = current != nil;
-        uint32_t change = (!old || !current) ? 3 : 4;
-        Event child = createFinger(kCFAllocatorDefault,timestamp,finger.unsignedIntValue + 1,finger.unsignedIntValue + 1,change,[p[@"x"] doubleValue],[p[@"y"] doubleValue],0,down ? 1 : 0,0,down,down,0);
+        uint32_t change = (!old || !current) ? 7 : 4;
+        Event child = createFinger(kCFAllocatorDefault,timestamp,finger.unsignedIntValue,2,change,[p[@"x"] doubleValue],[p[@"y"] doubleValue],0,down ? 1 : 0,0,down,down,0);
         if (!child) { CFRelease(parent); return AGError(3,@"无法创建手指事件，整帧未提交"); }
+        setInteger(child,0xb0019,1);
         appendEvent(parent,child,0); CFRelease(child);
     }
     dispatchEvent(client,parent); CFRelease(parent);
     [contacts setDictionary:next];
     return AGJSON(@{@"submitted":@YES});
 }
+static ag_ios_result SendFrame(NSArray *points){return SendFrameWithReleases(points,nil);}
+// 增量输入与完整帧共用 contacts；抬起一个编号只移除它，保留其余触点。
+static ag_ios_result SendPointer(NSDictionary *args, NSDictionary *display) {
+    int finger=[args[@"id"] intValue];NSString *phase=args[@"phase"];
+    double x=[args[@"x"] doubleValue],y=[args[@"y"] doubleValue];
+    double w=[display[@"width"] doubleValue],h=[display[@"height"] doubleValue];
+    int turn=[display[@"rotation"] intValue];
+    if([args[@"requireIdle"] boolValue] && contacts.count)return AGError(5,@"当前仍有触点按下");
+    if(finger<0 || finger>9 || !isfinite(x) || !isfinite(y) || w<=0 || h<=0)return AGError(2,@"触点或屏幕几何信息无效");
+    double vw=(turn&1)?h:w,vh=(turn&1)?w:h;
+    if(x<0 || y<0 || x>vw || y>vh)return AGError(2,@"像素坐标超出当前方向屏幕");
+    double nx=x,ny=y;
+    switch(turn){case 1:nx=y;ny=h-x;break;case 2:nx=w-x;ny=h-y;break;case 3:nx=w-y;ny=x;break;}
+    NSMutableDictionary *next=[NSMutableDictionary dictionaryWithDictionary:contacts];
+    if([phase isEqualToString:@"up"]){
+        if(!next[@(finger)])return AGJSON(@{@"submitted":@NO});
+        [next removeObjectForKey:@(finger)];
+        // 抬起事件使用调用方的终点，同时不改变其他仍按下的触点。
+        NSDictionary *point=@{@"id":@(finger),@"x":@(nx/w),@"y":@(ny/h)};
+        return SendFrameWithReleases(next.allValues,@{@(finger):point});
+    }else if([phase isEqualToString:@"down"] || [phase isEqualToString:@"move"]){
+        next[@(finger)]=@{@"id":@(finger),@"x":@(nx/w),@"y":@(ny/h)};
+    }else return AGError(2,@"未知触点阶段");
+    return SendFrame(next.allValues);
+}
+
 // AGKeyUsage 把 Android 风格的键码映射到 HID usage。
 //
 // 脚本里写的是 KEYCODE_HOME=3 这类常量（Android 的历史命名），
@@ -106,7 +140,7 @@ static uint32_t AGKeyUsage(int code, uint32_t *page) {
         case 24:  *page = 0x0c; return 0xe9; // VOLUME_UP
         case 25:  *page = 0x0c; return 0xea; // VOLUME_DOWN
         case 26:  *page = 0x0c; return 0x30; // POWER
-        case 187: *page = 0x0c; return 0x029d; // APP_SWITCH（任务切换）
+
         default:  *page = 0x07; break;       // 其余走 Keyboard Page
     }
     switch (code) {
@@ -127,12 +161,23 @@ static uint32_t AGKeyUsage(int code, uint32_t *page) {
 
 ag_ios_result AGInput(NSString *op, NSDictionary *args) {
     InitInput();
+    NSDictionary *display=nil;
+    // UIKit/FrontBoard 查询放在输入锁外，不能持锁等待主线程。
+    if([op isEqualToString:@"motion.pointer"]){
+        ag_ios_result r=AGDisplayInfo();if(r.code)return r;
+        display=[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:r.data length:r.length] options:0 error:NULL];free(r.data);
+    }
     [inputLock lock];
     @try {
         // 键码动作要在 client 建好之前判断可用性，但发送仍需要 client。
         if ([op isEqualToString:@"motion.key"]) {
             int code = [args[@"code"] intValue];
             uint32_t page = 0, usage = AGKeyUsage(code, &page);
+            if(code==187){
+                if(!createClient || !dispatchEvent || !createKey)return AGError(1,@"HID 按键接口不可用");
+                if(!client)client=createClient(kCFAllocatorDefault);if(!client)return AGError(3,@"无法创建 HID 客户端");
+                ag_ios_result first=SendKey(0x0c,0x40);if(first.code)return first;free(first.data);usleep(20000);return SendKey(0x0c,0x40);
+            }
             if (!usage) return AGError(2,@"不支持该键码");
             if (!createClient || !dispatchEvent) return AGError(1,@"HID 事件服务接口不可用");
             if (!createKey) return AGError(1,@"HID 键盘接口不可用");
@@ -144,13 +189,24 @@ ag_ios_result AGInput(NSString *op, NSDictionary *args) {
             if (contacts.count) return AGError(5,@"手指仍按下，不能切换事件配置");
             uint64_t value = [args[@"senderId"] unsignedLongLongValue];
             if (value && !setSender) return AGError(1,@"事件来源配置接口不可用");
-            senderID = value; return AGJSON(@{});
+            senderID = value ? value : UINT64_C(0x8000000817319372); return AGJSON(@{});
         }
         if (!createClient || !dispatchEvent) return AGError(1,@"HID 事件服务接口不可用");
         if (!client) client = createClient(kCFAllocatorDefault);
         if (!client) return AGError(3,@"无法创建 HID 客户端，需检查授权环境");
-        if ([op isEqualToString:@"motion.frame"]) return SendFrame(args[@"contacts"] ?: @[]);
-        if ([op isEqualToString:@"ime.key"]) return SendKey(0x07,[args[@"usage"] unsignedIntValue]);
+        if ([op isEqualToString:@"motion.status"])return AGJSON(@{@"activeCount":@(contacts.count)});
+        if ([op isEqualToString:@"motion.pointer"])return SendPointer(args,display);
+        if ([op isEqualToString:@"motion.frame"]) {
+            if([args[@"requireIdle"] boolValue] && contacts.count)return AGError(5,@"当前仍有触点按下");
+            return SendFrame(args[@"contacts"] ?: @[]);
+        }
+        if ([op isEqualToString:@"ime.segments"]){
+            NSString *text=args[@"text"];if(![text isKindOfClass:[NSString class]] || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]>65536)return AGError(2,@"文本过长或类型错误");
+            NSMutableArray *segments=[NSMutableArray array];
+            for(NSUInteger i=0;i<text.length;){NSRange r=[text rangeOfComposedCharacterSequenceAtIndex:i];[segments addObject:[text substringWithRange:r]];i=NSMaxRange(r);}
+            return AGJSON(@{@"segments":segments});
+        }
+        if ([op isEqualToString:@"ime.key"]){uint32_t usage=[args[@"usage"] unsignedIntValue],page=args[@"page"]?[args[@"page"] unsignedIntValue]:7;if(!usage || usage>65535 || !page || page>65535)return AGError(2,@"HID page/usage 无效");return SendKey(page,usage);}
         if ([op isEqualToString:@"device.button"]) {
             NSString *button = args[@"button"];
             if ([button isEqualToString:@"home"]) return SendKey(0x0c,0x40);

@@ -1,25 +1,32 @@
 # iOS 设备能力 SDK
 
-源码位于 `v2/sdk/ios/`，属于现有 `autogov1/v2` 模块。与安卓 SDK 独立；本轮不迁移安卓目录、不改 Agent、不接入 MCP、不添加脚本解释器。
+> 2026-11-11 已继续按样本校正输入、方向、视频回调、AX、应用管理与识别 ABI。当前结论见主仓库 `v2/docs/references/memory/ios-autogo-sdk-alignment.md`；本轮原生源码尚待 Apple 编译与真机验收。
+
+> 2026-11-11 状态核查：见主仓库 `v2/docs/references/memory/ios-autogo-stack-audit.md`。下面早期接口与构建记录应按核查中的当前状态理解。
+
+
+源码位于 `v2/sdk/ios/`，属于现有 `autogov1/v2` 模块。与安卓 SDK 独立；当前不迁移安卓目录、不改 Agent、不接入 MCP；已包含 Go 脚本解释器，区别于服务器 JS 工作流。
 
 ## 代码状态
 
-这是参考 AutoGo iOS 资源包的接口与静态调用关系，独立编写的第一版实现。没有链接、复制或打包 `AutoGo-ios/resources/libs/ios/libgoeval.dylib`。**尚未经过 Apple 工具链编译或 iOS 真机验证，不能称为已经可部署或兼容所有 iOS 版本。**
+这是参考 AutoGo iOS 资源包的接口与静态调用关系，独立编写的第一版实现。没有链接、复制或打包 `AutoGo-ios/resources/libs/ios/libgoeval.dylib`。仓库有后续 Apple 构建与模拟器记录；这些记录不代表所有跨 App 能力已在真机验证。2026-11-11 的 AX 原生改动尚待 Apple 编译和真机验收。
 
 2026-11-09 补充验证：Windows 下的 Go 编译和 Go 单元测试已通过；iOS/arm64 原生构建因本机缺少 `clang` 而失败。该结果不证明 Objective-C 已可编译，也不证明手机操作已生效。详细命令和范围见 [验证记录](ANALYSIS.md#验证记录)。
 
 | 模块 | 已写入的实现 | 尚需确认的部分 |
 | --- | --- | --- |
 | motion | 点击、长按、滑动、完整多指帧、双指缩放、输入串行、取消抬手 | IOHID 权限、事件来源、各机型实际响应 |
-| ime | UTF-8 Unicode 事件、HID 键盘事件、部分输入失败语义 | 私有 Unicode ABI、组合字符、各应用输入效果 |
+| ime | 已核实 ABI 的 UTF-8 Unicode、系统组合字符分段、HID 按键、部分输入失败语义 | 各应用输入效果及系统授权需真机验收 |
 | capture | 渲染服务器 → IOSurface → PNG/JPEG、缩放、方向转换 | 系统权限、方向、黑屏及受保护画面 |
 | video | VideoToolbox H.264、Annex B、SPS/PPS、PTS、调码率、请求 IDR、有界缓冲、停止释放 | 真机编码表现、CPU/延迟、与现有媒体源约定适配 |
 | app | 启动应用、应用列表、查询前台应用 | 私有选择器与权限适配；启动被接受不等于前台已切换 |
 | device | 系统版本、型号、电量、显示信息、剪贴板、亮度、系统按键、锁屏请求 | 读取限制、后台行为；不提供密码锁绕过 |
-| uiacc | 快照模型、查询、等待、未知状态表达、Provider 接口 | **未实现原生 AX 控件采集，不能直接调用就获取系统控件树** |
-| OCR/YOLO | 本轮未接入 | 独立构建 iOS 原生依赖及确认 ABI，不能直接复用安卓二进制 |
+| uiacc | AX 私有快照、坐标补采、共享刷新、带 context 查询、任务结束释放 | 本轮原生重写尚待 Apple 编译、权限与跨 App 真机验收 |
+| images | Lanczos、任意角度旋转、透明度灰度、样本阈值语义、连续帧回调 | 找色与闭源样本尚未逐像素比对；完整 OpenCV Go 绑定仍未提供 |
+| OCR/YOLO | Go API 与识别胶水已有；独立镜像构建引用 iOS 预编译识别库 | 模型、来源、C++ ABI 和真实识别结果待验收，不能复用安卓二进制 |
+| script | 独立任务状态、SDK 类型绑定、取消、工程/ZIP/import/embed | 原生阻塞需要进程看护；远端下载/缓存仍有已登记缺陷 |
 
-`Capabilities` 返回的是运行时入口可用性，不表示授权成功、注入生效或业务达成。未声明原生控件树能力。非 iOS 或关闭 cgo 时，设备调用返回 `types.ErrUnsupported`，不会假装成功。
+`Capabilities` 返回的是运行时入口可用性，不表示授权成功、注入生效或业务达成。控件树必须实际采集成功，不能仅看类是否存在。非 iOS 或关闭 cgo 时，设备调用返回 `types.ErrUnsupported`，不会假装成功。
 
 ## 目录
 
@@ -41,7 +48,7 @@ ios/
     └── video/             读取视频包示例
 ```
 
-不创建空的 OCR、识别库或资源目录。真实依赖接入时再添加，避免目录存在却没有功能。
+其他能力包还包括 images、ppocr、yolo、dotocr、opencv、hud、console、imgui、files、storages、system、https、tunnel、apkctl 和 script。目录或函数存在不表示真机功能已通过。
 
 ## 使用约定
 

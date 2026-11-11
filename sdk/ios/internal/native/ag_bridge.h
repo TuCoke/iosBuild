@@ -1,14 +1,14 @@
 /*
- * ag_bridge.h —— 原生能力层（与参考实现的 _Bridge* 一一对应）
+ * ag_bridge.h —— 原生能力层（按已核实的参考 _Bridge* 职责划分）
  *
  * 【为什么用这个名字】
- * 逆向确认参考实现的 76 个能力都叫 Bridge<Xxx>，由 Go 通过 cgo 调用。
- * 我们照同样的命名与职责建这一层：命名对齐，看代码时两边能一一对上。
+ * 参考样本由 Go 通过 cgo 调用 Bridge<Xxx>。本层保留对应命名，另有我方生命周期扩展。
+ * 相同名称不表示所有参数都已实现二进制兼容，具体签名以核查文档和这里的声明为准。
  *
  * 【约定】
  *   返回 int 的：0 表示成功，负数是错误码
  *   返回 char* 的：由本层 malloc，调用方 free（与 AXSweepNodesJSON 一致）
- *   坐标一律用物理像素；与 uiacc/motion 的"归一化坐标"不同，注意别混
+ *   Bridge 坐标用物理像素；完整 motion.frame 的内部 JSON 使用归一化坐标。
  */
 #ifndef AG_BRIDGE_H
 #define AG_BRIDGE_H
@@ -24,10 +24,10 @@ int  BridgeTouchDownFinger(double x, double y, int finger);
 int  BridgeTouchMoveFinger(double x, double y, int finger);
 int  BridgeTouchUpFinger(double x, double y, int finger);
 int  BridgePressHome(void);
-int  BridgePressKey(int keyCode);
+int  BridgePressKey(int usagePage, int usage);
 
 /* ---- 屏幕 ---- */
-int  BridgeNativeSize(char *out, size_t outLen);      /* "width,height" */
+void BridgeNativeSize(double *width, double *height);
 double BridgeScreenScale(void);
 int  BridgeScreenOrientation(void);
 int  BridgeScreenBrightness(void);                    /* 0-100 */
@@ -105,11 +105,14 @@ int  BridgeConsoleSetBgColor(int h, const char *hex);
 
 /* ---- 采集 ---- */
 int  BridgeH264SetCallback(void *cb);
-int  BridgeH264SetEncoderParams(int width, int height, int bitRate, int fps);
+int  BridgeH264SetEncoderParams(int resolution, int bitRate, int fps);
 int  BridgeH264StartEncoding(void);
 int  BridgeH264StopEncoding(void);
 int  BridgeRawFrameSetCallback(void *cb);
-int  BridgeRawFrameStart(int fps);
+int  BridgeRawFrameStart(void);
+int  BridgeRawFrameStop(void);
+
+char *agov_stream_error(void);
 
 /* ---- 进程 ---- */
 int  BridgeSpawnRootBinary(const char *path, const char *args, int *outPid);

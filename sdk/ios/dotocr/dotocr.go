@@ -4,8 +4,9 @@
 // 它比 PP-OCR 快一个量级，因为不需要检测框，直接按阈值切字 + 字典匹配。
 //
 // 两类返回：
-//   · Ocr*     → 整段文本（asJSON=true 时返回 JSON 串，与 AutoGo 一致）
-//   · FindStr* → 目标字符串的左上角坐标，找不到返回 (-1,-1)
+//
+//	· Ocr*     → 整段文本（asJSON=true 时返回 JSON 串，与 AutoGo 一致）
+//	· FindStr* → 目标字符串的左上角坐标，找不到返回 (-1,-1)
 package dotocr
 
 import (
@@ -35,12 +36,16 @@ func ocrImage(img *image.NRGBA, threshold string, sim float32, asJSON bool, dict
 	if b64 == "" {
 		return ""
 	}
-	return ocrBase64(b64, threshold, sim, asJSON, dictName)
+	return ocrBase64At(b64, threshold, sim, asJSON, dictName, img.Bounds().Min.X, img.Bounds().Min.Y)
 }
 
 func ocrBase64(b64, threshold string, sim float32, asJSON bool, dictName string) string {
+	return ocrBase64At(b64, threshold, sim, asJSON, dictName, 0, 0)
+}
+func ocrBase64At(b64, threshold string, sim float32, asJSON bool, dictName string, ox, oy int) string {
 	args := ocrArgs(threshold, sim, asJSON, dictName)
 	args["base64"] = b64
+	args["region"] = []int{ox, oy}
 	var out struct {
 		Text string `json:"text"`
 	}
@@ -52,7 +57,11 @@ func ocrBase64(b64, threshold string, sim float32, asJSON bool, dictName string)
 
 // Ocr 截屏指定区域后识别。
 func Ocr(x1, y1, x2, y2 int, threshold string, sim float32, asJSON bool, dictName string) string {
-	return ocrImage(images.CaptureScreen(x1, y1, x2, y2), threshold, sim, asJSON, dictName)
+	img := images.CaptureScreen(x1, y1, x2, y2)
+	if img == nil {
+		return ""
+	}
+	return ocrBase64At(images.EncodeToBase64(img, "png", 100), threshold, sim, asJSON, dictName, max(x1, 0), max(y1, 0))
 }
 
 func OcrFromImage(img *image.NRGBA, threshold string, sim float32, asJSON bool, dictName string) string {
@@ -109,7 +118,7 @@ func FindStrFromImage(img *image.NRGBA, text, threshold string, sim float32, dic
 		return -1, -1
 	}
 	b64 := images.EncodeToBase64(img, "png", 100)
-	return findStr(nil, b64, text, threshold, sim, dictName)
+	return findStr([]int{img.Bounds().Min.X, img.Bounds().Min.Y}, b64, text, threshold, sim, dictName)
 }
 
 func FindStrFromBase64(b64, text, threshold string, sim float32, dictName string) (int, int) {

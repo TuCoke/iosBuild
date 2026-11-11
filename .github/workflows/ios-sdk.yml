@@ -6,12 +6,24 @@ on:
   push:
     paths:
       - 'sdk/ios/**'
+      - 'sdk/imaging/**'
+      - 'cmd/runtimeapp/**'
+      - 'cmd/symbolgen/**'
+      - 'cmd/precheck/**'
+      - 'go.mod'
+      - 'go.sum'
       - 'cmd/ioshost/**'
       - 'host/ios/**'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
       - 'sdk/ios/**'
+      - 'sdk/imaging/**'
+      - 'cmd/runtimeapp/**'
+      - 'cmd/symbolgen/**'
+      - 'cmd/precheck/**'
+      - 'go.mod'
+      - 'go.sum'
       - 'cmd/ioshost/**'
       - 'host/ios/**'
   workflow_dispatch:
@@ -385,7 +397,7 @@ jobs:
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           # CXX 必须显式指向 iOS/simulator 的 clang++：cgo 编 .mm（ag_rec / imgui_overlay）靠它，
           # 缺省会退回 g++，.mm 直接被跳过 → 链接期报 _AGRecognition 未定义。
-          export CXX="${CC_SIM}"
+          export CXX="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
@@ -747,8 +759,8 @@ jobs:
           echo "✅ 五个入口都导出了"
           mkdir -p host/ios/Runtime
           export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
-          go build -buildmode=exe -trimpath -ldflags "-s -w" -o host/ios/Runtime/app ./cmd/runtimeapp || true
-          ls -lh host/ios/Runtime/app 2>/dev/null || echo "（Runtime/app 未生成，模拟器里任务隔离不可用）"
+          go build -buildmode=exe -trimpath -ldflags "-s -w" -o host/ios/Runtime/app ./cmd/runtimeapp
+          ls -lh host/ios/Runtime/app
           ls -lh host/ios/Frameworks/libagovios.dylib
 
       - name: 生成 Xcode 工程

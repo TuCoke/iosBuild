@@ -72,6 +72,7 @@ static void Encoded(void *ref,void *frame,OSStatus status,VTEncodeInfoFlags flag
         if (!CMTIME_IS_NUMERIC(pts)) { [encoder fail:@"视频时间戳无效"]; return; }
         int64_t ptsUS = CMTimeConvertScale(pts,1000000,kCMTimeRoundingMethod_Default).value;
         BOOL oversized = NO;
+        if(encoder->token==UINT64_MAX){if(!AGPublishH264(output,key)){[encoder->condition lock];encoder->forceKey=YES;[encoder->condition unlock];}return;}
         [encoder->condition lock];
         if (!encoder->stopped) {
             if (output.length > encoder->byteLimit) oversized = YES;
@@ -106,7 +107,7 @@ static void Encoded(void *ref,void *frame,OSStatus status,VTEncodeInfoFlags flag
 }
 - (ag_ios_result)prepare:(NSDictionary *)config display:(NSDictionary *)display {
     nativeW = [display[@"width"] intValue]; nativeH = [display[@"height"] intValue];
-    rotation = [config[@"rotation"] intValue]; fps = [config[@"fps"] intValue]; byteLimit = [config[@"queueBytes"] unsignedLongLongValue];
+    rotation = [config[@"autoRotation"] boolValue] ? [display[@"rotation"] intValue] : [config[@"rotation"] intValue]; fps = [config[@"fps"] intValue]; byteLimit = [config[@"queueBytes"] unsignedLongLongValue];
     int maxSize = [config[@"maxSize"] intValue], bitrate = [config[@"bitrate"] intValue];
     if (nativeW<=0 || nativeH<=0 || nativeW>8192 || nativeH>8192 || (uint64_t)nativeW*nativeH*4>64*1024*1024 || maxSize<64 || maxSize>4096 || fps<1 || fps>60 || rotation<0 || rotation>3 || byteLimit<256*1024 || byteLimit>32*1024*1024 || bitrate<64000 || bitrate>50000000) return AGError(2,@"视频参数或屏幕尺寸无效");
     width = rotation%2 ? nativeH : nativeW; height = rotation%2 ? nativeW : nativeH;
@@ -152,6 +153,7 @@ static void Encoded(void *ref,void *frame,OSStatus status,VTEncodeInfoFlags flag
 - (void)fail:(NSString *)reason {
     [condition lock]; BOOL first = failure == nil && !stopped;
     if (first) failure = [(reason ?: @"视频采集失败") copy]; [condition broadcast]; [condition unlock];
+    if(first && token==UINT64_MAX)AGStreamFailure(reason ?: @"编码失败");
     if (first) dispatch_async(queue,^{ [self shutdown]; });
 }
 - (void)shutdown {

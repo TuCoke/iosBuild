@@ -1,6 +1,11 @@
 package motion
 
-import "testing"
+import (
+	"autogov1/v2/sdk/ios/types"
+	"context"
+	"errors"
+	"testing"
+)
 
 // trajectory 是滑动里唯一需要"算对"的部分，这里锁住它的三个性质：
 // 起点之后、终点之前、点数与 frames 一致。
@@ -35,8 +40,8 @@ func TestTrajectoryCurveDeviates(t *testing.T) {
 		x1, y1 = 0, 0
 		x2, y2 = 100, 0
 	)
-	straight := trajectory(x1, y1, x2, y2, 8, 50, 0)     // 控制点在线上
-	curved := trajectory(x1, y1, x2, y2, 8, 50, 30)      // 控制点上移 30
+	straight := trajectory(x1, y1, x2, y2, 8, 50, 0) // 控制点在线上
+	curved := trajectory(x1, y1, x2, y2, 8, 50, 30)  // 控制点上移 30
 	maxDiff := 0
 	for i := range straight {
 		d := straight[i][1] - curved[i][1]
@@ -64,11 +69,14 @@ func TestTrajectoryMinFrames(t *testing.T) {
 	}
 }
 
-// 归一化坐标换算：屏幕 1000x2000 时 (500,1000) → (0.5,0.5)。
-func TestNorm(t *testing.T) {
-	x, y := norm(500, 1000)
-	// screenSize 在非 iOS 平台可能返回 0，此时 norm 应回退到不 panic
-	if x < 0 || x > 1 || y < 0 || y > 1 {
-		t.Fatalf("norm 越界: (%v,%v)", x, y)
+// 不再在屏幕读取失败时伪造 1×1 尺寸；非法触点在调用原生前拒绝。
+func TestTouchContextRejectsInvalidFinger(t *testing.T) {
+	if err := TouchContext(context.Background(), 1, 1, 10, "down"); !errors.Is(err, types.ErrInvalid) {
+		t.Fatal(err)
+	}
+}
+func TestClickContextRejectsInvalidDuration(t *testing.T) {
+	if err := ClickContext(context.Background(), 1, 1, 0, 0); !errors.Is(err, types.ErrInvalid) {
+		t.Fatal(err)
 	}
 }

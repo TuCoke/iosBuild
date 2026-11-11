@@ -29,7 +29,7 @@ func testSnapshot() Snapshot {
 		Bounds: Bounds{X: 20, Y: 140, Width: 80, Height: 20}}
 	child2.Children = []*Node{grand}
 	root := &Node{ID: "root", Text: "", Role: "Window",
-		Bounds: Bounds{X: 0, Y: 0, Width: 320, Height: 640},
+		Bounds:   Bounds{X: 0, Y: 0, Width: 320, Height: 640},
 		Children: []*Node{child1, child2}}
 	return Snapshot{Roots: []*Node{root}}
 }

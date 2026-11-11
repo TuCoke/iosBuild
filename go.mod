@@ -3,6 +3,7 @@ module autogov1/v2
 go 1.25.1
 
 require (
+	github.com/disintegration/imaging v1.6.2
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/jsonschema-go v0.4.2
 	github.com/gorilla/websocket v1.5.3
@@ -40,6 +41,7 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
+	golang.org/x/image v0.38.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	modernc.org/libc v1.75.6 // indirect

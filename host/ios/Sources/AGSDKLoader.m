@@ -37,6 +37,7 @@
 }
 
 - (BOOL)loadIfNeeded {
+ @synchronized(self){
     if (_loaded) {
         return YES;
     }
@@ -78,6 +79,7 @@
 
     _loadError = [@"未找到 libagovios.dylib —— " stringByAppendingString:[tried componentsJoinedByString:@"; "]];
     return NO;
+ }
 }
 
 - (NSString *)invoke:(NSString *)method payload:(NSString *)payload {

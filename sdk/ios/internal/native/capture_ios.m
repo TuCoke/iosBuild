@@ -22,7 +22,7 @@ typedef void *(*AGIOSurfaceGetBaseAddress)(IOSurfaceRef);
 
 enum { AGIOSurfaceLockReadOnly = 1 };
 
-typedef void (*RenderDisplay)(uint32_t, CFStringRef, IOSurfaceRef, uint32_t, uint32_t);
+typedef int (*RenderDisplay)(uint32_t, CFStringRef, IOSurfaceRef, uint32_t, uint32_t);
 static pthread_mutex_t captureMutex = PTHREAD_MUTEX_INITIALIZER;
 static IOSurfaceRef surface;
 static size_t surfaceW, surfaceH;
@@ -35,14 +35,17 @@ static AGIOSurfaceGetBytesPerRow surfaceBytesPerRow;
 static AGIOSurfaceGetBaseAddress surfaceBaseAddress;
 
 static int AGScreenSurfaceReady(void) {
-    static int ready = -1;
-    if (ready >= 0) return ready;
-    surfaceCreate = (AGIOSurfaceCreate)AGSymbol("IOSurfaceCreate");
-    surfaceLock = (AGIOSurfaceLock)AGSymbol("IOSurfaceLock");
-    surfaceUnlock = (AGIOSurfaceUnlock)AGSymbol("IOSurfaceUnlock");
-    surfaceBytesPerRow = (AGIOSurfaceGetBytesPerRow)AGSymbol("IOSurfaceGetBytesPerRow");
-    surfaceBaseAddress = (AGIOSurfaceGetBaseAddress)AGSymbol("IOSurfaceGetBaseAddress");
-    ready = (surfaceCreate && surfaceLock && surfaceUnlock && surfaceBytesPerRow && surfaceBaseAddress) ? 1 : 0;
+    static int ready;
+    static dispatch_once_t once;
+    // 截图、视频与原始帧可以并发进入，符号表的初始化也必须串行发布。
+    dispatch_once(&once, ^{
+        surfaceCreate = (AGIOSurfaceCreate)AGSymbol("IOSurfaceCreate");
+        surfaceLock = (AGIOSurfaceLock)AGSymbol("IOSurfaceLock");
+        surfaceUnlock = (AGIOSurfaceUnlock)AGSymbol("IOSurfaceUnlock");
+        surfaceBytesPerRow = (AGIOSurfaceGetBytesPerRow)AGSymbol("IOSurfaceGetBytesPerRow");
+        surfaceBaseAddress = (AGIOSurfaceGetBaseAddress)AGSymbol("IOSurfaceGetBaseAddress");
+        ready = (surfaceCreate && surfaceLock && surfaceUnlock && surfaceBytesPerRow && surfaceBaseAddress) ? 1 : 0;
+    });
     return ready;
 }
 
@@ -75,12 +78,22 @@ CGImageRef AGCopyScreenImage(int width, int height, NSString **error) {
             surface = surfaceCreate((CFDictionaryRef)attributes); surfaceW = width; surfaceH = height;
         }
         if (!surface) { *error = @"IOSurface 分配失败"; return NULL; }
-        // 此私有入口没有返回码，不能把未定义的返回寄存器值当作成功或失败。
-        render(0, CFSTR("LCD"), surface, 0, 0);
+        // 样本 captureScreenRaw 调用点检查 w0：0 为成功，不能再声明成 void。
+        int status=render(0,CFSTR("LCD"),surface,0,0);
+        if(status!=0){*error=[NSString stringWithFormat:@"屏幕渲染失败: %d",status];return NULL;}
+        typedef CGImageRef (*CreateSurfaceImage)(IOSurfaceRef);
+        CreateSurfaceImage createImage=(CreateSurfaceImage)AGSymbol("UICreateCGImageFromIOSurface");
+        if(createImage){
+            CGImageRef source=createImage(surface);
+            if(source){CGColorSpaceRef color=CGColorSpaceCreateDeviceRGB();CGContextRef copy=CGBitmapContextCreate(NULL,width,height,8,0,color,kCGImageAlphaPremultipliedFirst|kCGBitmapByteOrder32Little);CGColorSpaceRelease(color);
+                if(copy){CGContextDrawImage(copy,CGRectMake(0,0,width,height),source);image=CGBitmapContextCreateImage(copy);CGContextRelease(copy);}CGImageRelease(source);
+                if(image)return image;
+            }
+        }
         if (surfaceLock(surface, AGIOSurfaceLockReadOnly, NULL) != 0) { *error = @"无法锁定截图缓冲区"; return NULL; }
         size_t stride = surfaceBytesPerRow(surface);
         void *base = surfaceBaseAddress(surface);
-        if (!base) { surfaceUnlock(surface, AGIOSurfaceLockReadOnly, NULL); *error = @"截图缓冲区地址不可用"; return NULL; }
+        if (!base || stride < (size_t)width*4 || stride > (64*1024*1024)/(size_t)height) { surfaceUnlock(surface, AGIOSurfaceLockReadOnly, NULL); *error = @"截图缓冲区地址或行长度无效"; return NULL; }
         // 复制后再解锁，图片不会引用下一帧会复用的 surface 内存。
         NSData *copy = [[NSData alloc] initWithBytes:base length:stride * height];
         surfaceUnlock(surface, AGIOSurfaceLockReadOnly, NULL);
@@ -110,7 +123,7 @@ ag_ios_result AGCapture(NSDictionary *args) {
     if (display.code) return display;
     NSDictionary *info = [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:display.data length:display.length] options:0 error:NULL]; free(display.data);
     int nativeW = [info[@"width"] intValue], nativeH = [info[@"height"] intValue];
-    int rotation = [args[@"rotation"] intValue], maximum = [args[@"maxSize"] intValue];
+    int rotation = [args[@"autoRotation"] boolValue] ? [info[@"rotation"] intValue] : [args[@"rotation"] intValue], maximum = [args[@"maxSize"] intValue];
     NSString *error = nil; CGImageRef source = AGCopyScreenImage(nativeW, nativeH, &error);
     if (!source) return AGError(3, error);
     int w = rotation % 2 ? nativeH : nativeW, h = rotation % 2 ? nativeW : nativeH;

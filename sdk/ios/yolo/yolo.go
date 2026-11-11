@@ -5,13 +5,17 @@
 package yolo
 
 import (
+	"context"
 	"encoding/base64"
 	"image"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/images"
-	"autogov1/v2/sdk/ios/internal/bridge"
+	"autogov1/v2/sdk/ios/internal/native"
+	"autogov1/v2/sdk/ios/types"
 )
 
 // Result 是一个检测框。
@@ -27,36 +31,48 @@ type Result struct {
 }
 
 // Yolo 是一个检测器实例。
+var sequence atomic.Uint64
+
 type Yolo struct {
-	version       string
-	cpuThreadNum  int
-	paramPath     string
-	binPath       string
-	labels        string
-	closed        bool
+	mu           sync.Mutex
+	token        uint64
+	loaded       bool
+	lastErr      error
+	preset       *image.NRGBA
+	version      string
+	cpuThreadNum int
+	paramPath    string
+	binPath      string
+	labels       string
+	closed       bool
 }
 
-// New 创建检测器。paramPath/binPath/labels 是磁盘路径；cpuThreadNum<=0 用原生默认。
+// New 创建检测器。paramPath/binPath 是模型文件路径，labels 是标签内容；cpuThreadNum<=0 用原生默认。
 func New(version string, cpuThreadNum int, paramPath, binPath, labels string) *Yolo {
-	return &Yolo{version: version, cpuThreadNum: cpuThreadNum,
+	return &Yolo{token: sequence.Add(1), version: version, cpuThreadNum: cpuThreadNum,
 		paramPath: paramPath, binPath: binPath, labels: labels}
 }
 
-func (y *Yolo) ensure() bool {
-	if y == nil || y.closed {
+// ensureLocked 将真实加载结果绑定到实例，不使用模型路径作为跨调用者共享句柄。
+func (y *Yolo) ensureLocked(ctx context.Context) bool {
+	if y.closed {
+		y.lastErr = types.ErrClosed
 		return false
 	}
-	var out struct {
-		OK bool `json:"ok"`
+	if y.loaded {
+		return true
 	}
-	// 幂等加载：原生侧按 (param,bin) 键缓存，重复调用不会重复占内存。
-	if !bridge.DoTimeout("yolo.load", map[string]any{
-		"version": y.version, "threads": y.cpuThreadNum,
-		"param": y.paramPath, "bin": y.binPath, "labels": y.labels,
-	}, &out, 60*time.Second) {
-		return false
+	y.lastErr = native.Call(ctx, "yolo.load", map[string]any{"token": y.token, "version": y.version, "threads": y.cpuThreadNum, "param": y.paramPath, "bin": y.binPath, "labels": y.labels}, nil)
+	y.loaded = y.lastErr == nil
+	return y.loaded
+}
+func (y *Yolo) Error() error {
+	if y == nil {
+		return types.ErrClosed
 	}
-	return out.OK
+	y.mu.Lock()
+	defer y.mu.Unlock()
+	return y.lastErr
 }
 
 type rawResult struct {
@@ -73,47 +89,78 @@ func finish(items []Result) []Result {
 
 // SetImage 预置一张图，后续 Detect 直接用它（AutoGo 的用法：先 SetImage 再按区域反复检测）。
 func (y *Yolo) SetImage(img *image.NRGBA) {
-	if !y.ensure() || img == nil {
+	if y == nil || img == nil {
 		return
 	}
 	b64 := images.EncodeToBase64(img, "png", 100)
 	if b64 == "" {
 		return
 	}
-	_ = bridge.DoTimeout("yolo.set_image", map[string]any{"base64": b64}, &struct{}{}, 30*time.Second)
+	y.mu.Lock()
+	defer y.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if !y.ensureLocked(ctx) {
+		return
+	}
+	y.lastErr = native.Call(ctx, "yolo.set_image", map[string]any{"token": y.token, "base64": b64}, nil)
+	if y.lastErr == nil {
+		y.preset = images.ReadFromBytes(mustDecode(b64))
+	}
 }
-
-// Detect 在预置图（或当前屏幕）的指定区域内检测。
+func mustDecode(value string) []byte { b, _ := base64.StdEncoding.DecodeString(value); return b }
 func (y *Yolo) Detect(x1, y1, x2, y2 int) []Result {
-	if !y.ensure() {
+	if y == nil {
 		return nil
 	}
-	var out rawResult
-	if !bridge.DoTimeout("yolo.detect", map[string]any{
-		"region": []int{x1, y1, x2, y2},
-	}, &out, 60*time.Second) {
-		return nil
+	y.mu.Lock()
+	preset := y.preset
+	y.mu.Unlock()
+	var img *image.NRGBA
+	if preset == nil {
+		img = images.CaptureScreen(x1, y1, x2, y2)
+	} else {
+		b := preset.Bounds()
+		if x2 <= 0 {
+			x2 = b.Max.X
+		}
+		if y2 <= 0 {
+			y2 = b.Max.Y
+		}
+		img = images.Clip(preset, x1, y1, x2, y2)
 	}
-	return finish(out.Items)
+	items := y.DetectFromImage(img)
+	for i := range items {
+		items[i].X += max(x1, 0)
+		items[i].Y += max(y1, 0)
+	}
+	return finish(items)
 }
-
 func (y *Yolo) DetectFromImage(img *image.NRGBA) []Result {
-	if !y.ensure() || img == nil {
+	if img == nil {
 		return nil
 	}
-	b64 := images.EncodeToBase64(img, "png", 100)
-	if b64 == "" {
-		return nil
+	items := y.DetectFromBase64(images.EncodeToBase64(img, "png", 100))
+	for i := range items {
+		items[i].X += img.Bounds().Min.X
+		items[i].Y += img.Bounds().Min.Y
 	}
-	return y.DetectFromBase64(b64)
+	return finish(items)
 }
-
 func (y *Yolo) DetectFromBase64(b64 string) []Result {
-	if !y.ensure() || b64 == "" {
+	if y == nil || b64 == "" {
+		return nil
+	}
+	y.mu.Lock()
+	defer y.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if !y.ensureLocked(ctx) {
 		return nil
 	}
 	var out rawResult
-	if !bridge.DoTimeout("yolo.detect_image", map[string]any{"base64": b64}, &out, 60*time.Second) {
+	y.lastErr = native.Call(ctx, "yolo.detect_image", map[string]any{"token": y.token, "base64": b64}, &out)
+	if y.lastErr != nil {
 		return nil
 	}
 	return finish(out.Items)
@@ -129,9 +176,23 @@ func (y *Yolo) DetectFromPath(path string) []Result {
 
 // Close 释放模型。
 func (y *Yolo) Close() {
-	if y == nil || y.closed {
+	if y == nil {
 		return
 	}
+	y.mu.Lock()
+	defer y.mu.Unlock()
+	if y.closed {
+		return
+	}
+	if y.loaded {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		y.lastErr = native.Call(ctx, "yolo.close", map[string]any{"token": y.token}, nil)
+		if y.lastErr != nil {
+			return
+		}
+	}
 	y.closed = true
-	_ = bridge.Do("yolo.close", map[string]any{"param": y.paramPath, "bin": y.binPath}, nil)
+	y.loaded = false
+	y.preset = nil
 }

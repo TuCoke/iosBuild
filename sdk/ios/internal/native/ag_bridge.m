@@ -13,9 +13,7 @@
 #include <stdio.h>
 #include <dlfcn.h>
 
-// 采集回调（参考实现用函数指针直接转给原生；我们存起来，由 video.* 的帧分发调用）
-static void *gH264Callback;
-static void *gRawFrameCallback;
+// 采集回调由 streambridge_ios.m 管理，统一编码器、停止和借用内存的生命周期。
 
 // ---- 内部助手：调既有分发函数并解析 JSON ----
 
@@ -67,25 +65,21 @@ static NSString *AGString(const char *s) {
 
 // ---- 输入 ----
 
-int BridgeTouchDownFinger(double x, double y, int finger) {
-    return AGBridgeInt(@"motion.frame", @{@"contacts": @[@{@"id": @(finger), @"x": @(x), @"y": @(y)}]}, @"submitted") >= 0 ? 0 : -1;
+static int AGBridgePointer(double x,double y,int finger,NSString *phase){
+    return AGBridgeInt(@"motion.pointer",@{@"x":@(x),@"y":@(y),@"id":@(finger),@"phase":phase},@"submitted")>=0?0:-1;
 }
-int BridgeTouchMoveFinger(double x, double y, int finger) { return BridgeTouchDownFinger(x, y, finger); }
-int BridgeTouchUpFinger(double x, double y, int finger) {
-    return AGBridgeInt(@"motion.frame", @{@"contacts": @[]}, @"submitted") >= 0 ? 0 : -1;
-}
+int BridgeTouchDownFinger(double x,double y,int finger){return AGBridgePointer(x,y,finger,@"down");}
+int BridgeTouchMoveFinger(double x,double y,int finger){return AGBridgePointer(x,y,finger,@"move");}
+int BridgeTouchUpFinger(double x,double y,int finger){return AGBridgePointer(x,y,finger,@"up");}
 int BridgePressHome(void) { return AGBridgeInt(@"device.button", @{@"button": @"home"}, @"submitted") >= 0 ? 0 : -1; }
-int BridgePressKey(int keyCode) { return AGBridgeInt(@"motion.key", @{@"code": @(keyCode)}, @"submitted") >= 0 ? 0 : -1; }
+int BridgePressKey(int page,int usage){return AGBridgeInt(@"ime.key",@{@"page":@(page),@"usage":@(usage)},@"submitted")>=0?0:-1;}
 
 // ---- 屏幕 ----
 
-int BridgeNativeSize(char *out, size_t outLen) {
-    id obj = AGBridgeCallJSON(@"device.display", @{});
-    if (![obj isKindOfClass:[NSDictionary class]] || !out || outLen == 0) return -1;
-    int w = [((NSDictionary *)obj)[@"width"] intValue];
-    int h = [((NSDictionary *)obj)[@"height"] intValue];
-    snprintf(out, outLen, "%d,%d", w, h);
-    return 0;
+void BridgeNativeSize(double *width,double *height){
+    if(width)*width=0;if(height)*height=0;id display=AGBridgeCallJSON(@"device.display",@{});
+    if(![display isKindOfClass:[NSDictionary class]])return;
+    if(width)*width=[display[@"width"] doubleValue];if(height)*height=[display[@"height"] doubleValue];
 }
 double BridgeScreenScale(void) {
     id obj = AGBridgeCallJSON(@"device.display", @{});
@@ -288,17 +282,15 @@ int BridgeConsoleSetBgColor(int h, const char *hex) {
 
 // ---- 采集 ----
 
-int BridgeH264SetCallback(void *cb) { gH264Callback = cb; return 0; }
-int BridgeH264SetEncoderParams(int width, int height, int bitRate, int fps) {
-    return AGBridgeInt(@"video.bitrate", @{@"width": @(width), @"height": @(height),
-                                          @"bitRate": @(bitRate), @"fps": @(fps)}, @"ok") >= 0 ? 0 : -1;
-}
-int BridgeH264StartEncoding(void) { return AGBridgeInt(@"video.start", @{}, @"started") >= 0 ? 0 : -1; }
-int BridgeH264StopEncoding(void) { return AGBridgeInt(@"video.stop", @{}, @"stopped") >= 0 ? 0 : -1; }
-int BridgeRawFrameSetCallback(void *cb) { gRawFrameCallback = cb; return 0; }
-int BridgeRawFrameStart(int fps) {
-    return AGBridgeInt(@"video.start", @{@"fps": @(fps)}, @"started") >= 0 ? 0 : -1;
-}
+int BridgeH264SetCallback(void *cb){return AGH264CallbackSet((AGH264Callback)cb);}
+int BridgeH264SetEncoderParams(int resolution,int bps,int fps){return AGH264ParamsSet(resolution,bps,fps);}
+int BridgeH264StartEncoding(void){return AGH264Start();}
+int BridgeH264StopEncoding(void){return AGH264Stop();}
+int BridgeRawFrameSetCallback(void *cb){return AGRawCallbackSet((AGRawCallback)cb);}
+int BridgeRawFrameStart(void){return AGRawStart();}
+int BridgeRawFrameStop(void){return AGRawStop();}
+
+char *agov_stream_error(void){return AGStreamFailureCopy();}
 
 // ---- 进程 ----
 
