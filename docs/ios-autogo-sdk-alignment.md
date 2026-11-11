@@ -2,7 +2,7 @@
 
 更新：2026-11-11。本轮覆盖用户图片中的全部分组，不改云控 Agent、MCP 或服务端路由。
 
-本文描述新源码状态，取代上一轮核查中相关“仍未修复”的条目。对齐依据是提供样本的函数调用、寄存器/栈参数、ObjC 方法和内存释放路径；不是从函数名称猜测 C 原型。新源码尚未完成 Apple 工具链编译与真实 iOS 设备验收，不能继承参考程序的测试结论，也不宣称与闭源程序逐字节等价。
+本文描述新源码状态，取代上一轮核查中相关“仍未修复”的条目。对齐依据是提供样本的函数调用、寄存器/栈参数、ObjC 方法和内存释放路径；不是从函数名称猜测 C 原型。新源码已于 2026-11-11 通过 GitHub Apple 工具链编译、完整打包和模拟器启动流程；真实 iOS 设备仍未验收。不能继承参考程序的测试结论，也不宣称与闭源程序逐字节等价。
 
 ## 能力与实现位置
 
@@ -128,4 +128,16 @@ Windows/Go 1.25.1、GOWORK=off：运行相关 Go 测试、SDK Go 构建和静态
 
 补充修正：AX 显式恢复后可以再次 Prepare，首次环境基线不会被覆盖；截图符号初始化支持并发；逐指抬起使用调用方终点；安装子进程非零退出或超时返回结果未知，防止把部分执行误当作未执行而自动重试。
 
-这些测试不证明真实 HID、AX、编码、识别或安装已在手机生效；precheck 的括号/符号检查也不等于 Apple 编译成功。下一步必须在 Mac 构建本轮源码，再在受支持的已授权 iOS 设备验收各能力。
+这些测试不证明真实 HID、AX、编码、识别或安装已在手机生效；precheck 的括号/符号检查也不等于 Apple 编译成功。本轮后续已在 GitHub macOS runner 完成编译（结果见下）；下一步仍需在受支持的已授权 iOS 设备验收各能力。
+
+## 2026-11-11 GitHub 原生编译结果
+
+- 构建仓库：`TuCoke/iosBuild`，验证分支 `codex/ios-sdk-alignment-20261111`。
+- 代码提交：`70e4ef52bd961225632591bcadc3b88ba7a3d8ca`。
+- [Actions 完整记录](https://github.com/TuCoke/iosBuild/actions/runs/42966127885)：四个 job 均为 success，包含 Go 单测、真实 iPhoneOS SDK/CGo 编译、完整 App/任务执行体链接打包、模拟器构建与启动截图。
+- [IPA/DEB 安装包](https://github.com/TuCoke/iosBuild/actions/runs/42966127885/artifacts/13831721968) 和 [模拟器截图/应用日志](https://github.com/TuCoke/iosBuild/actions/runs/42966127885/artifacts/13831935812) 已上传为 Actions artifacts，受仓库保留期限制。
+- 首轮 ObjC++ 编译发现 `id` 的三元表达式不能直接访问 `UTF8String` 属性；已在 `ag_rec.mm` 改为显式 NSString，并检查 color 参数类型，随后重新完整构建通过。
+
+模拟器应用日志确认：动态 SDK 已加载，内置解释器脚本执行返回，目标块点击计数 `0 → 1`。这是一台 GitHub iPhone 16 Pro / iOS 18.5 模拟器的结果，不是实体 iPhone 的验收。
+
+**尚未通过的运行项：** SDK 内部截图返回 `屏幕渲染失败: 1`，`capture.json` 和截图按钮均记录失败；因此不能因 Actions 为 success 就认定 SDK 截图或视频已生效。CI 的 `sim.png` 是外部 `simctl` 截图，与 SDK 的 CARenderServer 截图是两个入口。真实设备截图、视频、AX、识别及安装能力仍需分别验收。
