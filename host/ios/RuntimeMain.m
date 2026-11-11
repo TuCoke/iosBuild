@@ -11,6 +11,20 @@ typedef char *(*AGWorkerInvoke)(char *,char *);
 typedef void (*AGWorkerFree)(char *);
 typedef void (*AGWorkerInit)(void);
 static void AGKeepLoop(void *info) {}
+static dispatch_source_t AGWorkerWatchdog;
+// 宿主意外退出后，脚本不能继续变成无人管理的后台进程；原生阻塞也必须有进程级期限。
+static void AGStartWorkerWatchdog(double timeoutMs) {
+    pid_t parent=getppid();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)((timeoutMs+2000)*NSEC_PER_MSEC)),dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^{
+        fprintf(stderr,"任务进程超过硬期限\n");_exit(124);
+    });
+    AGWorkerWatchdog=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0));
+    dispatch_source_set_timer(AGWorkerWatchdog,dispatch_time(DISPATCH_TIME_NOW,NSEC_PER_SEC),NSEC_PER_SEC,100*NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(AGWorkerWatchdog,^{
+        if(getppid()!=parent){fprintf(stderr,"宿主已退出，终止任务进程\n");_exit(125);}
+    });
+    dispatch_resume(AGWorkerWatchdog);
+}
 static int AGWriteWorkerResult(NSString *filename,NSDictionary *reply) {
     NSError *error=nil;NSData *data=[NSJSONSerialization dataWithJSONObject:reply options:0 error:&error];
     if(!data || ![data writeToFile:filename options:NSDataWritingAtomic error:&error]){fprintf(stderr,"结果保存失败: %s\n",error.localizedDescription.UTF8String);return 2;}
@@ -33,6 +47,9 @@ int main(int argc,char **argv) {
     // 这里只改变自己的工作目录，与参考执行入口一样以执行文件目录为基准。
     NSString *executable=[NSString stringWithUTF8String:argv[0]];
     if(chdir(executable.stringByDeletingLastPathComponent.fileSystemRepresentation)!=0){perror("chdir");return 2;}
+    double timeoutMs=[flags[@"--timeout-ms"] doubleValue];
+    if(timeoutMs<=0 || timeoutMs>300000){fprintf(stderr,"任务期限无效\n");return 2;}
+    AGStartWorkerWatchdog(timeoutMs);
     CFRunLoopSourceContext sourceContext={0};sourceContext.perform=AGKeepLoop;
     CFRunLoopSourceRef source=CFRunLoopSourceCreate(kCFAllocatorDefault,0,&sourceContext);
     CFRunLoopAddSource(CFRunLoopGetMain(),source,kCFRunLoopDefaultMode);
@@ -43,7 +60,7 @@ int main(int argc,char **argv) {
         NSMutableDictionary *reply=[NSMutableDictionary dictionaryWithDictionary:@{@"ok":@NO,@"processId":@(getpid())}];
         if(!invoke || !freeResult){const char *error=dlerror();reply[@"error"]=[NSString stringWithFormat:@"SDK 加载失败: %s",error ?: "缺少 C ABI 入口"];exit(AGWriteWorkerResult(resultPath,reply));}
         AGWorkerInit initialize=(AGWorkerInit)dlsym(library,"GoMain");if(initialize)initialize();
-        double timeoutMs=[flags[@"--timeout-ms"] doubleValue];if(timeoutMs<=0)timeoutMs=120000;
+
         NSData *payload=[NSJSONSerialization dataWithJSONObject:@{@"path":filename,@"params":params,@"timeoutMs":@(timeoutMs)} options:0 error:NULL];
         NSString *payloadString=[[NSString alloc] initWithData:payload encoding:NSUTF8StringEncoding];
         char *response=invoke("script.executeFile",(char *)payloadString.UTF8String);

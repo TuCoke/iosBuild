@@ -7,7 +7,7 @@
 // 这里按 op 列表逐个调，三类结论：
 //   ok        —— 调用成功
 //   env       —— 已实现，但当前环境拿不到（例：模拟器没有 render server）
-//   missing   —— 原生根本没实现（返回"尚未提供此原生能力"）
+//   missing   —— 当前构建或系统不支持（返回"尚未提供此原生能力"）
 //
 // 【安全边界】
 // 会改状态或伤设备的 op（重启、锁屏）不真调，只标 unsafe —— 自检不能把手机弄挂。
@@ -127,11 +127,11 @@ func probeList() []opProbe {
 func All(ctx context.Context) map[string]any {
 	type item struct {
 		Op     string `json:"op"`
-		Status string `json:"status"` // ok / env / missing / unsafe
+		Status string `json:"status"` // ok / env / unsupported / unsafe / invalid / unverified
 		Detail string `json:"detail"`
 	}
 	var items []item
-	counts := map[string]int{"ok": 0, "env": 0, "missing": 0, "unsafe": 0, "invalid": 0, "unverified": 0}
+	counts := map[string]int{"ok": 0, "env": 0, "unsupported": 0, "unsafe": 0, "invalid": 0, "unverified": 0}
 
 	for _, p := range probeList() {
 		if p.unsafe {
@@ -158,8 +158,8 @@ func All(ctx context.Context) map[string]any {
 			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
 			counts["unverified"]++
 		case errors.Is(err, types.ErrUnsupported):
-			items = append(items, item{Op: p.op, Status: "missing", Detail: err.Error()})
-			counts["missing"]++
+			items = append(items, item{Op: p.op, Status: "unsupported", Detail: err.Error()})
+			counts["unsupported"]++
 		default:
 			// 已实现，但这次调用的参数/环境不满足（越界、缺参、无权限、未装库…）
 			detail := err.Error()
@@ -171,14 +171,14 @@ func All(ctx context.Context) map[string]any {
 		}
 	}
 	return map[string]any{
-		"total":   len(items),
-		"ok":      counts["ok"],
-		"env":     counts["env"],
-		"missing": counts["missing"],
-		"unsafe":  counts["unsafe"],
-		"invalid": counts["invalid"], "unverified": counts["unverified"],
+		"total":       len(items),
+		"ok":          counts["ok"],
+		"env":         counts["env"],
+		"unsupported": counts["unsupported"],
+		"unsafe":      counts["unsafe"],
+		"invalid":     counts["invalid"], "unverified": counts["unverified"],
 		"items": items,
 		"summary": fmt.Sprintf("共 %d 项：调用成功 %d / 环境失败 %d / 不支持 %d / 跳过有副作用 %d / 仅参数拒绝 %d / 未验证 %d",
-			len(items), counts["ok"], counts["env"], counts["missing"], counts["unsafe"], counts["invalid"], counts["unverified"]),
+			len(items), counts["ok"], counts["env"], counts["unsupported"], counts["unsafe"], counts["invalid"], counts["unverified"]),
 	}
 }

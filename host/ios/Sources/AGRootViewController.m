@@ -364,7 +364,7 @@
             continue;
         }
         NSString *status = item[@"status"];
-        if ([status isEqualToString:@"missing"]) {
+        if ([status isEqualToString:@"unsupported"]) {
             [missing addObject:item[@"op"] ?: @"?"];
         } else if ([status isEqualToString:@"env"]) {
             [limited addObject:[NSString stringWithFormat:@"%@：%@", item[@"op"] ?: @"?", item[@"detail"] ?: @""]];
