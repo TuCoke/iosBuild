@@ -151,7 +151,24 @@ static NSDictionary *AGRenderFailureDetail(CFStringRef name,IOSurfaceRef candida
     typedef uintptr_t (*RenderDetailed)(uint32_t,CFStringRef,IOSurfaceRef,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uint32_t);
     void *entry=AGSymbol("CARenderServerRenderDisplay_");Dl_info detailed={0},publicEntry={0};
     void *wrapper=AGSymbol("CARenderServerRenderDisplay");
-    if(!entry || !wrapper || !dladdr(entry,&detailed) || !dladdr(wrapper,&publicEntry) || detailed.dli_fbase!=publicEntry.dli_fbase)
+    if(!wrapper || !dladdr(wrapper,&publicEntry))return @{@"available":@NO};
+#if defined(__arm64__) && !__has_feature(ptrauth_calls)
+    // 模拟器的内部函数有调试符号但没有导出。仅匹配外层实际 BL 目标及完整符号名，
+    // 不使用固定地址、字节补丁或猜测的相邻函数；系统布局变化时直接报告不可用。
+    if(!entry){
+        uint32_t instructions[16]={0};vm_size_t count=0;
+        if(vm_read_overwrite(mach_task_self(),(vm_address_t)wrapper,sizeof(instructions),(vm_address_t)instructions,&count)==KERN_SUCCESS){
+            for(vm_size_t i=0;i<count/4;i++){
+                uint32_t instruction=instructions[i];if(instruction==0xd65f03c0)break;
+                if((instruction&0xfc000000)!=0x94000000)continue;
+                int32_t immediate=(int32_t)(instruction<<6);
+                uintptr_t target=(uintptr_t)wrapper+i*4+(int64_t)(immediate>>6)*4;Dl_info candidateInfo={0};
+                if(dladdr((void *)target,&candidateInfo) && candidateInfo.dli_fbase==publicEntry.dli_fbase && candidateInfo.dli_sname && strcmp(candidateInfo.dli_sname,"CARenderServerRenderDisplay_")==0){entry=(void *)target;break;}
+            }
+        }
+    }
+#endif
+    if(!entry || !dladdr(entry,&detailed) || detailed.dli_fbase!=publicEntry.dli_fbase)
         return @{@"available":@NO};
     uintptr_t raw=((RenderDetailed)entry)(0,name,candidate,0,0,0,0,0,0,0,0);
     NSMutableDictionary *report=[NSMutableDictionary dictionaryWithDictionary:@{@"available":@YES,@"rawHex":[NSString stringWithFormat:@"%llx",(unsigned long long)raw]}];
