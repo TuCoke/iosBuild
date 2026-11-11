@@ -6,7 +6,7 @@
 
 ## OpenCV 图像与模板匹配
 
-原生算法仍使用 OpenCV 4.10，与已提供的 `libopencv_core.dylib` 版本字符串一致。Go 层持有不可伪造路径的 Mat 令牌，原生注册表统一管理对象；每个派生图像拥有独立像素。当前支持：
+原生算法仍使用 OpenCV 4.10，与已提供的 `libopencv_core.dylib` 版本字符串一致。Go 层持有原生注册表的 Mat 令牌，不暴露 cv::Mat 指针；原生注册表统一管理对象，每个派生图像拥有独立像素。当前支持：
 
 - `Decode`、`FromImage`、`Info`、`Clone`、`Close`。
 - `Crop`、`Resize`、`Rotate`、`Gray`、`Threshold`、`GaussianBlur`、`Canny`、PNG/JPEG `Encode`。

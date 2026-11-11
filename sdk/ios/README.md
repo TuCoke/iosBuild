@@ -4,7 +4,7 @@
 
 源码位于 `v2/sdk/ios/`，属于现有 `autogov1/v2` 模块。与安卓 SDK 独立；当前不迁移安卓目录、不改 Agent、不接入 MCP；已包含 Go 脚本解释器，区别于服务器 JS 工作流。
 
-> 2026-11-11 新增 OpenCV、脚本 UI、JS 原生桥、原生资源交付、AX 预热与升级恢复代码；**本地纯 Go 编译/静态检查及 GitHub 四项构建与既有模拟器回归已通过；新增功能的完整行为仍待验收**。用法及未完成范围见 [新增功能说明](../../docs/ios-sdk-features.md)。下文通过记录属于此前提交。
+> 2026-11-11 新增 OpenCV、脚本 UI、JS 原生桥、原生资源交付、AX 预热与升级恢复代码；**本地纯 Go 编译/静态检查及 GitHub 四项构建与既有模拟器回归已通过；新增功能的完整行为仍待验收**。用法及未完成范围见 [新增功能说明](../../docs/ios-sdk-features.md)。本轮验证代码为 GitHub `3c08dbe`，详情见 [编译与回归记录](../../docs/ios-sdk-ci-20261111.md)。
 
 ## 代码状态
 
@@ -31,23 +31,36 @@ SDK 原生 JPEG 已查看确认内容与方向；AX 在宿主和独立进程分�
 
 ```text
 ios/
-├── app/                   应用操作
-├── capture/               单张截图
-├── device/                设备信息和系统操作
-├── ime/                   文本、HID 键盘
-├── motion/                单指和多指动作
-├── types/                 公开数据和错误约定
-├── uiacc/                 控件快照查询、采集器契约
-├── video/                 H.264 输出、读取和生命周期
+├── motion/                IOHID 点击、滑动、多指与缩放
+├── ime/                   Unicode 与 HID 键盘
+├── capture/               单张截图与采集 surface 生命周期
+├── video/                 H.264、原始帧、回调与背压
+├── app/                   应用启动、查询与安装 helper
+├── device/                设备、显示、按键、剪贴板与运行路径
+├── system/                系统状态与操作
+├── types/                 坐标、公开数据与结构化错误
+├── uiacc/                 AX 快照、选择器、共享刷新与预热
+├── images/                Go 图像处理、找色与截图回调
+├── opencv/                原生 Mat、Scope、图像处理与模板匹配
+├── ppocr/ yolo/ dotocr/    原生识别引擎的 Go 适配
+├── imgui/                 常用控件、生成绑定、帧回调与输入
+├── hud/ console/          基础显示面板
+├── apkctl/                JavaScriptCore 宿主控制连接
+├── files/ storages/ https/ 文件、SQLite/Plist 与 HTTP
+├── tunnel/                frpc 进程与生命周期
+├── resources/             原生资源清单及交付检查
+├── update/                平台/入口校验、版本状态与回退请求
+├── utils/                 工具与基础对话框
+├── script/                Go 解释器、工程/ZIP、符号和独立任务进程
+├── selftest/              能力探针与专项诊断
 ├── internal/
+│   ├── bridge/            旧式能力接口的内部调用封装
 │   ├── inputstate/        进程内输入串行闸门
-│   └── native/            Go/cgo 与 Objective-C 原生桥接
-└── examples/
-    ├── basic/             宿主调用基础动作示例
-    └── video/             读取视频包示例
+│   └── native/            Go/cgo 与 ObjC 原生边界
+└── examples/              基础动作与视频包读取示例
 ```
 
-其他能力包还包括 images、ppocr、yolo、dotocr、opencv、hud、console、imgui、files、storages、system、https、tunnel、apkctl 和 script。目录或函数存在不表示真机功能已通过。
+主源码为 `v2/sdk/ios/`；`v2/ios/sdk/ios/` 是 Apple 构建镜像；GitHub 独立验证仓使用 `sdk/ios/`。能力实现保持同源，宿主原生构建与生成工具位于 `v2/ios/host/ios/`、`v2/ios/tools/`。完整 OpenCV/ImGui 高级绑定、全局悬浮宿主和模型发布仍有缺项，不能从目录存在判断完成。
 
 ## 使用约定
 
@@ -73,7 +86,7 @@ frame, err := capture.Screenshot(ctx, capture.Options{JPEG: true, MaxSize: 960})
 - 输入动作进程内串行；这不替代云端租户权限、设备 Session、跨进程互斥或业务验证。
 - 仅使用单张截图后，可调用 `capture.Release(ctx)` 释放缓存的采集 surface；已返回的图片数据仍独立有效。
 - 已提交的输入可能没有业务效果；`ErrUnknown` 不能自动重试。没有实现“一个通道不确定后换另一个通道重放”。
-- 所有公开调用接收非空 context。排队和 Go 动作等待可取消；进行中的同步原生调用无法强行中断。UIKit 请求最多等待约三秒，尚未开始的请求会取消，已经开始但没返回的请求报告结果未知。
+- 显式接收 context 的接口必须传入非空值。排队和 Go 动作等待可取消；进行中的同步原生调用无法强行中断。UIKit 请求最多等待约三秒，尚未开始的请求会取消，已经开始但没返回的请求报告结果未知。
 
 ## 视频生命周期
 
@@ -105,7 +118,7 @@ for {
 
 原生文件只参与 `ios && cgo` 构建。需要 Apple 工具链、真实设备 SDK 和 arm64 目标；Windows 上的 stub 可导入，但不能操作手机。Objective-C 文件当前使用手工引用计数，不应全局强制 ARC。
 
-本 SDK 使用 UIKit，宿主必须运行主线程事件循环，且不能阻塞主线程等待执行 SDK 的 Go 工作线程。`examples` 是调用示例库。已有 ObjC 宿主、原生 `Runtime/app` 薄执行体、Go/ZIP 独立任务进程与 CI 打包；执行体加载与宿主相同的动态 SDK。`update/` 已实现候选库安装和重启后加载，完整平台/依赖校验、升级健康检查与恢复仍待完善。实体设备的安装授权与最终效果仍需验收；Agent/MCP 装配另列。
+本 SDK 使用 UIKit，宿主必须运行主线程事件循环，且不能阻塞主线程等待执行 SDK 的 Go 工作线程。`examples` 是调用示例库。已有 ObjC 宿主、原生 `Runtime/app` 薄执行体、Go/ZIP 独立任务进程与 CI 打包；执行体加载与宿主相同的动态 SDK。`update/` 已实现 Mach-O 平台/入口校验、不可变版本目录、启动健康确认及下次启动回退；依赖 ABI/模型兼容、旧版本清理和完整发布信任链仍待完善。新增 ObjC 桥与 libimgui 需随宿主配套交付，不能只更新 Go dylib 就认为宿主也已更新。实体设备的安装授权与最终效果仍需验收；Agent/MCP 装配另列。
 
 私有符号可用性与系统授权是两回事。当前实现不安装提权工具、不修改系统授权、不执行漏洞。TrollStore、越狱或其他已授权运行环境的适用系统版本需要单独确认，不能根据包中出现某个函数推断所有 iPhone 都可运行。
 
