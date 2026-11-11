@@ -852,11 +852,19 @@ jobs:
               nodes=ax.get('data',{}).get('nodes',[])
               assert any(n.get('text')=='能力探测' and n.get('button') and n.get('right',0)>n.get('left',0) for n in nodes), context+' AX 没有识别到界面上的真实按钮'
               print('AX 实际节点数:',len(nodes),'；能力探测按钮已识别')
+              capture=native.get('capture',{})
+              assert capture.get('ok'), context+' SDK 截图失败: '+str(capture.get('error'))
+              image=capture.get('data',{})
+              assert image.get('width',0)>0 and image.get('height',0)>0, context+' 截图尺寸无效'
+              jpeg=(root/f'native-capture-{context}.jpg').read_bytes()
+              assert jpeg.startswith(bytes.fromhex('ffd8ff')) and len(jpeg)>100, context+' SDK 没有生成有效 JPEG'
+              print('SDK JPEG:',image['width'],image['height'],'字节数:',len(jpeg))
           script=json.loads((root/'script-check.json').read_text())
           data=script.get('data',{})
           assert script.get('ok') and data.get('ok'), '工作进程执行失败: '+str(data.get('error',script.get('error')))
           assert data.get('processId',0)>0, '没有返回真实工作进程 PID'
           assert data.get('result',{}).get('interpreterCompleted'), '解释器没有完整执行'
+          assert data.get('result',{}).get('captureSucceeded'), '脚本内调用 SDK 截图未成功'
           js=json.loads((root/'js-check.json').read_text())
           assert js.get('ok') and js.get('data',{}).get('result')=='3', 'JavaScriptCore 通道没有实际返回 3'
           print('工作进程 PID:',data['processId'],'；JavaScriptCore: 1+2=3')

@@ -3,6 +3,7 @@
 #import "runtime.h"
 #import <ImageIO/ImageIO.h>
 #import <mach/mach.h>
+#import <TargetConditionals.h>
 #include <pthread.h>
 
 // 【IOSurface 在 iOS 上不是公开头文件】
@@ -24,6 +25,16 @@ typedef void *(*AGIOSurfaceGetBaseAddress)(IOSurfaceRef);
 enum { AGIOSurfaceLockReadOnly = 1 };
 
 typedef int (*RenderDisplay)(uint32_t, CFStringRef, IOSurfaceRef, uint32_t, uint32_t);
+static BOOL AGRenderSucceeded(int result) {
+    // 私有 API 在不同目标上的返回约定不同：样本真机分支以 0 继续读取；
+    // iOS 18.5 模拟器的外层实现则将内部有效回执转换为布尔值，非零才成功。
+    // 只统一返回值解释，仍使用相同的 CARenderServer / IOSurface 采集路线。
+#if TARGET_OS_SIMULATOR
+    return result!=0;
+#else
+    return result==0;
+#endif
+}
 static pthread_mutex_t captureMutex = PTHREAD_MUTEX_INITIALIZER;
 static IOSurfaceRef surface;
 static size_t surfaceW, surfaceH;
@@ -79,9 +90,9 @@ CGImageRef AGCopyScreenImage(int width, int height, NSString **error) {
             surface = surfaceCreate((CFDictionaryRef)attributes); surfaceW = width; surfaceH = height;
         }
         if (!surface) { *error = @"IOSurface 分配失败"; return NULL; }
-        // 样本 captureScreenRaw 调用点检查 w0：0 为成功，不能再声明成 void。
+        // 使用构建目标对应的返回约定，不能把模拟器的成功布尔值当成真机错误码。
         int status=render(0,CFSTR("LCD"),surface,0,0);
-        if(status!=0){*error=[NSString stringWithFormat:@"屏幕渲染失败: %d",status];return NULL;}
+        if(!AGRenderSucceeded(status)){*error=[NSString stringWithFormat:@"屏幕渲染失败: %d",status];return NULL;}
         typedef CGImageRef (*CreateSurfaceImage)(IOSurfaceRef);
         CreateSurfaceImage createImage=(CreateSurfaceImage)AGSymbol("UICreateCGImageFromIOSurface");
         if(createImage){
@@ -203,7 +214,8 @@ NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
         if(!candidate){item[@"ok"]=@NO;item[@"error"]=@"IOSurfaceCreate 失败";}
         else{
             int status=render(0,(CFStringRef)name,candidate,0,0);
-            item[@"renderStatus"]=@(status);item[@"ok"]=@(status==0);item[@"actualBytesPerRow"]=@(surfaceBytesPerRow(candidate));
+            BOOL rendered=AGRenderSucceeded(status);
+            item[@"renderStatus"]=@(status);item[@"ok"]=@(rendered);item[@"actualBytesPerRow"]=@(surfaceBytesPerRow(candidate));
             item[@"surfaceTypeID"]=@(CFGetTypeID(candidate));
             CFTypeID (*expectedType)(void)=(CFTypeID(*)(void))AGSymbol("IOSurfaceGetTypeID");
             if(expectedType)item[@"expectedSurfaceTypeID"]=@(expectedType());
@@ -214,11 +226,11 @@ NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
             }
             uint32_t (*format)(IOSurfaceRef)=(uint32_t(*)(IOSurfaceRef))AGSymbol("IOSurfaceGetPixelFormat");
             if(format)item[@"actualPixelFormat"]=@(format(candidate));
-            if(status!=0)item[@"internalDetail"]=AGRenderFailureDetail((CFStringRef)name,candidate);
+            if(!rendered)item[@"internalDetail"]=AGRenderFailureDetail((CFStringRef)name,candidate);
             CFRelease(candidate);
         }
         [attempts addObject:item];
       }
     }
-    return @{@"attempts":attempts,@"width":@(width),@"height":@(height),@"note":@"渲染返回 0 不等同于图像内容和业务结果已验证"};
+    return @{@"attempts":attempts,@"width":@(width),@"height":@(height),@"simulatorBooleanResult":@(TARGET_OS_SIMULATOR),@"note":@"返回约定依构建目标解释；渲染调用通过不等同于图像内容和业务结果已验证"};
 }
