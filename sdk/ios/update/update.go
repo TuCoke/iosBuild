@@ -11,8 +11,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"autogov1/v2/sdk/ios/device"
 )
@@ -20,6 +22,41 @@ import (
 const maxLibraryBytes = 128 << 20
 
 var installMu sync.Mutex
+var loadedOnce sync.Once
+var loadedSnapshot map[string]any
+
+// CaptureLoaded 在宿主刚加载 SDK 时保存文件摘要，不能在替换同名文件后把新文件摘要冒充已加载内存版本。
+func CaptureLoaded(ctx context.Context) error {
+	paths, err := device.Paths(ctx)
+	if err != nil {
+		return err
+	}
+	loadedOnce.Do(func() {
+		loadedSnapshot = fileStatus(paths.LoadedImage)
+		loadedSnapshot["capturedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+	})
+	return nil
+}
+func snapshotCopy() map[string]any {
+	out := map[string]any{}
+	for key, value := range loadedSnapshot {
+		out[key] = value
+	}
+	return out
+}
+func runningBuild() map[string]any {
+	out := map[string]any{}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		out["goVersion"] = info.GoVersion
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision", "vcs.modified", "GOOS", "GOARCH":
+				out[setting.Key] = setting.Value
+			}
+		}
+	}
+	return out
+}
 
 // Validate 验证实际 Mach-O 类型、CPU 和可选摘要；不将校验和当作系统签名授权。
 func Validate(raw []byte, expected string) (string, error) {
@@ -50,6 +87,9 @@ func candidate(paths device.RuntimePaths) (string, error) {
 func Install(ctx context.Context, raw []byte, expected string) (map[string]any, error) {
 	digest, err := Validate(raw, expected)
 	if err != nil {
+		return nil, err
+	}
+	if err = CaptureLoaded(ctx); err != nil {
 		return nil, err
 	}
 	paths, err := device.Paths(ctx)
@@ -114,6 +154,9 @@ func fileStatus(filename string) map[string]any {
 	return out
 }
 func Status(ctx context.Context) (map[string]any, error) {
+	if err := CaptureLoaded(ctx); err != nil {
+		return nil, err
+	}
 	paths, err := device.Paths(ctx)
 	if err != nil {
 		return nil, err
@@ -122,5 +165,8 @@ func Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"loaded": fileStatus(paths.LoadedImage), "candidate": fileStatus(filename), "pluginsDir": filepath.Dir(filename), "restartRequiredForInstall": true}, nil
+	installed := fileStatus(filename)
+	loaded := snapshotCopy()
+	pending := installed["exists"] == true && installed["sha256"] != loaded["sha256"]
+	return map[string]any{"loaded": loaded, "loadedFileNow": fileStatus(paths.LoadedImage), "candidate": installed, "runningBuild": runningBuild(), "pluginsDir": filepath.Dir(filename), "pendingRestart": pending, "restartRequiredForInstall": true}, nil
 }

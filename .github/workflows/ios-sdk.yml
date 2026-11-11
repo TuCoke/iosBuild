@@ -53,12 +53,12 @@ jobs:
         run: go run ./cmd/precheck
 
       - name: go vet
-        run: go vet ./sdk/...
+        run: go vet ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen
 
       - name: go test（非 cgo）
         run: |
           set -euo pipefail
-          go test ./sdk/... -count=1 -v 2>&1 | tee test.log
+          go test ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen -count=1 -v 2>&1 | tee test.log
           echo "---- 汇总 ----"
           grep -E "^(ok|FAIL|---)" test.log | tail -40
 

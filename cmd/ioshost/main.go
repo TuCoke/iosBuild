@@ -375,6 +375,7 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 //
 //export GoMain
 func GoMain() {
+	_ = update.CaptureLoaded(context.Background())
 	// 幂等：这里只做"确保 AX 引导"，失败也不 panic —— 之后脚本调用时会再试一次。
 	if C.AXBootstrap() != 0 {
 		// 不可用是正常情况（普通签名/无授权），不阻断启动。
