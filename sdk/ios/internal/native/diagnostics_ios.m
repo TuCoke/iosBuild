@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 #import <TargetConditionals.h>
 #include <unistd.h>
+#import <mach/mach.h>
 
 static NSDictionary *AGDiagnosticResult(ag_ios_result result,BOOL image) {
     NSData *data=result.data ? [NSData dataWithBytes:result.data length:result.length] : [NSData data];
@@ -22,7 +23,14 @@ static NSDictionary *AGDiagnosticCall(ag_ios_result (^call)(void),BOOL image) {
 }
 static NSDictionary *AGDiagnosticSymbol(const char *name) {
     void *pointer=AGSymbol(name);Dl_info image={0};if(pointer)dladdr(pointer,&image);
-    return @{@"present":@(pointer!=NULL),@"image":image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @""};
+    NSMutableDictionary *result=[NSMutableDictionary dictionaryWithDictionary:@{@"present":@(pointer!=NULL),@"image":image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @""}];
+    // 只读取自己进程的函数入口，判断模拟器是否提供了直接失败的占位实现；不修改代码。
+    if(pointer && strcmp(name,"CARenderServerRenderDisplay")==0){
+        uint8_t bytes[32]={0};vm_size_t received=0;
+        kern_return_t status=vm_read_overwrite(mach_task_self(),(vm_address_t)pointer,sizeof(bytes),(vm_address_t)bytes,&received);
+        if(status==KERN_SUCCESS){NSMutableString *hex=[NSMutableString string];for(vm_size_t i=0;i<received;i++)[hex appendFormat:@"%02x",bytes[i]];result[@"entryBytesHex"]=hex;}
+    }
+    return result;
 }
 static NSString *AGDiagnosticClass(Class cls) {
     const char *image=cls ? class_getImageName(cls) : NULL;return image ? [NSString stringWithUTF8String:image] : @"";
