@@ -11,7 +11,7 @@
 #import "AGBridge.h"
 #import "AGWebConsoleViewController.h"
 
-@interface AGRootViewController () <UITextViewDelegate>
+@interface AGRootViewController () <UITextViewDelegate, NSNetServiceDelegate>
 @property (nonatomic, strong) UITextView *logView;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) UIImageView *shotView;
@@ -20,6 +20,7 @@
 @property (nonatomic, assign) CGPoint targetCenter;
 @property (nonatomic, assign) BOOL didStartup;
 @property (nonatomic, strong) dispatch_queue_t sdkQueue;
+@property (nonatomic, strong) NSNetService *debugService;
 @end
 
 @implementation AGRootViewController
@@ -56,7 +57,26 @@
     [self runNativeDiagnostics];
     [self append:[NSString stringWithFormat:@"localapi.start → %@",
                   [AGBridge invoke:@"localapi.start" payload:@"{}"]]];
+    // 调试服务在启动自检结束后开放，避免接入时与初始化争用设备。
+    NSString *debugRaw=[AGBridge invoke:@"debugapi.start" payload:@"{}"];
+    [self append:[@"debugapi.start → " stringByAppendingString:debugRaw]];
+    NSDictionary *debugReply=[NSJSONSerialization JSONObjectWithData:[debugRaw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    if([debugReply[@"ok"] boolValue])dispatch_async(dispatch_get_main_queue(),^{
+        self.debugService=[[NSNetService alloc] initWithDomain:@"local." type:@"_agovhost._tcp." name:@"" port:18990];
+        self.debugService.delegate=self;
+        // TXT 不发布 token、设备标识或文件路径；发现服务之后仍需鉴权。
+        [self.debugService setTXTRecordData:[NSNetService dataFromTXTRecordDictionary:@{@"version":[@"1" dataUsingEncoding:NSUTF8StringEncoding]}]];
+        [self.debugService publish];
     });
+    });
+}
+
+// Bonjour 发布失败不影响通过已知 IP 访问；权限提示被拒绝时保留明确日志。
+- (void)netServiceDidPublish:(NSNetService *)sender {
+    [self append:[NSString stringWithFormat:@"mDNS 已发布：%@.%@%@ :18990",sender.name,sender.type,sender.domain]];
+}
+- (void)netService:(NSNetService *)sender didNotPublish:(NSDictionary<NSString *, NSNumber *> *)errorDict {
+    [self append:[NSString stringWithFormat:@"mDNS 发布失败（仍可尝试 IP 直连）：%@",errorDict]];
 }
 
 #pragma mark - 界面

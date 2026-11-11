@@ -40,6 +40,8 @@ import (
 	"time"
 	"unsafe"
 
+	"autogov1/v2/cmd/ioshost/debugapi"
+
 	"autogov1/v2/sdk/ios/apkctl"
 	"autogov1/v2/sdk/ios/app"
 	"autogov1/v2/sdk/ios/capture"
@@ -127,6 +129,9 @@ func boolean(m map[string]any, key string) bool {
 //
 // 只监听 127.0.0.1，不监听 0.0.0.0 —— 避免局域网里的人直接连上来。
 var (
+	hostCallMu       sync.Mutex // 界面和局域网共用调用闸门，忙时拒绝，不叠加输入。
+	debugMu          sync.Mutex
+	debugServer      *debugapi.Server
 	executionControl sync.RWMutex // SDK 安装与整个脚本执行互斥，保证子进程加载的版本稳定。
 	localAPIMu       sync.Mutex
 	localAPIServer   *http.Server
@@ -187,7 +192,16 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
+	if !hostCallMu.TryLock() {
+		return fail(contextError("宿主正在执行其他操作，请稍后重试"))
+	}
+	defer hostCallMu.Unlock()
+	return invokeSDK(ctx, name, args, duration)
+}
 
+// invokeSDK 复用 C ABI 的分派，不为 HTTP 再实现一套设备控制逻辑。
+// 调用者持有 hostCallMu；独立 worker 在自己的进程内具有独立的锁。
+func invokeSDK(ctx context.Context, name string, args map[string]any, duration time.Duration) *C.char {
 	switch name {
 	case "capabilities":
 		v, err := device.Capabilities(ctx)
@@ -280,6 +294,50 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(map[string]any{"result": value, "engine": "JavaScriptCore", "transport": "tcp-binary"})
 
+	case "debugapi.start":
+		debugMu.Lock()
+		defer debugMu.Unlock()
+		if debugServer == nil {
+			paths, err := device.Paths(ctx)
+			if err != nil {
+				return fail(err)
+			}
+			server, err := debugapi.Start(debugapi.Config{Documents: paths.Documents, Invoke: func(callCtx context.Context, method string, parameters map[string]any) (json.RawMessage, error) {
+				// 运行状态只读自己的锁；其他动作执行中也必须能查询 worker PID。
+				if method != "script.status" {
+					if !hostCallMu.TryLock() {
+						return nil, contextError("宿主正在执行界面或脚本操作，请稍后重试")
+					}
+					defer hostCallMu.Unlock()
+				}
+				raw := invokeSDK(callCtx, method, parameters, 120*time.Second)
+				defer agov_ios_free(raw)
+				return json.RawMessage(C.GoString(raw)), nil
+			}})
+			if err != nil {
+				return fail(err)
+			}
+			debugServer = server
+		}
+		addresses := []string{}
+		if list, err := net.InterfaceAddrs(); err == nil {
+			for _, addr := range list {
+				if network, ok := addr.(*net.IPNet); ok && !network.IP.IsLoopback() && network.IP.To4() != nil {
+					addresses = append(addresses, "http://"+network.IP.String()+":18990")
+				}
+			}
+		}
+		return okData(map[string]any{"port": 18990, "listen": "0.0.0.0:18990", "token": debugServer.Token(), "addresses": addresses, "mdns": "_agovhost._tcp.", "note": "token 仅用于本次进程；不要把带 token 的日志公开分享"})
+	case "debugapi.stop":
+		debugMu.Lock()
+		defer debugMu.Unlock()
+		if debugServer != nil {
+			if err := debugServer.Close(ctx); err != nil {
+				return fail(err)
+			}
+			debugServer = nil
+		}
+		return okData(map[string]any{"stopped": true})
 	case "localapi.start":
 		port := int(num(args, "port", 18989))
 		if err := startLocalAPI(port); err != nil {
