@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"autogov1/v2/sdk/ios/internal/native"
@@ -65,7 +66,7 @@ func probeList() []opProbe {
 		{"device.vpn_set", map[string]any{}, true},
 		{"device.wifi_set", map[string]any{}, true},
 		{"device.keep_awake", nil, true}, // 防息屏会改变宿主状态，自检不得把调试保活关掉。
-		{"device.wake", nil, false},
+		{"device.wake", nil, true},       // 亮屏动作可能改变现场，自动自检不发送电源按键。
 		// 应用
 		{"app.foreground", nil, false},
 		{"app.self", nil, false},
@@ -99,15 +100,15 @@ func probeList() []opProbe {
 		{"console.destroy", map[string]any{"id": 9902}, false},
 		// 系统 / 工具
 		{"system.pid", map[string]any{"name": "__probe__"}, false},
-		{"system.memory", map[string]any{"pid": 1}, false},
-		{"system.cpu", map[string]any{"pid": 1}, false},
+		{"system.memory", map[string]any{"pid": os.Getpid()}, false},
+		{"system.cpu", map[string]any{"pid": os.Getpid()}, false},
 		{"utils.toast", map[string]any{"message": "", "duration": 1}, false},
 		// utils.alert 会真的弹 UIAlertController：自检跑完会留一个模态框挡在界面上，
 		// 后面的探针、截图全被它盖住（模拟器截图里就出现过空白"确定"弹窗）。
 		// 它和 device.reboot 一样"会改状态"，自检不真调。
 		{"utils.alert", map[string]any{"title": "", "content": "", "buttons": []any{}}, true},
 		{"utils.input_alert", map[string]any{"title": "", "content": "", "placeholder": ""}, true},
-		{"utils.alive", map[string]any{"pid": 1}, false},
+		{"utils.alive", map[string]any{"pid": os.Getpid()}, false},
 		{"utils.kill", map[string]any{"pid": -1}, false},
 		{"utils.spawn", map[string]any{"path": ""}, false}, // 缺参
 		{"utils.exec", map[string]any{"path": ""}, false},  // 缺参
@@ -127,21 +128,35 @@ func probeList() []opProbe {
 // SelfTestAll 逐个调 op，返回结构化结果。
 func All(ctx context.Context) map[string]any {
 	type item struct {
-		Op     string `json:"op"`
-		Status string `json:"status"` // ok / env / unsupported / unsafe / invalid / unverified
-		Detail string `json:"detail"`
+		Op     string         `json:"op"`
+		Status string         `json:"status"` // ok / env / unsupported / unsafe / invalid / unverified
+		Detail string         `json:"detail"`
+		Args   map[string]any `json:"args,omitempty"`
 	}
 	var items []item
 	counts := map[string]int{"ok": 0, "env": 0, "unsupported": 0, "unsafe": 0, "invalid": 0, "unverified": 0}
 
+	// 应用读取类探针使用真实宿主；虚构包名不能用于判断图标能力是否正常。
+	var self struct {
+		BundleID string `json:"bundleId"`
+	}
+	selfErr := native.Call(ctx, "app.self", nil, &self)
 	for _, p := range probeList() {
+		if p.args["bundleId"] == "__probe__" {
+			if selfErr != nil || self.BundleID == "" {
+				items = append(items, item{Op: p.op, Args: p.args, Status: "unverified", Detail: "无法取得真实宿主包名，不使用虚构包名代替自检"})
+				counts["unverified"]++
+				continue
+			}
+			p.args["bundleId"] = self.BundleID
+		}
 		if p.unsafe {
-			items = append(items, item{Op: p.op, Status: "unsafe", Detail: "会改状态，自检不调"})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "unsafe", Detail: "会改状态，自检不调"})
 			counts["unsafe"]++
 			continue
 		}
 		if err := ctx.Err(); err != nil {
-			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "unverified", Detail: err.Error()})
 			counts["unverified"]++
 			continue
 		}
@@ -150,16 +165,16 @@ func All(ctx context.Context) map[string]any {
 		cancel()
 		switch {
 		case err == nil:
-			items = append(items, item{Op: p.op, Status: "ok"})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "ok"})
 			counts["ok"]++
 		case errors.Is(err, types.ErrInvalid):
-			items = append(items, item{Op: p.op, Status: "invalid", Detail: "只验证了参数拒绝，未验证能力成功: " + err.Error()})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "invalid", Detail: "只验证了参数拒绝，未验证能力成功: " + err.Error()})
 			counts["invalid"]++
 		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
-			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "unverified", Detail: err.Error()})
 			counts["unverified"]++
 		case errors.Is(err, types.ErrUnsupported):
-			items = append(items, item{Op: p.op, Status: "unsupported", Detail: err.Error()})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "unsupported", Detail: err.Error()})
 			counts["unsupported"]++
 		default:
 			// 已实现，但这次调用的参数/环境不满足（越界、缺参、无权限、未装库…）
@@ -168,7 +183,7 @@ func All(ctx context.Context) map[string]any {
 			if text := []rune(detail); len(text) > 16384 {
 				detail = string(text[:16384])
 			}
-			items = append(items, item{Op: p.op, Status: "env", Detail: detail})
+			items = append(items, item{Op: p.op, Args: p.args, Status: "env", Detail: detail})
 			counts["env"]++
 		}
 	}

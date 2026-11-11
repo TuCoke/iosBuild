@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <mach-o/dyld.h>
 #include <mach/mach_time.h>
+#include <mach/mach.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <stdlib.h>
@@ -31,6 +32,43 @@ extern int proc_name(int pid, void *buffer, uint32_t buffersize);
 #ifndef RUSAGE_INFO_V2
 #define RUSAGE_INFO_V2 2
 #endif
+
+// iOS SDK 不公开 proc_info.h，按 Darwin PROC_PIDTASKINFO 的稳定 ABI 声明。
+// 与样本同为 flavor 4；不用不完整的结构体接收 96 字节结果。
+typedef struct {
+ uint64_t virtualBytes,residentBytes,totalUser,totalSystem,threadsUser,threadsSystem;
+ int32_t policy,faults,pageins,cowFaults,messagesSent,messagesReceived,machCalls,unixCalls,switches,threads,running,priority;
+} AGProcessTaskInfo;
+_Static_assert(sizeof(AGProcessTaskInfo)==96,"PROC_PIDTASKINFO ABI 大小不符");
+static BOOL AGReadTaskInfo(int pid,AGProcessTaskInfo *info) {
+ int (*readInfo)(int,int,uint64_t,void *,int)=AGSymbol("proc_pidinfo");
+ memset(info,0,sizeof(*info));
+ return readInfo && readInfo(pid,4,0,info,sizeof(*info))==sizeof(*info);
+}
+static long double AGTicksToNS(uint64_t ticks) {
+ mach_timebase_info_data_t tb={0};
+ if(mach_timebase_info(&tb)!=KERN_SUCCESS || !tb.denom)return -1;
+ return (long double)ticks*tb.numer/tb.denom;
+}
+static BOOL AGReadCPUTime(int pid,long double *ns,NSString **source) {
+ AGProcessTaskInfo task;
+ if(AGReadTaskInfo(pid,&task)){
+  *ns=AGTicksToNS(task.totalUser)+AGTicksToNS(task.totalSystem);*source=@"proc_pidinfo";return *ns>=0;
+ }
+ struct rusage_info_v2 usage={0};
+ if(proc_pid_rusage(pid,RUSAGE_INFO_V2,(rusage_info_t *)&usage)==0){
+  *ns=AGTicksToNS(usage.ri_user_time)+AGTicksToNS(usage.ri_system_time);*source=@"proc_pid_rusage";return *ns>=0;
+ }
+ // 自身进程可用公开 getrusage；绝不拿自身数据冒充被拒绝访问的其他 PID。
+ if(pid==getpid()){
+  struct rusage self={0};if(getrusage(RUSAGE_SELF,&self)==0){
+   *ns=((long double)self.ru_utime.tv_sec+self.ru_stime.tv_sec)*1000000000.0L+
+       ((long double)self.ru_utime.tv_usec+self.ru_stime.tv_usec)*1000.0L;
+   *source=@"getrusage.self";return YES;
+  }
+ }
+ return NO;
+}
 
 // AGFindPID 遍历所有进程，按可执行名匹配；找不到返回 0。
 static int AGFindPID(NSString *name) {
@@ -78,29 +116,32 @@ ag_ios_result AGSystem(NSString *op, NSDictionary *args) {
         return AGJSON(@{@"pid":@(AGFindPID(args[@"name"]))});
     }
     if ([op isEqualToString:@"system.memory"]) {
-        int pid = [args[@"pid"] intValue];
-        if (pid <= 0) return AGError(2,@"pid 无效");
-        // 用 rusage 的常驻内存（ri_resident_size）：proc_pidinfo 那条路在 iOS SDK 上编不过。
-        struct rusage_info_v2 info;
-        if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&info) != 0) {
-            return AGError(3,@"读不到该进程信息");
+        int pid=[args[@"pid"] intValue];if(pid<0)return AGError(2,@"pid 无效");if(!pid)pid=getpid();
+        AGProcessTaskInfo task;
+        if(AGReadTaskInfo(pid,&task))return AGJSON(@{@"kb":@(task.residentBytes/1024),@"pid":@(pid),@"source":@"proc_pidinfo"});
+        struct rusage_info_v2 usage={0};
+        if(proc_pid_rusage(pid,RUSAGE_INFO_V2,(rusage_info_t *)&usage)==0)
+            return AGJSON(@{@"kb":@(usage.ri_resident_size/1024),@"pid":@(pid),@"source":@"proc_pid_rusage"});
+        if(pid==getpid()){
+            mach_task_basic_info_data_t own={0};mach_msg_type_number_t count=MACH_TASK_BASIC_INFO_COUNT;
+            if(task_info(mach_task_self(),MACH_TASK_BASIC_INFO,(task_info_t)&own,&count)==KERN_SUCCESS)
+                return AGJSON(@{@"kb":@(own.resident_size/1024),@"pid":@(pid),@"source":@"task_info.self"});
         }
-        return AGJSON(@{@"kb":@((long long)info.ri_resident_size / 1024)});
+        return AGError(3,[NSString stringWithFormat:@"读取 PID %d 内存失败：进程不存在或当前身份无权访问（errno=%d）",pid,errno]);
     }
     if ([op isEqualToString:@"system.cpu"]) {
-        int pid = [args[@"pid"] intValue];
-        if (pid <= 0) return AGError(2,@"pid 无效");
-        struct rusage_info_v2 a, b;
-        if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&a) != 0) return AGError(3,@"读不到 CPU 信息");
-        usleep(200 * 1000);
-        if (proc_pid_rusage(pid, RUSAGE_INFO_V2, (rusage_info_t *)&b) != 0) return AGError(3,@"读不到 CPU 信息");
-        // 单位是 mach absolute time，换算成 200ms 窗口内的占比。
-        uint64_t used = (b.ri_user_time + b.ri_system_time) - (a.ri_user_time + a.ri_system_time);
-        mach_timebase_info_data_t tb;
-        mach_timebase_info(&tb);
-        double ns = (double)used * (double)tb.numer / (double)tb.denom;
-        double percent = ns / (200.0 * 1000000.0) * 100.0;
-        return AGJSON(@{@"percent":@(percent)});
+        int pid=[args[@"pid"] intValue];if(pid<0)return AGError(2,@"pid 无效");if(!pid)pid=getpid();
+        long double before=0,after=0;NSString *first=nil,*second=nil;
+        if(!AGReadCPUTime(pid,&before,&first))return AGError(3,[NSString stringWithFormat:@"读取 PID %d CPU 失败（errno=%d）",pid,errno]);
+        uint64_t start=mach_absolute_time();usleep(200000);
+        if(!AGReadCPUTime(pid,&after,&second))return AGError(3,[NSString stringWithFormat:@"再次读取 PID %d CPU 失败（errno=%d）",pid,errno]);
+        long double elapsed=AGTicksToNS(mach_absolute_time()-start);
+        if(![first isEqualToString:second] || after<before || elapsed<=0)
+            return AGError(3,@"CPU 采样来源或计数发生变化，请重试");
+        // 按真实单调时钟窗口计算，不能把实际调度延迟固定当成 200ms。
+        // 单核心 100% 口径，多线程进程允许超过 100%。
+        double percent=(double)((after-before)/elapsed*100.0L);
+        return AGJSON(@{@"percent":@(percent),@"pid":@(pid),@"source":first,@"sampleMs":@((double)(elapsed/1000000.0L))});
     }
     if ([op isEqualToString:@"system.restart_self"]) {
         char path[4096] = {0};

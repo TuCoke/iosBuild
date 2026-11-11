@@ -107,6 +107,42 @@ static NSString *AGAXString(id value) {
     return [value isKindOfClass:[NSString class]] ? value :
            [value isKindOfClass:[NSNumber class]] ? [value stringValue] : @"";
 }
+// SpringBoard 查询失败时，从实际屏幕上的应用对象读取包名；不使用缓存中的旧节点。
+ag_ios_result AGAXForegroundApplication(void) {
+    if(AXBootstrap()!=0)return AGError(3,@"SpringBoard 前台查询为空，AX 应用查询也不可用");
+    return AGOnMain(^{
+        Class cls=NSClassFromString(@"AXUIElement");
+        @synchronized(cls){
+            CGSize screen=UIScreen.mainScreen.bounds.size;
+            id app=((id(*)(id,SEL,CGPoint))objc_msgSend)(cls,NSSelectorFromString(@"uiApplicationAtCoordinate:"),CGPointMake(screen.width*0.5,screen.height*0.35));
+            NSDictionary *attrs=AGAXAttributes(app,@[@3003,@5039]);
+            id identifier=AGAXAttribute(attrs,3003);
+            NSString *bundle=[identifier isKindOfClass:NSString.class] ? identifier : @"";
+            if(!bundle.length){
+                id tree=AGAXAttribute(attrs,5039);
+                NSMutableArray *queue=[NSMutableArray array];
+                if([tree isKindOfClass:NSDictionary.class])[queue addObject:tree];
+                else if([tree isKindOfClass:NSArray.class])[queue addObjectsFromArray:tree];
+                for(NSUInteger i=0;i<queue.count && i<500 && !bundle.length;i++){
+                    id node=queue[i];if(![node isKindOfClass:NSDictionary.class])continue;
+                    id attributes=node[@"UIAccessibilitySnapshotKeyAttributes"];
+                    if([attributes isKindOfClass:NSDictionary.class]){
+                        id value=AGAXAttribute(attributes,3003);
+                        if([value isKindOfClass:NSString.class])bundle=value;
+                    }
+                    id children=node[@"UIAccessibilitySnapshotKeyChildren"];
+                    if([children isKindOfClass:NSArray.class] && queue.count<500){
+                        NSUInteger remaining=500-queue.count;
+                        [queue addObjectsFromArray:[children subarrayWithRange:NSMakeRange(0,MIN(remaining,[children count]))]];
+                    }
+                }
+            }
+            if(!bundle.length)return AGError(3,@"SpringBoard 未返回前台应用，AX 当前应用快照中也无有效包名");
+            return AGJSON(@{@"bundleId":bundle,@"source":@"ax.visibleApplication"});
+        }
+    });
+}
+
 static CGRect AGAXRect(id value) {
     if ([value isKindOfClass:[NSValue class]] && strcmp([value objCType],@encode(CGRect)) == 0)
         return [value CGRectValue];

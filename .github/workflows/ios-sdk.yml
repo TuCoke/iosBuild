@@ -886,6 +886,15 @@ jobs:
               jpeg=(root/f'native-capture-{context}.jpg').read_bytes()
               assert jpeg.startswith(bytes.fromhex('ffd8ff')) and len(jpeg)>100, context+' SDK 没有生成有效 JPEG'
               print('SDK JPEG:',image['width'],image['height'],'字节数:',len(jpeg))
+          # 基础自检必须测真实宿主，不能用 PID 1 或虚构包名制造环境失败。
+          checks=json.loads((root/'selftest-all.json').read_text())['data']
+          probes={item['op']:item for item in checks['items']}
+          host=json.loads((root/'native-diagnostics-host.json').read_text())['data']['environment']
+          for op in ['system.memory','system.cpu']:
+              assert probes[op]['args']['pid']==host['pid'], op+' 没有使用宿主实际 PID'
+              assert probes[op]['status']=='ok', op+' 自身进程读取失败: '+str(probes[op])
+          assert probes['app.icon']['args']['bundleId']==host['bundleID'], '图标探针没有使用真实宿主'
+          assert probes['device.wake']['status']=='unsafe', '自动自检不应发送亮屏/电源按键'
           script=json.loads((root/'script-check.json').read_text())
           data=script.get('data',{})
           assert script.get('ok') and data.get('ok'), '工作进程执行失败: '+str(data.get('error',script.get('error')))
