@@ -2,7 +2,7 @@
 
 更新时间：2026-11-11。主实现为 `v2/sdk/ios/`，`v2/ios/` 是独立 Apple 构建镜像。
 
-**已完成本地纯 Go 编译与静态检查；GitHub 首轮发现检查器漏扫并已修正，原生验证待完成。** [本次检查记录](ios-sdk-ci-20261111.md)。 下文“本轮已补代码”不能理解成已经通过模拟器或真机验收。使用方式、边界与更新流程见 [新增功能说明](ios-sdk-features.md)。
+**已完成本地纯 Go 编译与静态检查；修正检查器漏扫后，GitHub 四项构建与既有模拟器回归已通过。新增功能完整行为仍待验收。** [本次检查记录](ios-sdk-ci-20261111.md)。 下文“本轮已补代码”不能理解成已经通过模拟器或真机验收。使用方式、边界与更新流程见 [新增功能说明](ios-sdk-features.md)。
 
 ## 样本与已有验证
 
@@ -13,7 +13,7 @@
 - [9a1900d 的 CI](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 与 [70e5445 的 CI](https://github.com/TuCoke/iosBuild/actions/runs/42988971066) 曾通过；第二次存在一次 FrontBoard 未注册失败，重跑通过，未放宽断言。
 - iPhone 16 Pro / iOS 18.5 / arm64 **模拟器**中，SDK 自身取得正常 JPEG，AX 宿主 79 / 工作进程 80 个节点，注入目标计数 0→1，脚本工作进程正常返回。
 - 原生 JPEG 逐张查看过；不是用 simctl 截图替代 SDK 采集。没有实体 iPhone 的完整验收。
-- 这些历史结果不覆盖本轮新写的 OpenCV、ImGui 控件、JS UI 桥、资源工具、预热和升级恢复代码。
+- 新提交 `3c08dbe` 的 [CI 四项检查](https://github.com/TuCoke/iosBuild/actions/runs/43001526920) 已通过；宿主/工作进程仍采到 79/80 个 AX 节点，原生 JPEG 正常，工作进程 PID 6309 正常结束，JS 返回 3。新增算法、控件、模型效果及升级恢复的完整行为尚未实测。
 
 ## 完整能力对照
 
@@ -33,18 +33,18 @@ SDK 路径统一以前缀 `v2/sdk/ios/` 表示；宿主路径另标。
 | 应用管理 | SpringBoard、FrontBoard、LSApplicationWorkspace、helper | 既有 `app/`、installer | 安装、卸载、清数据与启动完整真机验收 |
 | 设备与系统 | 系统信息、亮度、剪贴板、锁屏等 | 既有 `device/`、`system/` | 各项授权与机型验收 |
 | 基础图像与找色 | Go imaging 与像素运算 | 既有 `images/`；有此前 Go 验证 | 与样本逐像素对照 |
-| OpenCV Mat 与匹配 | 原生 OpenCV 与 Go 绑定 | **本轮补代码**：Mat、Scope、编解码、裁剪、缩放、旋转、灰度、阈值、模糊、Canny、FindImage/All；原生 `host/ios/objc/ag_cv.mm` | 未编译/实测；未提供完整 OpenCV 所有类型/函数；模拟器运行库暂缺 |
+| OpenCV Mat 与匹配 | 原生 OpenCV 与 Go 绑定 | **本轮补代码**：Mat、Scope、编解码、裁剪、缩放、旋转、灰度、阈值、模糊、Canny、FindImage/All；原生 `host/ios/objc/ag_cv.mm` | 原生编译/链接已通过，新增行为未实测；未提供完整 OpenCV 所有类型/函数；模拟器运行库暂缺 |
 | PPOCR / YOLO / 点阵 OCR | NCNN/OpenCV 与识别引擎 dylib | 既有引擎适配；本轮补原生资源交付检查 | 实际模型效果、算法自建源码、模型发布清单仍缺 |
 | HUD / Console | ImGui + Metal | 既有基础面板；仍在自身 WindowScene | 不是跨 App 全局悬浮 |
-| ImGui Go 控件 | cimgui、控件、结构访问器 | **本轮补代码**：44 项生成接口、Checkbox/Slider/InputText、Run 帧回调、触摸与原生键盘代理、任务解绑与异常回收 | 未编译/实测；未覆盖所有结构、绘图对象和完整高级 API |
+| ImGui Go 控件 | cimgui、控件、结构访问器 | **本轮补代码**：44 项生成接口、Checkbox/Slider/InputText、Run 帧回调、触摸与原生键盘代理、任务解绑与异常回收 | 原生编译/链接已通过，新增行为未实测；未覆盖所有结构、绘图对象和完整高级 API |
 | 全局悬浮宿主 / 悬浮球 | agoverlayd、floatball、全局窗口注册、触摸 socket | **仍未实现完整独立宿主**；本轮继续核对样本 `SBSAccessibilityWindowHostingController` 和 FrontBoard 场景链 | 全局窗口、CAContext 图层交付、触摸路由、独立宿主看护与退出清理 |
-| JavaScriptCore 控制 | 宿主 JS、TCP 8990、消息回调 | 基础链路此前已验证；**本轮补带 ID/超时的双向请求应答** | 新协议分支未运行验证 |
-| JS 原生 UI 桥 | 原生对象/结构、控件、动作目标 | **本轮补代码**：AGJSBridge/Selector/Struct/ActionTarget、固定原生控件、属性/层级、事件、SDK 能力调用、按上下文清理与限额 | 未编译/实测；不是任意 ObjC 类/selector 和样本全部私有 API 的完整兼容层 |
+| JavaScriptCore 控制 | 宿主 JS、TCP 8990、消息回调 | 基础链路此前已验证；**本轮补带 ID/超时的双向请求应答** | 基础通道回归通过，新应答分支未运行验证 |
+| JS 原生 UI 桥 | 原生对象/结构、控件、动作目标 | **本轮补代码**：AGJSBridge/Selector/Struct/ActionTarget、固定原生控件、属性/层级、事件、SDK 能力调用、按上下文清理与限额 | 原生编译/链接已通过，新增行为未实测；不是任意 ObjC 类/selector 和样本全部私有 API 的完整兼容层 |
 | Go 脚本解释 | app/yaegi、SDK/第三方绑定 | 既有上游 Yaegi、工程/ZIP/import/embed；**本轮注册新增能力并绑定 Mat/UI 任务生命周期** | 样本 fork、core 路径及全部第三方签名差异仍未完整核实 |
 | 独立脚本进程 | native loader、任务工作进程与看护 | 既有 Runtime/app；已验证正常返回；有硬超时、父进程看护与 waitpid | 故障注入与阻塞原生调用验收 |
 | 文件 / Plist / SQLite / HTTP | 文件、属性列表、SQLite、HTTP | 既有相应包和此前验证 | 样本内部 fork 边界不保证完全一样 |
-| SDK 更新 | 候选安装、启动加载、健康和恢复 | **本轮补代码**：平台/入口验证、不可变版本目录、pending/attempt/current/previous、健康确认、下次启动回退、手动 rollback | 未编译/实测；依赖 ABI/模型兼容、版本清理、发布信任链和长期健康策略仍需补齐 |
-| 原生依赖交付 | 引擎库与模型制品 | **本轮补代码**：7 个库的来源/摘要/平台锁、HTTPS或离线获取、缺件阻止发布、包内清单与运行期检查 | 本轮未获取资源；预编译引擎不是自建源码；模型未纳入统一发布 |
+| SDK 更新 | 候选安装、启动加载、健康和恢复 | **本轮补代码**：平台/入口验证、不可变版本目录、pending/attempt/current/previous、健康确认、下次启动回退、手动 rollback | 原生编译/链接已通过，新增行为未实测；依赖 ABI/模型兼容、版本清理、发布信任链和长期健康策略仍需补齐 |
+| 原生依赖交付 | 引擎库与模型制品 | **本轮补代码**：7 个库的来源/摘要/平台锁、HTTPS或离线获取、缺件阻止发布、包内清单与运行期检查 | 7 个库在本地与 CI 的静态交付检查已通过；预编译引擎不是自建源码；模型未纳入统一发布 |
 | 穿透 | frpc 与进程生命周期 | 既有客户端定位与源码构建回退 | 外网与长期保活验收 |
 
 `device.wake`、`dotocr.set_dict` 已有分支；环境不支持不等于没有源码。历史 70 项探针中，40 项调用返回成功、4 项环境失败、2 项不支持、6 项跳过副作用、18 项仅参数拒绝，不等于 70 项功能全部通过。

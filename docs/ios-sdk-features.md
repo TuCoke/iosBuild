@@ -1,6 +1,6 @@
 # iOS SDK 新增功能与使用约定
 
-更新时间：2026-11-11。本轮只实现源码、生成绑定、格式化与同步，未编译、未运行测试、未触发 CI。
+更新时间：2026-11-11。源码已完成本地纯 Go 编译与静态检查，GitHub 四项构建和既有模拟器回归已通过；新增功能的完整行为仍待验收，详见 [检查记录](ios-sdk-ci-20261111.md)。
 
 主源码在 `v2/sdk/ios/`，Apple 构建镜像在 `v2/ios/`。本轮增加能力接口及宿主装配，没有修改 Agent/MCP 协议或设备调度框架。
 
@@ -89,7 +89,7 @@ Go 端用本次任务的 `apkctl.SetCallback` 接收。应答只表示 Go 回调
 
 锁文件：`v2/ios/host/ios/native-resources.lock.json`；工具：`v2/ios/tools/native_resources.py`。
 
-锁定已有 iosBuild 提交 `54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4` 中的 7 个库的大小、SHA256、平台、包内路径和来源。PPOCR 验证仓文件与 resources 原始文件的摘要不同，当前明确使用验证仓版本，不能混装。
+锁定已有 iosBuild 提交 `54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4` 中的 7 个库的大小、SHA256、平台、包内路径和来源。PPOCR 验证仓文件与 resources 原始文件的摘要不同，当前明确使用验证仓版本，不能混装。原生运行库的本地与 CI 静态交付校验均已通过。
 
 在独立 Apple 构建目录内：
 
@@ -99,7 +99,7 @@ python3 tools/native_resources.py --fetch --groups opencv,recognition
 python3 tools/native_resources.py --fetch --source-dir /path/to/locked-libs
 ```
 
-这里只写出使用方式，本轮没有运行资源获取。发布工作流已接入缺件即失败，避免静默省略 OCR 库；构建时会把锁文件放进 App。运行期 `resources.Inspect(ctx, false)` / `resources.status` 检查实际文件和平台，`verifyHash=true` 进一步比较原始摘要。
+资源已在验证仓/CI 中完成静态校验；这些命令不执行识别引擎。发布工作流已接入缺件即失败，避免静默省略 OCR 库；构建时会把锁文件放进 App。运行期 `resources.Inspect(ctx, false)` / `resources.status` 检查实际文件和平台，`verifyHash=true` 进一步比较原始摘要。
 
 签名和 install_name_tool 会改变 Mach-O 摘要，运行期会如实报告差异；发布前校验不能用打包后的不同摘要冒充通过。`Ready` 只表示所检查资源的交付检查通过，不表示引擎符号可用或识别效果合格。模型仍由调用方明确提供，尚没有模型版本与签名发布闭环；预编译引擎也不是本仓库已经自建的源码。
 
