@@ -15,6 +15,16 @@
 #include <mach/mach.h>
 #include <string.h>
 #include <notify.h>
+#include <unistd.h>
+
+// 读取亮屏状态失败时不猜测，避免把电源键当作无条件“亮屏”而反向锁屏。
+static BOOL AGReadScreenOn(BOOL *on) {
+ int token=0;
+ if(notify_register_check("com.apple.springboard.hasBlankedScreen",&token)!=NOTIFY_STATUS_OK)return NO;
+ uint64_t blanked=0;int status=notify_get_state(token,&blanked);notify_cancel(token);
+ if(status!=NOTIFY_STATUS_OK)return NO;
+ *on=(blanked==0);return YES;
+}
 
 // AGSysctlInt64 读一个 sysctl 整数值（失败返回 -1）。
 static long long AGSysctlInt64(const char *name) {
@@ -102,15 +112,8 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
     // 走 IOKit 的 IODisplayWrangler 需要 IOKit 类型声明，而 iOS SDK 不带这些头；
     // notify 是 libSystem 的公开 C 接口，不需要额外框架，也不会因为符号缺失编不过。
     if ([op isEqualToString:@"device.screen_on"]) {
-        int token = 0;
-        if (notify_register_check("com.apple.springboard.hasBlankedScreen", &token) != NOTIFY_STATUS_OK) {
-            return AGError(1,@"亮屏状态接口不可用");
-        }
-        uint64_t blanked = 0;
-        int status = notify_get_state(token, &blanked);
-        notify_cancel(token);
-        if (status != NOTIFY_STATUS_OK) return AGError(1,@"亮屏状态接口不可用");
-        return AGJSON(@{@"on":@((BOOL)(blanked == 0))});
+        BOOL on=NO;if(!AGReadScreenOn(&on))return AGError(3,@"亮屏状态读取失败");
+        return AGJSON(@{@"on":@(on)});
     }
     // 内存：不需要主线程，放在 AGOnMain 之前返回更省。
     if ([op isEqualToString:@"device.memory"]) {
@@ -178,6 +181,19 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         return AGJSON(@{@"on":@((BOOL)(state == 3))}); // 3 = NEVPNStatusConnected
     }
 
+    if([op isEqualToString:@"device.wake"]){
+        BOOL on=NO;if(!AGReadScreenOn(&on))return AGError(3,@"无法确认屏幕状态，未发送可能反向锁屏的电源按键");
+        if(on)return AGJSON(@{@"submitted":@NO,@"on":@YES,@"unlockAttempted":@NO});
+        // 与输入通道共用 IOHID Consumer Page 的电源键；亮屏不等于解除密码锁。
+        ag_ios_result key=AGInput(@"ime.key",@{@"page":@12,@"usage":@48});
+        if(key.code)return key;free(key.data);
+        for(int attempt=0;attempt<20;attempt++){
+            if(AGReadScreenOn(&on) && on)return AGJSON(@{@"submitted":@YES,@"on":@YES,@"unlockAttempted":@NO});
+            usleep(25000);
+        }
+        return AGError(4,@"亮屏按键已提交，但未确认屏幕点亮；不自动重复发送以免反向锁屏");
+    }
+
     return AGOnMain(^{
         UIScreen *screen=UIScreen.mainScreen;
         ag_ios_result geometry=AGDisplayInfo();if(geometry.code)return geometry;
@@ -215,10 +231,6 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
             BOOL on = [args[@"on"] boolValue];
             [UIApplication sharedApplication].idleTimerDisabled = on;
             return AGJSON(@{@"submitted":@YES});
-        }
-        if([op isEqualToString:@"device.wake"]){
-            void (*unlock)(BOOL,int)=AGSymbol("SBSUnlockDevice");if(!unlock)return AGError(1,@"SBSUnlockDevice 不可用");
-            unlock(YES,0);return AGJSON(@{@"submitted":@YES});
         }
         if ([op isEqualToString:@"device.clipget"]) return AGJSON(@{@"text":[UIPasteboard generalPasteboard].string ?: @""});
         if ([op isEqualToString:@"device.clipset"]) {

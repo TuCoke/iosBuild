@@ -18,6 +18,7 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"autogov1/v2/sdk/ios/device"
 	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/internal/native"
 )
@@ -57,6 +59,7 @@ type Status struct {
 	LogPath   string `json:"logPath"`
 	Binary    string `json:"binary"`
 	LastError string `json:"lastError,omitempty"`
+	ExitCode  *int   `json:"exitCode,omitempty"`
 }
 
 const (
@@ -71,6 +74,35 @@ const (
 )
 
 var mu sync.Mutex
+var activePID int
+var directoryMu sync.Mutex
+var documentRoot string
+
+// 穿透运行文件固定放 Documents，不复用脚本 files.SetRoot 的全局目录。
+func ensureDirectory(ctx context.Context) error {
+	directoryMu.Lock()
+	defer directoryMu.Unlock()
+	if documentRoot != "" {
+		return nil
+	}
+	if ctx == nil {
+		return fmt.Errorf("穿透 context 不能为空")
+	}
+	paths, err := device.Paths(ctx)
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(paths.Documents) {
+		return fmt.Errorf("穿透缺少 Documents 绝对路径")
+	}
+	documentRoot = paths.Documents
+	return nil
+}
+func tunnelPath(relative string) string {
+	directoryMu.Lock()
+	defer directoryMu.Unlock()
+	return filepath.Join(documentRoot, relative)
+}
 
 // BundleBinary 返回 app 包里 frpc 可执行文件的路径（找不到返回空串）。
 //
@@ -128,6 +160,8 @@ func Render(cfg Config) string {
 	} else {
 		b.WriteString("transport.tls.enable = true\n")
 	}
+	// 进程 stdout/stderr 已由宿主接管，显式输出可读日志而不是另写未知目录。
+	b.WriteString("log.to = \"console\"\nlog.level = \"info\"\nlog.disablePrintColor = true\n")
 	b.WriteString("\n[[proxies]]\n")
 	b.WriteString("name = " + strconv.Quote(name) + "\n")
 	b.WriteString("type = " + strconv.Quote(proxyType) + "\n")
@@ -153,6 +187,9 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 		return Status{}, fmt.Errorf("缺少 localPort（要被映射出去的本地端口）")
 	}
 
+	if err := ensureDirectory(ctx); err != nil {
+		return Status{LastError: err.Error()}, err
+	}
 	binary := BundleBinary(ctx)
 	if binary == "" {
 		// 把"在哪找过"一起报出来，否则只看到"找不到"没法排查。
@@ -164,17 +201,40 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 			fmt.Errorf("找不到 frpc-ios（bundle=%s）", dir.Path)
 	}
 
-	files.EnsureDir(workDir)
-	configPath := files.Path(configRel)
-	logPath := files.Path(logRel)
-	files.Write(configPath, Render(cfg))
+	configPath := tunnelPath(configRel)
+	logPath := tunnelPath(logRel)
+	if err := os.MkdirAll(tunnelPath(workDir), 0700); err != nil {
+		return Status{}, fmt.Errorf("创建穿透运行目录失败: %w", err)
+	}
+	// frpc 必须读取明文 token 配置；仅本机账户可读，不静默忽略写入错误。
+	if err := os.WriteFile(configPath, []byte(Render(cfg)), 0600); err != nil {
+		return Status{}, fmt.Errorf("保存 frpc 配置失败: %w", err)
+	}
+	if err := os.Chmod(configPath, 0600); err != nil {
+		return Status{}, fmt.Errorf("设置 frpc 配置权限失败: %w", err)
+	}
 
+	// 在拉起前确认日志可写，记录不含 token 的启动边界，便于区分多次尝试。
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return Status{}, fmt.Errorf("打开 frpc 日志失败: %w", err)
+	}
+	if err = logFile.Chmod(0600); err == nil {
+		_, err = fmt.Fprintf(logFile, "\n--- frpc 启动 %s server=%q port=%d proxy=%q local=%d remote=%d ---\n", time.Now().Format(time.RFC3339), cfg.Server, cfg.ServerPort, cfg.ProxyName, cfg.LocalPort, cfg.RemotePort)
+	}
+	closeErr := logFile.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return Status{}, fmt.Errorf("写入 frpc 启动日志失败: %w", err)
+	}
 	var out struct {
 		PID int `json:"pid"`
 	}
 	spawnCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	err := native.Call(spawnCtx, "utils.spawn", map[string]any{
+	err = native.Call(spawnCtx, "utils.spawn", map[string]any{
 		"path":    binary,
 		"args":    []string{"-c", configPath},
 		"logPath": logPath,
@@ -187,7 +247,10 @@ func Start(ctx context.Context, cfg Config) (Status, error) {
 		return Status{Config: configPath, LogPath: logPath, Binary: binary,
 			LastError: "进程没有返回 pid"}, fmt.Errorf("启动失败")
 	}
-	files.Write(files.Path(pidRel), strconv.Itoa(out.PID))
+	activePID = out.PID
+	if err := os.WriteFile(tunnelPath(pidRel), []byte(strconv.Itoa(out.PID)), 0600); err != nil {
+		return Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}, fmt.Errorf("frpc 已启动但 PID 文件保存失败；请停止后重试")
+	}
 	return Status{Running: true, PID: out.PID, Config: configPath, LogPath: logPath, Binary: binary}, nil
 }
 
@@ -196,6 +259,9 @@ func Stop(ctx context.Context) (Status, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if err := ensureDirectory(ctx); err != nil {
+		return Status{LastError: err.Error()}, err
+	}
 	pid := readPID()
 	if pid <= 0 {
 		return Status{Running: false}, nil
@@ -208,7 +274,8 @@ func Stop(ctx context.Context) (Status, error) {
 	if err := native.Call(stopCtx, "utils.kill", map[string]any{"pid": pid}, &out); err != nil {
 		return Status{Running: true, PID: pid, LastError: err.Error()}, err
 	}
-	files.Remove(files.Path(pidRel))
+	activePID = 0
+	files.Remove(tunnelPath(pidRel))
 	return Status{Running: false, PID: pid}, nil
 }
 
@@ -217,8 +284,11 @@ func Query(ctx context.Context) Status {
 	mu.Lock()
 	defer mu.Unlock()
 
+	if err := ensureDirectory(ctx); err != nil {
+		return Status{LastError: err.Error()}
+	}
 	pid := readPID()
-	status := Status{PID: pid, Config: files.Path(configRel), LogPath: files.Path(logRel), Binary: BundleBinary(ctx)}
+	status := Status{PID: pid, Config: tunnelPath(configRel), LogPath: tunnelPath(logRel), Binary: BundleBinary(ctx)}
 	if pid <= 0 {
 		return status
 	}
@@ -233,34 +303,92 @@ func Query(ctx context.Context) Status {
 	}
 	status.Running = out.Alive
 	if !out.Alive {
-		files.Remove(files.Path(pidRel))
+		// 只报告实际 waitpid 结果；历史或非本进程的 PID 取不到退出码时保持未知。
+		var exited struct {
+			Finished bool `json:"finished"`
+			Code     int  `json:"code"`
+		}
+		if native.Call(ctx, "utils.wait", map[string]any{"pid": pid}, &exited) == nil && exited.Finished {
+			status.ExitCode = &exited.Code
+		}
+		activePID = 0
+		files.Remove(tunnelPath(pidRel))
 	}
 	return status
 }
 
 // Logs 读最后 n 行日志（frpc 的输出被重定向到这里）。
 func Logs(n int) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if ensureDirectory(ctx) != nil {
+		return ""
+	}
 	if n <= 0 {
 		n = 50
 	}
-	text := files.Read(files.Path(logRel))
+	text, err := readLogTail(tunnelPath(logRel))
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		return "日志读取失败：" + err.Error()
+	}
 	if text == "" {
 		return ""
 	}
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if n > 200 {
+		n = 200
+	}
+	lines := strings.Split(strings.TrimRight(text, "\r\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
 }
 
+// 每次最多读取末尾 64 KiB；长时间运行后也不把整个 frpc 日志载入内存。
+func readLogTail(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	offset := info.Size() - 64*1024
+	if offset < 0 {
+		offset = 0
+	}
+	data, err := io.ReadAll(io.NewSectionReader(f, offset, info.Size()-offset))
+	if err != nil {
+		return "", err
+	}
+	if offset > 0 {
+		if i := strings.IndexByte(string(data), '\n'); i >= 0 {
+			data = data[i+1:]
+		}
+	}
+	return string(data), nil
+}
+
 // ClearLogs 清空日志（换配置重启时用，避免新旧混在一起）。
 func ClearLogs() {
-	files.Write(files.Path(logRel), "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if ensureDirectory(ctx) != nil {
+		return
+	}
+	files.Write(tunnelPath(logRel), "")
 }
 
 func readPID() int {
-	text := strings.TrimSpace(files.Read(files.Path(pidRel)))
+	if activePID > 0 {
+		return activePID
+	}
+	text := strings.TrimSpace(files.Read(tunnelPath(pidRel)))
 	if text == "" {
 		return 0
 	}

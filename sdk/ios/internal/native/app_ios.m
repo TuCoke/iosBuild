@@ -30,13 +30,20 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
     if([op isEqualToString:@"app.uninstall"]){BOOL handled=NO;ag_ios_result result=AGUninstallPackage(bundleID,&handled);if(handled || result.code)return result;free(result.data);}
 
     if ([op isEqualToString:@"app.foreground"]) {
-        CFStringRef (*copyFront)(void) = AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier");
-        if (!copyFront) return AGError(1,@"前台应用接口不可用");
-        CFStringRef identifier = copyFront();
-        if (!identifier) return AGError(3,@"无法读取前台应用，需检查系统授权");
-        ag_ios_result r = AGJSON(@{@"bundleId":(NSString *)identifier});
-        CFRelease(identifier);
-        return r;
+        return AGOnMain(^{
+            CFStringRef (*copyFront)(void)=AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier");
+            CFStringRef identifier=copyFront ? copyFront() : NULL;
+            if(identifier){ag_ios_result result=AGJSON(@{@"bundleId":(NSString *)identifier,@"source":@"SpringBoardServices"});CFRelease(identifier);return result;}
+            // 只有实际存在前台活动 Scene 时，才能返回本进程真实包名。
+            // 独立 worker 没有 Scene，不得把宿主包名冒充当前前台应用。
+            for(UIScene *scene in UIApplication.sharedApplication.connectedScenes){
+                if(scene.activationState==UISceneActivationStateForegroundActive){
+                    NSString *own=NSBundle.mainBundle.bundleIdentifier;
+                    if(own.length)return AGJSON(@{@"bundleId":own,@"source":@"activeScene"});
+                }
+            }
+            return AGAXForegroundApplication();
+        });
     }
 
     // app 包路径：给"执行 app 包内附带的可执行文件"用（例如 frpc-ios）。
@@ -166,13 +173,37 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
             if (bundleID.length == 0) return AGError(2,@"缺少 bundleId");
             id proxy = AGProxy(bundleID);
             if (!proxy) return AGError(3,@"应用未安装");
-            NSData *png = nil;
-            SEL iconSelector = NSSelectorFromString(@"iconForVariant:");
-            if ([proxy respondsToSelector:iconSelector]) {
-                id image = ((id(*)(id,SEL,NSUInteger))objc_msgSend)(proxy, iconSelector, 0);
-                if ([image isKindOfClass:[UIImage class]]) png = UIImagePNGRepresentation(image);
+            NSData *png=nil;
+            // 图标可能仅在 Assets.car 中；不能只依赖某个版本的 proxy 选择器。
+            SEL imageSelector=NSSelectorFromString(@"_applicationIconImageForBundleIdentifier:format:scale:");
+            @try {
+                if([UIImage respondsToSelector:imageSelector]){
+                    id image=((id(*)(id,SEL,id,NSInteger,CGFloat))objc_msgSend)(UIImage.class,imageSelector,bundleID,2,UIScreen.mainScreen.scale);
+                    if([image isKindOfClass:UIImage.class])png=UIImagePNGRepresentation(image);
+                }
+            }@catch(NSException *exception){ /* 当前系统不接受该私有入口，继续读取真实资源。 */ }
+            if(!png){
+                SEL iconSelector=NSSelectorFromString(@"iconForVariant:");
+                @try {
+                    if([proxy respondsToSelector:iconSelector]){
+                        id image=((id(*)(id,SEL,NSUInteger))objc_msgSend)(proxy,iconSelector,0);
+                        if([image isKindOfClass:UIImage.class])png=UIImagePNGRepresentation(image);
+                    }
+                }@catch(NSException *exception){ /* 继续包资源回退。 */ }
             }
-            if (!png) return AGError(3,@"图标不可读");
+            if(!png){
+                NSURL *url=AGRead(proxy,@"bundleURL",nil);
+                NSBundle *bundle=[url isKindOfClass:NSURL.class] ? [NSBundle bundleWithURL:url] : nil;
+                if([bundleID isEqualToString:[NSBundle bundleWithPath:AGApplicationBundlePath()].bundleIdentifier])bundle=[NSBundle bundleWithPath:AGApplicationBundlePath()];
+                NSDictionary *info=bundle.infoDictionary;
+                NSArray *names=info[@"CFBundleIcons"][@"CFBundlePrimaryIcon"][@"CFBundleIconFiles"] ?: info[@"CFBundleIconFiles"];
+                if([names isKindOfClass:NSArray.class])for(id name in [names reverseObjectEnumerator]){
+                    if(![name isKindOfClass:NSString.class])continue;
+                    UIImage *image=[UIImage imageNamed:name inBundle:bundle compatibleWithTraitCollection:nil];
+                    if(image){png=UIImagePNGRepresentation(image);if(png)break;}
+                }
+            }
+            if(!png)return AGError(3,[NSString stringWithFormat:@"应用 %@ 的系统图标入口及包资源均不可读",bundleID]);
             return AGData(png);
         }
 
