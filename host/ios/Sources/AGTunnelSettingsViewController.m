@@ -86,6 +86,15 @@ static NSMutableDictionary *AGTunnelTokenQuery(void) {
         field.font=[UIFont systemFontOfSize:15];
         field.accessibilityIdentifier=[@"tunnel." stringByAppendingString:key];
         field.secureTextEntry=[key isEqualToString:@"token"];
+        if([key isEqualToString:@"token"]){
+            UIButton *preset=[UIButton buttonWithType:UIButtonTypeSystem];
+            [preset setTitle:@"使用预设" forState:UIControlStateNormal];
+            preset.titleLabel.font=[UIFont systemFontOfSize:13];
+            preset.frame=CGRectMake(0,0,80,30);
+            [preset addTarget:self action:@selector(usePresetToken) forControlEvents:UIControlEventTouchUpInside];
+            field.rightView=preset;field.rightViewMode=UITextFieldViewModeAlways;
+            field.clearButtonMode=UITextFieldViewModeNever;
+        }
         if([key hasSuffix:@"Port"])field.keyboardType=UIKeyboardTypeNumberPad;
         else if([key isEqualToString:@"server"])field.keyboardType=UIKeyboardTypeURL;
         fields[key]=field;
@@ -119,6 +128,17 @@ static NSMutableDictionary *AGTunnelTokenQuery(void) {
 }
 - (UILabel *)label:(NSString *)text {UILabel *label=[[UILabel alloc] init];label.text=text;label.font=[UIFont systemFontOfSize:12];label.textColor=UIColor.secondaryLabelColor;return label;}
 - (void)closeSettings {[self dismissViewControllerAnimated:YES completion:nil];}
+- (void)usePresetToken {
+    // 仅填写当前表单，点击保存后才替换 Keychain；不影响正在运行的连接。
+    NSString *server=[self.fields[@"server"].text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if(![server isEqualToString:@"49.235.187.13"] || ![self.fields[@"serverPort"].text isEqualToString:@"7000"]){
+        [self showMessage:@"此预设属于 49.235.187.13:7000，请先确认服务器地址和端口"];return;
+    }
+    id token=NSBundle.mainBundle.infoDictionary[@"AGDefaultFrpsToken"];
+    if(![token isKindOfClass:NSString.class] || ![token length]){[self showMessage:@"当前安装包没有预设密钥，请使用包含预填配置的新包"];return;}
+    self.fields[@"token"].text=token;
+    [self showMessage:@"已填入服务器预设 token，请点保存后停止并重新启动穿透"];
+}
 - (void)showMessage:(NSString *)message {
     UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"穿透设置" message:message preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];

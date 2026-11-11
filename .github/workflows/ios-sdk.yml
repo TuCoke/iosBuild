@@ -512,8 +512,11 @@ jobs:
               data = plistlib.loads(path.read_bytes())
               data['AGDefaultFrpsToken'] = token
               path.write_bytes(plistlib.dumps(data, fmt=plistlib.FMT_BINARY))
-              print('默认穿透凭据已注入安装包；密钥不输出到日志')
+              assert plistlib.loads(path.read_bytes()).get('AGDefaultFrpsToken') == token, '预填密钥写入校验失败'
+              print('默认穿透凭据已注入并回读校验通过；密钥不输出到日志')
           else:
+              if os.environ.get('GITHUB_EVENT_NAME') != 'pull_request':
+                  raise RuntimeError('发布构建缺少 IOS_FRPS_TOKEN，拒绝生成缺少预填密钥的安装包')
               print('未配置 IOS_FRPS_TOKEN，安装后需在穿透设置手动填写')
           PY
 
