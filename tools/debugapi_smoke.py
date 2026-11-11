@@ -28,8 +28,15 @@ def run(documents):
         req = urllib.request.Request("http://127.0.0.1:18990" + path, method=method)
         if auth:
             req.add_header("Authorization", "Bearer " + token)
-        with urllib.request.urlopen(req, timeout=125) as response:
-            return response.read()
+        # 前台状态轮询可能与请求短暂竞争；409 表示动作尚未开始，可有界重试。
+        for attempt in range(10):
+            try:
+                with urllib.request.urlopen(req, timeout=125) as response:
+                    return response.read()
+            except urllib.error.HTTPError as exc:
+                if exc.code != 409 or attempt == 9:
+                    raise
+                time.sleep(0.2)
 
     try:
         call("/status", auth=False)

@@ -289,7 +289,13 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
         posix_spawn_file_actions_init(&actions);
         int logFD = -1;
         if (logPath.length) {
-            logFD = open(logPath.UTF8String, O_CREAT | O_WRONLY | O_APPEND, 0644);
+            logFD = open(logPath.UTF8String, O_CREAT | O_WRONLY | O_APPEND, 0600);
+            if(logFD<0){
+                int failure=errno;
+                posix_spawn_file_actions_destroy(&actions);
+                for(NSUInteger i=0;i<argvList.count;i++)free(argv[i]);free(argv);
+                return AGError(3,[NSString stringWithFormat:@"无法打开子进程日志：%s（errno=%d）",strerror(failure),failure]);
+            }
             if (logFD >= 0) {
                 posix_spawn_file_actions_adddup2(&actions, logFD, STDOUT_FILENO);
                 posix_spawn_file_actions_adddup2(&actions, logFD, STDERR_FILENO);

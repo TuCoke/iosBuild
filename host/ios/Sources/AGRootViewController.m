@@ -26,6 +26,14 @@
 @property (nonatomic, assign) BOOL didStartup;
 @property (nonatomic, strong) dispatch_queue_t sdkQueue;
 @property (nonatomic, strong) NSNetService *debugService;
+@property (nonatomic, strong) UILabel *tunnelStateLabel;
+@property (nonatomic, strong) NSTimer *tunnelTimer;
+@property (atomic, assign) BOOL tunnelPollPending;
+@property (nonatomic, copy) NSString *lastTunnelLogs;
+@property (nonatomic, copy) NSString *lastTunnelState;
+@property (nonatomic, assign) NSInteger lastTunnelPID;
+@property (nonatomic, strong) NSNumber *lastTunnelExitCode;
+
 @end
 
 @implementation AGRootViewController
@@ -46,6 +54,7 @@
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
+    [self startTunnelMonitoring];
     // viewDidAppear 也会被多次调用（返回 Web 控制台时会再来一次），
     // 不加闸门脚本会跑好几遍、日志重复。
     if (self.didStartup) {
@@ -135,6 +144,63 @@
     [self append:[NSString stringWithFormat:@"mDNS 发布失败（仍可尝试 IP 直连）：%@",errorDict]];
 }
 
+// 仅在页面可见、App 前台时监测；一次最多排一个任务，SDK 忙时不堆积轮询。
+- (void)startTunnelMonitoring {
+    if(self.tunnelTimer)return;
+    __weak typeof(self) weakSelf=self;
+    self.tunnelTimer=[NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer){
+        typeof(self) controller=weakSelf;
+        if(!controller){[timer invalidate];return;}
+        if(!controller.view.window || controller.presentedViewController || UIApplication.sharedApplication.applicationState!=UIApplicationStateActive || controller.tunnelPollPending)return;
+        controller.tunnelPollPending=YES;
+        dispatch_async(controller.sdkQueue,^{
+            @try{[controller refreshTunnelStatus];}
+            @finally{dispatch_async(dispatch_get_main_queue(),^{controller.tunnelPollPending=NO;});}
+        });
+    }];
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    [self.tunnelTimer invalidate];self.tunnelTimer=nil;
+}
+- (void)dealloc {[_tunnelTimer invalidate];}
+
+- (void)refreshTunnelStatus {
+    NSString *raw=[AGBridge invoke:@"tunnel.status" payload:@"{}"];
+    NSDictionary *envelope=[NSJSONSerialization JSONObjectWithData:[raw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
+    NSDictionary *data=[envelope[@"data"] isKindOfClass:NSDictionary.class] ? envelope[@"data"] : nil;
+    NSDictionary *status=[data[@"status"] isKindOfClass:NSDictionary.class] ? data[@"status"] : nil;
+    BOOL running=[status[@"running"] boolValue];
+    NSInteger pid=[status[@"pid"] integerValue];
+    if(pid>0 && pid!=self.lastTunnelPID)self.lastTunnelExitCode=nil;
+    if([status[@"exitCode"] isKindOfClass:NSNumber.class])self.lastTunnelExitCode=status[@"exitCode"];
+    if(pid>0 && !running)self.lastTunnelPID=pid;
+    NSString *message;
+    if(![envelope[@"ok"] boolValue] || !status)message=[@"frpc 状态读取失败：" stringByAppendingString:envelope[@"error"] ?: @"返回内容无效"];
+    else if([status[@"lastError"] length])message=[@"frpc 状态读取失败：" stringByAppendingString:status[@"lastError"]];
+    else if(running){self.lastTunnelPID=pid;message=[NSString stringWithFormat:@"frpc 运行中 · PID %ld（连接/注册结果见下方日志）",(long)pid];}
+    else if(self.lastTunnelPID>0)message=[NSString stringWithFormat:@"frpc 已退出 · PID %ld · 退出码 %@（请查看最后日志）",(long)self.lastTunnelPID,self.lastTunnelExitCode ?: @"未知"];
+    else message=@"frpc 未运行 · 请配置后点击启动穿透";
+    if(![message isEqualToString:self.lastTunnelState]){
+        self.lastTunnelState=message;
+        [self append:[@"[穿透状态] " stringByAppendingString:message]];
+        dispatch_async(dispatch_get_main_queue(),^{self.tunnelStateLabel.text=message;self.tunnelStateLabel.textColor=running ? UIColor.systemBlueColor : UIColor.secondaryLabelColor;});
+    }
+    NSString *logs=[data[@"logs"] isKindOfClass:NSString.class] ? data[@"logs"] : @"";
+    if(logs.length && ![logs isEqualToString:self.lastTunnelLogs]){
+        NSArray *previous=self.lastTunnelLogs.length ? [self.lastTunnelLogs componentsSeparatedByString:@"\n"] : @[];
+        NSArray *current=[logs componentsSeparatedByString:@"\n"];
+        NSUInteger overlap=MIN(previous.count,current.count);
+        while(overlap>0){
+            NSArray *tail=[previous subarrayWithRange:NSMakeRange(previous.count-overlap,overlap)];
+            if([tail isEqualToArray:[current subarrayWithRange:NSMakeRange(0,overlap)]])break;
+            overlap--;
+        }
+        for(NSUInteger i=overlap;i<current.count;i++)if([current[i] length])[self append:[@"[frpc] " stringByAppendingString:current[i]]];
+    }
+    self.lastTunnelLogs=logs;
+}
+
 #pragma mark - 界面
 
 - (void)buildUI {
@@ -203,6 +269,13 @@
         @[@"注入上滑", @"injectSwipe"],
         @[@"清空日志", @"clearLog"],
     ]]];
+
+    self.tunnelStateLabel=[[UILabel alloc] init];
+    self.tunnelStateLabel.text=@"frpc 状态待检查";
+    self.tunnelStateLabel.font=[UIFont systemFontOfSize:11];
+    self.tunnelStateLabel.numberOfLines=2;
+    self.tunnelStateLabel.textColor=UIColor.secondaryLabelColor;
+    [root addArrangedSubview:self.tunnelStateLabel];
 
     // 截图预览（成功时有图，失败时隐藏）
     _shotView = [[UIImageView alloc] init];
@@ -345,18 +418,21 @@
     NSData *data=[NSJSONSerialization dataWithJSONObject:config options:0 error:&error];
     if(!data){[self append:error.localizedDescription];return;}
     NSString *payload=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    // 不记录 payload，避免 frps token 进入界面与 app.log。
+    // 摘要不含 token；frpc 的 stdout/stderr 由 SDK 保存并实时显示。
+    [self append:[NSString stringWithFormat:@"[穿透启动] %@:%@ · %@ · 手机 %@ → 公网 %@ · TLS %@",config[@"server"],config[@"serverPort"],config[@"name"],config[@"localPort"],config[@"remotePort"],[config[@"disableTls"] boolValue] ? @"关闭" : @"开启"]];
     [self append:[NSString stringWithFormat:@"启动穿透 → %@",[AGBridge invoke:@"tunnel.start" payload:payload]]];
+    [self refreshTunnelStatus];
 }
 
 - (void)tunnelStop {
     [self append:[NSString stringWithFormat:@"停止穿透 → %@",
                   [AGBridge invoke:@"tunnel.stop" payload:@"{}"]]];
+    self.lastTunnelPID=0;[self refreshTunnelStatus];
 }
 
 - (void)tunnelStatus {
-    [self append:[NSString stringWithFormat:@"隧道状态 → %@",
-                  [AGBridge invoke:@"tunnel.status" payload:@"{}"]]];
+    [self refreshTunnelStatus];
+    [self append:@"frpc 实时输出已显示在下方；完整进程日志位于 Documents/Tunnel/frpc.log，界面副本保存在 app.log"];
 }
 
 - (void)runScript {
@@ -515,7 +591,10 @@
 - (void)append:(NSString *)line {
     NSString *text = line ?: @"";
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.logView.text = [self.logView.text stringByAppendingFormat:@"%@\n", text];
+        NSString *visible=[self.logView.text stringByAppendingFormat:@"%@\n",text];
+        // 界面只保留最近文本，完整日志继续落盘，避免长期监听撑大 UITextView。
+        if(visible.length>200000)visible=[visible substringFromIndex:visible.length-200000];
+        self.logView.text=visible;
         NSRange end = NSMakeRange(self.logView.text.length, 0);
         [self.logView scrollRangeToVisible:end];
     });
