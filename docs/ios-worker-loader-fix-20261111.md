@@ -44,3 +44,11 @@ v2/sdk/ios/
 - 新增 9 个用例覆盖 Runtime 布局、模拟器根库、直接/间接依赖、同大小升级、缓存丢失/损坏、缺依赖、复制失败、平台错误/取消、原子失败保留旧文件、软链接隔离。Windows 不具备软链接权限时该项显式跳过，需由 Unix CI 核对。
 
 这些是文件准备和编译回归，不是伪造设备操作。GitHub 原生构建、模拟器以及新的真机结果待后续补充。用户需更新包含本次修正的 SDK/安装包，并确认 `native-diagnostics-worker.json` 中工作进程、截图、AX 与脚本结果，不以宿主点击成功替代子进程成功。
+
+## 本轮提交与 CI 状态
+
+- 主仓库修复代码提交：`3a6e479`（`v2`）。
+- GitHub 修复代码提交：`5aa98775e33ff48cb9752d3db5133be56dbb27b9`（`codex/ios-sdk-features-20261111`）。
+- [本次 GitHub Actions](https://github.com/TuCoke/iosBuild/actions/runs/43035285983)：Go 自检、vet 和单元测试通过；9 个新增文件准备回归全部通过，包含 Linux 软链接隔离用例。
+- 记录时 macOS / iPhoneOS 编译作业尚在排队，IPA 和模拟器结果未产生。不能将本次 Go 回归记成原生编译通过，也不能沿用上一轮成功结果替代本次验证。
+- 真机需使用包含本次修复的 SDK/安装包重新验收，重点查看 worker 完整回执。
