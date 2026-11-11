@@ -11,49 +11,49 @@ package files
 import (
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/xml"
 	"errors"
-	"fmt"
+	"howett.net/plist"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 )
 
-// rootDir 是相对路径的基准（应用沙盒根）。宿主可用 SetRoot 覆盖。
+// 相对路径与参考样本一样以执行文件目录为基准，工程内资源不再误指向 HOME。
+var rootMu sync.RWMutex
 var rootDir = defaultRoot()
 
-// defaultRoot 取 App 沙盒的 Documents 上级（即容器根）。
-// iOS 上 HOME 就是容器根，Go 的 os.UserHomeDir 会拿到它；
-// 桌面平台跑单测时退到当前工作目录，保证同一套逻辑可测。
 func defaultRoot() string {
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return home
+	if executable, err := os.Executable(); err == nil {
+		return filepath.Dir(executable)
 	}
-	if wd, err := os.Getwd(); err == nil {
-		return wd
-	}
-	return "."
+	return filepath.Dir(os.Args[0])
 }
 
 // SetRoot 覆盖相对路径基准（测试与桌面预览用）。
 func SetRoot(dir string) {
 	if dir != "" {
+		rootMu.Lock()
 		rootDir = dir
+		rootMu.Unlock()
 	}
 }
 
 // resolve 把相对路径拼到沙盒根上；已经是绝对路径的原样返回。
 func resolve(p string) string {
+	rootMu.RLock()
+	root := rootDir
+	rootMu.RUnlock()
 	if p == "" {
-		return rootDir
+		return root
 	}
 	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
 		return p
 	}
-	return filepath.Join(rootDir, p)
+	return filepath.Join(root, p)
 }
 
 // Path 返回相对路径对应的绝对路径。
@@ -77,7 +77,7 @@ func IsEmptyDir(p string) bool {
 	}
 	defer f.Close()
 	names, err := f.Readdirnames(1)
-	return err == nil && len(names) == 0
+	return errors.Is(err, io.EOF) && len(names) == 0
 }
 
 func Exists(p string) bool {
@@ -156,25 +156,10 @@ func Copy(fromPath, toPath string) bool {
 }
 
 // Move 移动/改名；跨分区时退化为「复制 + 删除」。
-func Move(fromPath, toPath string) bool {
-	src, dst := resolve(fromPath), resolve(toPath)
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return false
-	}
-	if err := os.Rename(src, dst); err == nil {
-		return true
-	}
-	if !Copy(src, dst) {
-		return false
-	}
-	return os.RemoveAll(src) == nil
-}
+func Move(fromPath, toPath string) bool { return os.Rename(resolve(fromPath), resolve(toPath)) == nil }
 
-// Rename 在同一目录内改名。
-func Rename(p, newName string) bool {
-	full := resolve(p)
-	return Move(full, filepath.Join(filepath.Dir(full), newName))
-}
+// Rename 与参考样本一样将第二个参数作为目标路径，不再自动拼到旧文件同级目录。
+func Rename(p, newName string) bool { return os.Rename(resolve(p), resolve(newName)) == nil }
 
 func GetName(p string) string { return path.Base(strings.TrimSuffix(p, "/")) }
 
@@ -184,7 +169,7 @@ func GetNameWithoutExtension(p string) string {
 	return strings.TrimSuffix(base, ext)
 }
 
-func GetExtension(p string) string { return path.Ext(p) }
+func GetExtension(p string) string { return strings.TrimPrefix(path.Ext(p), ".") }
 
 func GetMd5(p string) string {
 	data := ReadBytes(p)
@@ -215,140 +200,52 @@ func ListDir(p string) []string {
 	return names
 }
 
-// ---- plist ----
-//
-// 【只支持 XML plist】iOS 的二进制 plist（bplist00）结构复杂且没有标准库支持，
-// 而我们要读写的都是自己生成的配置；遇到二进制 plist 返回 nil/ false，
-// 让调用方知道"这个文件我读不了"，而不是给一份看起来正常的空配置。
-
-type plistDict struct {
-	XMLName xml.Name    `xml:"dict"`
-	Keys    []string    `xml:"key"`
-	Values  []plistNode `xml:",any"`
-}
-
-type plistNode struct {
-	XMLName xml.Name
-	Value   string `xml:",chardata"`
-}
-
+// ---- Plist ----
+// 使用与样本专用 Plist 解析器同类的完整编解码器，支持 binary/XML、数组、字典、日期与 data。
 func parsePlist(data []byte) map[string]interface{} {
-	trimmed := strings.TrimSpace(string(data))
-	if strings.HasPrefix(trimmed, "bplist") {
+	var out map[string]interface{}
+	if _, err := plist.Unmarshal(data, &out); err != nil {
 		return nil
-	}
-	var root struct {
-		XMLName xml.Name    `xml:"plist"`
-		Dict    plistDict   `xml:"dict"`
-	}
-	if err := xml.Unmarshal(data, &root); err != nil {
-		return nil
-	}
-	dict := root.Dict
-	if len(dict.Keys) == 0 {
-		return nil
-	}
-	out := make(map[string]interface{}, len(dict.Keys))
-	for i, key := range dict.Keys {
-		if i >= len(dict.Values) {
-			break
-		}
-		v := dict.Values[i]
-		text := strings.TrimSpace(v.Value)
-		switch v.XMLName.Local {
-		case "string":
-			out[key] = text
-		case "integer":
-			n, _ := strconv.ParseInt(text, 10, 64)
-			out[key] = int(n)
-		case "real":
-			f, _ := strconv.ParseFloat(text, 64)
-			out[key] = f
-		case "true":
-			out[key] = true
-		case "false":
-			out[key] = false
-		}
 	}
 	return out
 }
-
 func marshalPlist(data map[string]interface{}) []byte {
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
-	b.WriteString(`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
-	b.WriteString("<plist version=\"1.0\">\n<dict>\n")
-	for _, k := range keys {
-		b.WriteString("\t<key>" + xmlEscape(k) + "</key>\n")
-		switch v := data[k].(type) {
-		case bool:
-			if v {
-				b.WriteString("\t<true/>\n")
-			} else {
-				b.WriteString("\t<false/>\n")
-			}
-		case int:
-			b.WriteString("\t<integer>" + strconv.Itoa(v) + "</integer>\n")
-		case int64:
-			b.WriteString("\t<integer>" + strconv.FormatInt(v, 10) + "</integer>\n")
-		case float64:
-			b.WriteString("\t<real>" + strconv.FormatFloat(v, 'f', -1, 64) + "</real>\n")
-		default:
-			b.WriteString("\t<string>" + xmlEscape(fmt.Sprint(v)) + "</string>\n")
-		}
-	}
-	b.WriteString("</dict>\n</plist>\n")
-	return []byte(b.String())
-}
-
-func xmlEscape(s string) string {
-	var b strings.Builder
-	_ = xml.EscapeText(&b, []byte(s))
-	return b.String()
-}
-
-func ReadPlist(p string) map[string]interface{} {
-	data := ReadBytes(p)
-	if data == nil {
+	body, err := plist.Marshal(data, plist.XMLFormat)
+	if err != nil {
 		return nil
 	}
-	return parsePlist(data)
+	return body
 }
-
+func ReadPlist(p string) map[string]interface{} {
+	body := ReadBytes(p)
+	if body == nil {
+		return nil
+	}
+	return parsePlist(body)
+}
 func WritePlist(p string, data map[string]interface{}) bool {
 	if data == nil {
 		return false
 	}
-	WriteBytes(p, marshalPlist(data))
-	return Exists(p)
-}
-
-func GetPlistValue(p, key string) interface{} {
-	dict := ReadPlist(p)
-	if dict == nil {
-		return nil
+	body := marshalPlist(data)
+	if body == nil {
+		return false
 	}
-	return dict[key]
+	target := resolve(p)
+	if os.MkdirAll(filepath.Dir(target), 0755) != nil {
+		return false
+	}
+	return os.WriteFile(target, body, 0644) == nil
 }
-
-// SetPlistValue 读-改-写；文件不存在则新建。读到了但不是合法 plist 时返回 false，
-// 避免把用户原有配置覆盖成只有一条键的空壳。
+func GetPlistValue(p, key string) interface{} { return ReadPlist(p)[key] }
 func SetPlistValue(p, key string, value interface{}) bool {
-	dict := ReadPlist(p)
-	if dict == nil {
+	data := ReadPlist(p)
+	if data == nil {
 		if Exists(p) {
 			return false
 		}
-		dict = map[string]interface{}{}
+		data = map[string]interface{}{}
 	}
-	dict[key] = value
-	return WritePlist(p, dict)
+	data[key] = value
+	return WritePlist(p, data)
 }
-
-// errNotFound 供内部断言使用（对外 API 不暴露 error）。
-var errNotFound = errors.New("not found")

@@ -12,6 +12,7 @@ import (
 )
 
 // GetDisplayInfo 返回 (宽, 高, 缩放, 旋转)。取不到返回全 0。
+// rotation 返回角度（0/90/180/270），与底层 Display.Rotation 的四分之一圈数区分。
 func GetDisplayInfo() (width, height int, scale float64, rotation int) {
 	var out struct {
 		Width    int     `json:"width"`
@@ -22,7 +23,7 @@ func GetDisplayInfo() (width, height int, scale float64, rotation int) {
 	if !bridge.Do("device.display", nil, &out) {
 		return 0, 0, 0, 0
 	}
-	return out.Width, out.Height, out.Scale, out.Rotation
+	return out.Width, out.Height, out.Scale, out.Rotation * 90
 }
 
 // GetBattery 返回电量百分比（0~100）。

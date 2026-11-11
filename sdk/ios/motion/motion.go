@@ -15,13 +15,26 @@ import (
 )
 
 // 同一进程只有一个系统触摸设备，所有调用者共用状态与串行闸门。
-var held = map[int]types.Point{}
 var rotation atomic.Int32
+
+func init() { rotation.Store(-1) }
+
+// 默认从 FrontBoard 获取前台方向；Configure 可显式固定方向。
+func currentRotation(ctx context.Context) (int, error) {
+	if r := int(rotation.Load()); r >= 0 {
+		return r, nil
+	}
+	var display types.Display
+	if err := native.Call(ctx, "device.display", nil, &display); err != nil {
+		return 0, err
+	}
+	return display.Rotation, nil
+}
 
 func acquire(ctx context.Context) error { return inputstate.Acquire(ctx) }
 func release()                          { inputstate.Release() }
 
-// Configure 显式指定屏幕方向和事件来源 ID；SDK 不伪造设备来源标识。
+// Configure 显式覆盖屏幕方向和事件来源 ID；senderID=0 恢复样本默认常量，它不代表真实硬件身份。
 func Configure(ctx context.Context, quarterTurns int, senderID uint64) error {
 	if quarterTurns < 0 || quarterTurns > 3 {
 		return types.ErrInvalid
@@ -30,9 +43,6 @@ func Configure(ctx context.Context, quarterTurns int, senderID uint64) error {
 		return err
 	}
 	defer release()
-	if len(held) > 0 {
-		return types.ErrBusy
-	}
 	if err := native.Call(ctx, "motion.configure", map[string]any{"senderId": senderID}, nil); err != nil {
 		return err
 	}
@@ -57,28 +67,27 @@ func validate(contacts []types.Contact) error {
 	}
 	return nil
 }
-func frame(ctx context.Context, contacts []types.Contact) error {
+func frame(ctx context.Context, contacts []types.Contact, requireIdle ...bool) error {
 	if err := validate(contacts); err != nil {
 		return err
 	}
-	natural := make([]types.Contact, len(contacts))
-	next := make(map[int]types.Point, len(contacts))
-	for i, c := range contacts {
-		next[c.ID] = c.Point
-		c.Point = c.Point.Natural(int(rotation.Load()))
-		natural[i] = c
-	}
-	if err := native.Call(ctx, "motion.frame", map[string]any{"contacts": natural}, nil); err != nil {
-		// 不确定是否提交时保留可能仍按下的手指，以便后续显式清理。
-		if errors.Is(err, types.ErrUnknown) {
-			for id, p := range next {
-				held[id] = p
-			}
-		}
+	turn, err := currentRotation(ctx)
+	if err != nil {
 		return err
 	}
-	held = next
-	return nil
+	return frameAtRotation(ctx, contacts, turn, requireIdle...)
+}
+func frameAtRotation(ctx context.Context, contacts []types.Contact, turn int, requireIdle ...bool) error {
+	natural := make([]types.Contact, len(contacts))
+	for i, c := range contacts {
+		c.Point = c.Point.Natural(turn)
+		natural[i] = c
+	}
+	args := map[string]any{"contacts": natural}
+	if len(requireIdle) > 0 {
+		args["requireIdle"] = requireIdle[0]
+	}
+	return native.Call(ctx, "motion.frame", args, nil)
 }
 
 // TouchFrame 提交所有按下手指的完整快照，空列表释放当前全部手指。
@@ -124,15 +133,16 @@ func Gesture(ctx context.Context, frames []types.Frame) (err error) {
 		return err
 	}
 	defer release()
-	if len(held) > 0 {
-		return types.ErrBusy
+	turn, e := currentRotation(ctx)
+	if e != nil {
+		return e
 	}
 	started := false
 	defer func() {
-		if started || len(held) > 0 {
+		if started {
 			cleanup, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			if e := frame(cleanup, nil); e != nil {
+			if e := frameAtRotation(cleanup, nil, turn); e != nil {
 				err = errors.Join(err, &types.Error{Op: "motion.cleanup", Kind: types.ErrUnknown, Detail: e.Error()})
 			}
 		}
@@ -148,7 +158,10 @@ func Gesture(ctx context.Context, frames []types.Frame) (err error) {
 		if err = wait(ctx, time.Until(begin.Add(time.Duration(f.AtMS)*time.Millisecond))); err != nil {
 			return err
 		}
-		if err = frame(ctx, f.Contacts); err != nil {
+		if err = frameAtRotation(ctx, f.Contacts, turn, !started); err != nil {
+			if errors.Is(err, types.ErrUnknown) {
+				started = true
+			}
 			return err
 		}
 		started = true
@@ -162,6 +175,7 @@ func LongPress(ctx context.Context, x, y float64, d time.Duration) error {
 	}
 	return Gesture(ctx, []types.Frame{{AtMS: 0, Contacts: []types.Contact{{ID: 0, Point: types.Point{X: x, Y: y}}}}, {AtMS: int(d / time.Millisecond)}})
 }
+
 // SwipePath 是"归一化坐标 + 可取消"的高精度滑动；像素坐标的简版 Swipe 在 touch.go。
 func SwipePath(ctx context.Context, x1, y1, x2, y2 float64, d time.Duration) error {
 	if d < time.Millisecond || d > 119*time.Second {

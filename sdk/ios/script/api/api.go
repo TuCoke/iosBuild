@@ -1,104 +1,106 @@
-// Package api 是端上脚本能看到的全部入口。
-//
-// 【为什么只暴露一个 Call，而不是把 222 个 API 都挂上来】
-// yaegi 的符号表要手写 reflect.Value，逐个挂 222 个函数既啰嗦又容易漏、容易漂移；
-// 而脚本真正需要的是"调一个原生能力"这一件事 —— Call(op, args)
-// 就能打到全部 62 个原生方法（motion.frame / capture.image / app.launch …），
-// 也和我们服务端 JS 模板里的 tools.call 形状一致，脚本在两边的写法能对上。
-//
-// 需要类型化封装（Click/Swipe/Screenshot…）时再加薄壳，不用改调用约定。
+// Package api 将参数、输出和能力调用绑定到一次运行，解释器之间不共享任务状态。
 package api
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"autogov1/v2/sdk/ios/internal/native"
 )
 
-// Args 是脚本传参的简写。用 map[string]any 而不是泛型，
-// 是因为 yaegi 对泛型的支持还不完整。
 type Args = map[string]any
 
-// session 保存当前这次运行的上下文。脚本是单线程执行的，
-// 但 api 是包级状态，用锁保护一下更稳（脚本里起 goroutine 也不会立刻炸）。
-type session struct {
+// Session 由 Runner 独立创建，脚本的 goroutine 只能访问创建它的那次任务。
+type Session struct {
 	mu     sync.Mutex
 	ctx    context.Context
 	params map[string]any
 	logs   []string
 	result any
+	output string
+	bytes  int
+	err    error
 }
 
-var current = &session{ctx: context.Background()}
-
-// Reset 由 Runner 在每次执行前调用：清空上一轮的日志与结果。
-func Reset(ctx context.Context, params map[string]any) {
-	current.mu.Lock()
-	defer current.mu.Unlock()
+func NewSession(ctx context.Context, params map[string]any) (*Session, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		return nil, fmt.Errorf("脚本 context 不能为空")
 	}
-	current.ctx = ctx
-	current.params = params
-	current.logs = nil
-	current.result = nil
+	// 深拷贝参数，不能把宿主的可变 map 直接暴露给脚本。
+	b, err := json.Marshal(params)
+	if err != nil {
+		return nil, fmt.Errorf("脚本参数必须可以编码为 JSON: %w", err)
+	}
+	if len(b) > 4<<20 {
+		return nil, fmt.Errorf("脚本参数超过 4 MiB")
+	}
+	var copy map[string]any
+	if err = json.Unmarshal(b, &copy); err != nil {
+		return nil, err
+	}
+	return &Session{ctx: ctx, params: copy}, nil
 }
-
-// Logs 取回本次运行的日志（Runner 用于回传给宿主）。
-func Logs() []string {
-	current.mu.Lock()
-	defer current.mu.Unlock()
-	out := make([]string, len(current.logs))
-	copy(out, current.logs)
+func (s *Session) Error() error { s.mu.Lock(); defer s.mu.Unlock(); return s.err }
+func (s *Session) Logs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]string(nil), s.logs...)
+	if s.output != "" {
+		out = append(out, s.output)
+	}
 	return out
 }
-
-// Result 取回脚本通过 SetResult 交回的结果。
-func Result() any {
-	current.mu.Lock()
-	defer current.mu.Unlock()
-	return current.result
-}
-
-// Log 往宿主日志里写一行。参数按 fmt.Sprint 拼，和 JS 模板的 log() 对齐。
-func Log(args ...any) {
-	line := ""
-	for i, a := range args {
-		if i > 0 {
-			line += " "
+func (s *Session) Result() any { s.mu.Lock(); defer s.mu.Unlock(); return s.result }
+func (s *Session) appendLocked(line string) {
+	if s.bytes+len(s.output)+len(line) > 1<<20 || len(s.logs) >= 10000 {
+		if s.err == nil {
+			s.err = fmt.Errorf("脚本日志超过上限")
 		}
-		line += fmt.Sprint(a)
+		return
 	}
-	current.mu.Lock()
-	current.logs = append(current.logs, line)
-	current.mu.Unlock()
+	s.logs = append(s.logs, line)
+	s.bytes += len(line)
+}
+func (s *Session) Log(args ...any) {
+	if s.ctx.Err() != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendLocked(strings.TrimSuffix(fmt.Sprintln(args...), "\n"))
 }
 
-// Param 读一个脚本参数；没有就返回 nil。
-func Param(name string) any {
-	current.mu.Lock()
-	defer current.mu.Unlock()
-	if current.params == nil {
-		return nil
+// Write 承接解释器标准输出，保留未换行的尾部。
+func (s *Session) Write(p []byte) (int, error) {
+	if err := s.ctx.Err(); err != nil {
+		return 0, err
 	}
-	return current.params[name]
-}
-
-// ParamString 读字符串参数（缺失或类型不符返回空串）。
-func ParamString(name string) string {
-	if v, ok := Param(name).(string); ok {
-		return v
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(p)+s.bytes+len(s.output) > 1<<20 {
+		s.err = fmt.Errorf("脚本输出超过上限")
+		return 0, s.err
 	}
-	return ""
+	s.output += string(p)
+	for {
+		i := strings.IndexByte(s.output, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimSuffix(s.output[:i], "\r")
+		s.output = s.output[i+1:]
+		s.appendLocked(line)
+	}
+	return len(p), nil
 }
-
-// ParamFloat 读数值参数（缺失返回 0）。
-func ParamFloat(name string) float64 {
-	switch v := Param(name).(type) {
+func (s *Session) Param(name string) any          { s.mu.Lock(); defer s.mu.Unlock(); return s.params[name] }
+func (s *Session) ParamString(name string) string { v, _ := s.Param(name).(string); return v }
+func (s *Session) ParamFloat(name string) float64 {
+	switch v := s.Param(name).(type) {
 	case float64:
 		return v
 	case float32:
@@ -108,60 +110,56 @@ func ParamFloat(name string) float64 {
 	case int64:
 		return float64(v)
 	case json.Number:
-		f, _ := v.Float64()
-		return f
+		n, _ := v.Float64()
+		return n
 	}
 	return 0
 }
-
-// SetResult 交回脚本结果。整个脚本只该调用一次。
-func SetResult(v any) {
-	current.mu.Lock()
-	current.result = v
-	current.mu.Unlock()
+func (s *Session) SetResult(value any) {
+	if s.ctx.Err() != nil {
+		return
+	}
+	b, err := json.Marshal(value)
+	if err == nil && len(b) > 4<<20 {
+		err = fmt.Errorf("脚本结果超过 4 MiB")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		s.err = fmt.Errorf("脚本结果无效: %w", err)
+		return
+	}
+	var next any
+	if err = json.Unmarshal(b, &next); err != nil {
+		s.err = err
+		return
+	}
+	s.result = next
 }
-
-// Sleep 让脚本睡一会儿（毫秒）。脚本里的等待一律走这里，
-// 这样宿主给的时间预算还能生效。
-func Sleep(ms int) error {
+func (s *Session) Sleep(ms int) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
 	if ms <= 0 {
 		return nil
 	}
-	ctx := current.ctx
-	timer := time.NewTimer(time.Duration(ms) * time.Millisecond)
-	defer timer.Stop()
+	t := time.NewTimer(time.Duration(ms) * time.Millisecond)
+	defer t.Stop()
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case <-t.C:
 		return nil
 	}
 }
-
-// Call 调一个原生能力，参数与返回都是 JSON 形状的 map。
-//
-// 例：
-//
-//	api.Call("motion.tap", api.Args{"x": 0.5, "y": 0.5})
-//	img, err := api.Call("capture.image", api.Args{"maxSize": 1024})
-//
-// 失败时返回 error —— 脚本里要处理，不能当成零值继续跑。
-func Call(op string, args Args) (map[string]any, error) {
+func (s *Session) Call(op string, args Args) (map[string]any, error) {
 	if op == "" {
 		return nil, fmt.Errorf("缺少能力名")
 	}
-	input := map[string]any(args)
-	if input == nil {
-		input = map[string]any{}
-	}
-	var out map[string]any
-	ctx := current.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
-	if err := native.Call(callCtx, op, input, &out); err != nil {
+	var out map[string]any
+	if err := native.Call(ctx, op, args, &out); err != nil {
 		return nil, err
 	}
 	if out == nil {
@@ -169,22 +167,16 @@ func Call(op string, args Args) (map[string]any, error) {
 	}
 	return out, nil
 }
-
-// CallString 是 Call 的便捷形式：只要其中一个字符串字段。
-func CallString(op string, args Args, field string) (string, error) {
-	out, err := Call(op, args)
+func (s *Session) CallString(op string, args Args, field string) (string, error) {
+	out, err := s.Call(op, args)
 	if err != nil {
 		return "", err
 	}
-	if v, ok := out[field].(string); ok {
-		return v, nil
-	}
-	return "", nil
+	value, _ := out[field].(string)
+	return value, nil
 }
-
-// MustCall 失败即中断脚本（配合 defer/recover 用，或直接让 Runner 报错）。
-func MustCall(op string, args Args) map[string]any {
-	out, err := Call(op, args)
+func (s *Session) MustCall(op string, args Args) map[string]any {
+	out, err := s.Call(op, args)
 	if err != nil {
 		panic(fmt.Sprintf("%s 失败: %v", op, err))
 	}

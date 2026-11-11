@@ -28,11 +28,13 @@ func (e *Error) Error() string { return fmt.Sprintf("%s: %v: %s", e.Op, e.Kind, 
 func (e *Error) Unwrap() error { return e.Kind }
 
 // Display 的 Width/Height 是自然方向的原生像素，Rotation 是顺时针四分之一圈数。
-// 旋转由调用方明确指定；不把宿主 App 的方向冒充整个系统的前台方向。
+// 默认方向来自 FrontBoard 前台方向观察器；高级动作仍可显式覆盖，不使用宿主视图方向冒充系统前台方向。
 type Display struct {
-	Width  int     `json:"width"`
-	Height int     `json:"height"`
-	Scale  float64 `json:"scale"`
+	Width                int     `json:"width"`
+	Height               int     `json:"height"`
+	Scale                float64 `json:"scale"`
+	Rotation             int     `json:"rotation"`
+	OrientationAvailable bool    `json:"orientationAvailable"`
 }
 
 func (d Display) Size(rotation int) (int, int) {

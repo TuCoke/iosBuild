@@ -13,10 +13,20 @@
 #ifndef AG_IMGUI_BRIDGE_H
 #define AG_IMGUI_BRIDGE_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+typedef void (*agImDrawCallback)(void);
+void agImSetDrawCallback(agImDrawCallback callback);
+void agImDrawScript(void);
+int agImFrameActive(void);
+int agImCheckbox(const char *label,int *value);
+int agImSliderFloat(const char *label,float *value,float min,float max);
+int agImSliderInt(const char *label,int *value,int min,int max);
+int agImInputText(const char *label,char *value,size_t capacity);
 void  agImNewFrame(void);
 int   agImBegin(const char *name);
 void  agImEnd(void);

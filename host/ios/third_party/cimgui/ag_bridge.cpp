@@ -12,11 +12,28 @@
 // 它们只在 imgui_internal.h 里定义；只含 cimgui.h 会报一堆
 // "unknown type name 'ImTextureData'"。cimgui.cpp 自己也是这个顺序。
 #include "ag_bridge.h"
+#include <atomic>
+#include <pthread.h>
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "cimgui.h"
 
+static std::atomic<agImDrawCallback> scriptDraw{nullptr};
+static thread_local bool inScriptDraw=false;
 extern "C" {
+void agImSetDrawCallback(agImDrawCallback callback) { scriptDraw.store(callback); }
+int agImFrameActive(void) { return pthread_main_np() && inScriptDraw && ImGui::GetCurrentContext() && ImGui::GetCurrentContext()->WithinFrameScope; }
+void agImDrawScript(void) {
+    agImDrawCallback draw=scriptDraw.load();if(!draw)return;
+    ImGuiErrorRecoveryState state;ImGui::ErrorRecoveryStoreState(&state);
+    inScriptDraw=true;draw();inScriptDraw=false;
+    ImGui::ErrorRecoveryTryToRecoverState(&state);
+}
+int agImCheckbox(const char *label,int *value) { bool v=*value!=0;bool changed=igCheckbox(label,&v);*value=v?1:0;return changed?1:0; }
+int agImSliderFloat(const char *label,float *value,float min,float max) { return igSliderFloat(label,value,min,max,"%.3f",0)?1:0; }
+int agImSliderInt(const char *label,int *value,int min,int max) { return igSliderInt(label,value,min,max,"%d",0)?1:0; }
+int agImInputText(const char *label,char *value,size_t capacity) { return igInputText(label,value,capacity,0,NULL,NULL)?1:0; }
+
 
 void agImNewFrame(void) { igNewFrame(); }
 

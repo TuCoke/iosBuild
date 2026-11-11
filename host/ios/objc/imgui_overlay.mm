@@ -16,7 +16,51 @@
 #import <MetalKit/MetalKit.h>
 #import <QuartzCore/CADisplayLink.h>
 #import "imgui.h"
+#import "imgui_internal.h"
+extern "C" void agImDrawScript(void);
+static ImGuiContext *gOverlayContext;
+static BOOL gScriptActive=NO;
+
+// 只在脚本窗口矩形中接收触摸，窗口外继续传给宿主界面。
+@interface AGImGuiWindow : UIWindow
+@end
+@implementation AGImGuiWindow
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
+    if(!gScriptActive || !gOverlayContext)return NO;
+    ImGui::SetCurrentContext(gOverlayContext);
+    for(ImGuiWindow *window:gOverlayContext->Windows) {
+        if(window->WasActive && !window->Hidden && !(window->Flags & ImGuiWindowFlags_NoMouseInputs) && window->Rect().Contains(ImVec2(point.x,point.y)))return YES;
+    }
+    return NO;
+}
+@end
 #import "backends/imgui_impl_metal.h"
+
+// 由原生 UITextField 承接中文组合输入，完成组词后再提交 UTF-8 给 ImGui。
+// 不把拼音中间态逐个写入脚本缓冲；空输入框的退格单独转为 ImGui 按键事件。
+@interface AGImGuiKeyboardField : UITextField
+- (void)commitText;
+@end
+@implementation AGImGuiKeyboardField
+- (instancetype)initWithFrame:(CGRect)frame {
+    if((self=[super initWithFrame:frame])){
+        self.autocorrectionType=UITextAutocorrectionTypeNo;self.spellCheckingType=UITextSpellCheckingTypeNo;
+        self.textColor=UIColor.clearColor;self.tintColor=UIColor.clearColor;self.alpha=0.01;self.accessibilityElementsHidden=YES;
+        [self addTarget:self action:@selector(commitText) forControlEvents:UIControlEventEditingChanged];
+    }return self;
+}
+- (void)commitText {
+    if(!gOverlayContext || self.markedTextRange || !self.text.length)return;
+    ImGui::SetCurrentContext(gOverlayContext);ImGui::GetIO().AddInputCharactersUTF8(self.text.UTF8String);self.text=@"";
+}
+- (void)deleteBackward {
+    if(gOverlayContext && self.text.length==0 && !self.markedTextRange){ImGui::SetCurrentContext(gOverlayContext);ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace,true);ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace,false);}
+    [super deleteBackward];
+}
+- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {return NO;}
+@end
+static AGImGuiKeyboardField *gKeyboardProxy;
+static __weak UIWindow *gPreviousKeyWindow;
 
 @interface AGImGuiOverlayView : MTKView <MTKViewDelegate>
 @property (nonatomic, assign) BOOL rendering;
@@ -36,6 +80,16 @@
     }
     return self;
 }
+- (void)deliverTouch:(NSSet<UITouch *> *)touches down:(BOOL)down {
+    if(!gOverlayContext || !gScriptActive)return;
+    UITouch *touch=touches.anyObject;if(!touch)return;
+    ImGui::SetCurrentContext(gOverlayContext);CGPoint p=[touch locationInView:self];
+    ImGui::GetIO().AddMousePosEvent(p.x,p.y);ImGui::GetIO().AddMouseButtonEvent(0,down);
+}
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {[self deliverTouch:touches down:YES];}
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {[self deliverTouch:touches down:YES];}
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {[self deliverTouch:touches down:NO];}
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {[self deliverTouch:touches down:NO];}
 - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
 - (void)drawInMTKView:(MTKView *)view {
     if (!self.rendering) {
@@ -92,7 +146,7 @@ static UIWindow *gOverlayWindow;
 @end
 
 static id<MTLCommandQueue> gCommandQueue;
-static CADisplayLink *gDisplayLink;
+static CFTimeInterval gLastFrame;
 static NSMutableDictionary<NSNumber *, AGPanel *> *gHudPanels;      // id → 面板
 static NSMutableDictionary<NSNumber *, AGPanel *> *gConsolePanels;
 
@@ -144,29 +198,31 @@ static void AGImGuiEnsureReady(void) {
         if (scene == nil) {
             return;
         }
-        gOverlayWindow = [[UIWindow alloc] initWithWindowScene:scene];
+        gOverlayWindow = [[AGImGuiWindow alloc] initWithWindowScene:scene];
         gOverlayWindow.windowLevel = UIWindowLevelAlert - 1; // 在 Alert 之下，避免挡住弹窗
         gOverlayWindow.backgroundColor = UIColor.clearColor;
-        gOverlayWindow.userInteractionEnabled = NO;          // 默认不挡触摸
+        gOverlayWindow.userInteractionEnabled = YES;          // 默认不挡触摸
         gOverlayWindow.rootViewController = [[UIViewController alloc] init];
         gOverlayWindow.rootViewController.view.backgroundColor = UIColor.clearColor;
 
         gOverlayView = [[AGImGuiOverlayView alloc] initWithFrame:gOverlayWindow.bounds device:device];
         gOverlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [gOverlayWindow.rootViewController.view addSubview:gOverlayView];
+        gKeyboardProxy=[[AGImGuiKeyboardField alloc] initWithFrame:CGRectMake(0,0,1,1)];
+        [gOverlayWindow.rootViewController.view addSubview:gKeyboardProxy];
         gOverlayWindow.hidden = NO;
 
         IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
+        gOverlayContext=ImGui::CreateContext();
         ImGuiIO &io = ImGui::GetIO();
         io.IniFilename = NULL;   // 不写 imgui.ini 到沙盒
         io.LogFilename = NULL;
         ImGui_ImplMetal_Init(device);
 
-        // CADisplayLink 需要一个真实 target：用 block 冒充 selector 会崩
-        gDisplayLink = [CADisplayLink displayLinkWithTarget:[AGImGuiOverlayDriver shared]
-                                                   selector:@selector(tick)];
-        [gDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+        // MTKView 自己驱动绘制，不再额外挂第二个 CADisplayLink。
+        gOverlayView.paused=YES;
+        gOverlayView.preferredFramesPerSecond=30;
+
     });
 }
 
@@ -179,6 +235,11 @@ void AGImGuiRenderFrame(MTKView *view) {
     if (rpd == nil) {
         return;
     }
+    ImGui::SetCurrentContext(gOverlayContext);
+    ImGuiIO &io=ImGui::GetIO();
+    io.DisplaySize=ImVec2(view.bounds.size.width,view.bounds.size.height);
+    io.DisplayFramebufferScale=ImVec2(view.drawableSize.width/MAX(1.0,view.bounds.size.width),view.drawableSize.height/MAX(1.0,view.bounds.size.height));
+    CFTimeInterval now=CACurrentMediaTime();io.DeltaTime=gLastFrame>0 ? MAX(0.001,now-gLastFrame) : 1.0f/30.0f;gLastFrame=now;
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
 
@@ -230,11 +291,16 @@ void AGImGuiRenderFrame(MTKView *view) {
     (void)scale;
     (void)screenH;
 
+    if(gScriptActive) agImDrawScript();
+    if(gScriptActive && io.WantTextInput && !gKeyboardProxy.isFirstResponder){
+        for(UIWindow *window in gOverlayWindow.windowScene.windows)if(window.isKeyWindow && window!=gOverlayWindow){gPreviousKeyWindow=window;break;}
+        [gOverlayWindow makeKeyWindow];[gKeyboardProxy becomeFirstResponder];
+    }else if((!gScriptActive || !io.WantTextInput) && gKeyboardProxy.isFirstResponder){
+        [gKeyboardProxy resignFirstResponder];[gPreviousKeyWindow makeKeyWindow];gPreviousKeyWindow=nil;
+    }
     ImGui::Render();
     id<MTLCommandBuffer> cb = [gCommandQueue commandBuffer];
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-        ImGui_ImplMetal_NewFrame(rpd); // 释放上一帧资源
-    }];
+    // 后端帧状态只能在绘制线程更新，不能在 GPU 完成回调里再次 NewFrame。
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
     [enc endEncoding];
@@ -244,7 +310,16 @@ void AGImGuiRenderFrame(MTKView *view) {
 
 // ---- 对外：与 overlay_ios.m 同一套 op ----
 
+static void AGRefreshOverlayRendering(void) {
+    BOOL active=gScriptActive;
+    for(AGPanel *panel in gHudPanels.allValues)if(panel.visible){active=YES;break;}
+    if(!active)for(AGPanel *panel in gConsolePanels.allValues)if(panel.visible){active=YES;break;}
+    gOverlayView.rendering=active;gOverlayView.paused=!active;gOverlayWindow.hidden=!active;
+    if(!active)gLastFrame=0;
+}
+
 static ag_ios_result AGOverlayResult(NSDictionary *payload) {
+    AGRefreshOverlayRendering();
     return AGJSON(payload ?: @{});
 }
 
@@ -252,6 +327,18 @@ ag_ios_result AGImGuiOverlay(NSString *op, NSDictionary *args) {
     AGImGuiEnsureReady();
     if (gOverlayWindow == nil) {
         return AGError(1, @"悬浮层不可用：没有 Metal 设备或 WindowScene");
+    }
+    if([op isEqualToString:@"imgui.attach"]) {
+        gScriptActive=YES;
+        ImGui::SetCurrentContext(gOverlayContext);
+        ImGui::GetIO().ConfigErrorRecoveryEnableAssert=false;
+        ImGui::GetIO().ConfigErrorRecoveryEnableTooltip=false;
+        return AGOverlayResult(@{});
+    }
+    if([op isEqualToString:@"imgui.detach"]) {
+        gScriptActive=NO;[gKeyboardProxy resignFirstResponder];[gPreviousKeyWindow makeKeyWindow];gPreviousKeyWindow=nil;
+        ImGui::SetCurrentContext(gOverlayContext);ImGui::GetIO().AddMouseButtonEvent(0,false);
+        return AGOverlayResult(@{});
     }
     NSNumber *key = @([args[@"id"] intValue]);
 

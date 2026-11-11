@@ -1,7 +1,9 @@
 //go:build ios && cgo
 
 #import "runtime.h"
+#import <TargetConditionals.h>
 #import "ag_rec.h"
+#import "ag_cv.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -90,8 +92,10 @@ ag_ios_result AGOnMain(ag_ios_result (^work)(void)) {
 
 ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length) {
     @autoreleasepool {
-        if (!method || length > 1024 * 1024) return AGError(2, @"请求参数过大或方法缺失");
+        if (!method || length > 48 * 1024 * 1024) return AGError(2, @"请求参数过大或方法缺失");
         NSString *op = [NSString stringWithUTF8String:method];
+        BOOL imageInput=[op hasPrefix:@"opencv."] || [op hasPrefix:@"ppocr."] || [op hasPrefix:@"yolo."] || [op hasPrefix:@"dotocr."];
+        if(!imageInput && length>1024*1024)return AGError(2,@"请求参数过大");
         NSData *data = [NSData dataWithBytes:json length:length];
         NSError *error = nil;
         id value = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingFragmentsAllowed error:&error];
@@ -99,6 +103,13 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
         NSDictionary *args = [value isKindOfClass:[NSDictionary class]] ? value : @{};
         AGLoadFrameworks();
         @try {
+            if ([op isEqualToString:@"runtime.diagnostics"]) return AGDiagnostics();
+            if ([op isEqualToString:@"runtime.paths"]) {
+                Dl_info image={0};dladdr((const void *)&ag_ios_call,&image);
+                NSString *loaded=image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @"";
+                NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject ?: @"";
+                return AGJSON(@{@"platform":(TARGET_OS_SIMULATOR ? @"ios-simulator" : @"ios"),@"documents":documents,@"bundle":NSBundle.mainBundle.bundlePath ?: @"",@"loadedImage":loaded ?: @"",@"executable":NSBundle.mainBundle.executablePath ?: @""});
+            }
             if ([op isEqualToString:@"runtime.capabilities"]) {
                 return AGOnMain(^{
                     id workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
@@ -128,15 +139,18 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
             if ([op hasPrefix:@"system."]) return AGSystem(op,args);
             if ([op hasPrefix:@"utils."]) return AGUtils(op,args);
             if ([op hasPrefix:@"uiacc."]) return AGUIAcc(op,args);
-            // 悬浮层：与参考实现一致走 imgui + Metal；没有 Metal 设备时退回 UIKit
-            if ([op hasPrefix:@"hud."] || [op hasPrefix:@"console."]) {
-                if (AGImGuiOverlayAvailable()) return AGImGuiOverlay(op,args);
-                return AGOverlay(op,args);
+            // C ABI 与 Go API 统一走主线程的 ImGui/Metal，不用不同渲染器掩盖环境问题。
+            if ([op hasPrefix:@"hud."] || [op hasPrefix:@"console."] || [op hasPrefix:@"imgui."]) {
+                return AGOnMain(^{
+                    if (AGImGuiOverlayAvailable()) return AGImGuiOverlay(op,args);
+                    return AGError(3,@"ImGui/Metal 悬浮宿主未就绪");
+                });
             }
             if ([op hasPrefix:@"ppocr."] || [op hasPrefix:@"yolo."] || [op hasPrefix:@"dotocr."]) {
                 // 识别栈：按参考实现的 C ABI 调用它的 libppocr/libyolo/libdotocr
                 return AGRecognition(op, args);
             }
+            if ([op hasPrefix:@"opencv."]) return AGOpenCV(op,args);
             if ([op hasPrefix:@"apkctl."]) return AGAPKCtl(op,args);
             if ([op isEqualToString:@"runtime.selftest"]) return AGSelfTest(op,args);
             return AGError(1,[NSString stringWithFormat:@"尚未提供此原生能力: %@", op]);

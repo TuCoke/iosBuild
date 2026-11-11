@@ -15,10 +15,11 @@
 @property (nonatomic, strong) UITextView *logView;
 @property (nonatomic, strong) UILabel *counterLabel;
 @property (nonatomic, strong) UIImageView *shotView;
-@property (nonatomic, assign) NSInteger tapCount;
+@property (atomic, assign) NSInteger tapCount;
 /// 目标块中心（归一化到整屏），注入点击瞄准这里
 @property (nonatomic, assign) CGPoint targetCenter;
 @property (nonatomic, assign) BOOL didStartup;
+@property (nonatomic, strong) dispatch_queue_t sdkQueue;
 @end
 
 @implementation AGRootViewController
@@ -28,6 +29,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"AgovHost";
+    self.sdkQueue=dispatch_queue_create("agov.host.sdk.actions",DISPATCH_QUEUE_SERIAL);
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.targetCenter = CGPointMake(0.5, 0.35);
     [self buildUI];
@@ -43,14 +45,18 @@
     self.didStartup = YES;
     [self resetLogFile];
     [self append:@"AgovHost 启动（ObjC 壳）"];
+    // SDK 调用不能堵住 UIKit 主线程，解释器和原生采集都可能需要回到主线程。
+    dispatch_async(self.sdkQueue, ^{
     [self callCapabilities];
     [self callSelfTest];
     [self runScript];
     [self append:[AGBridge statusLine]];
     [self probeAllButtons];
     [self runAllAPITest];
+    [self runNativeDiagnostics];
     [self append:[NSString stringWithFormat:@"localapi.start → %@",
                   [AGBridge invoke:@"localapi.start" payload:@"{}"]]];
+    });
 }
 
 #pragma mark - 界面
@@ -150,7 +156,17 @@
         b.titleLabel.font = [UIFont systemFontOfSize:14];
         b.titleLabel.adjustsFontSizeToFitWidth = YES;
         SEL sel = NSSelectorFromString(pair.lastObject);
-        [b addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
+        __weak typeof(self) weakSelf=self;__weak UIButton *weakButton=b;
+        [b addAction:[UIAction actionWithHandler:^(UIAction *action){
+            typeof(self) controller=weakSelf;UIButton *button=weakButton;if(!controller || !button)return;
+            if([pair.lastObject isEqualToString:@"openWebConsole"]){[controller openWebConsole];return;}
+            button.enabled=NO;
+            dispatch_async(controller.sdkQueue,^{
+                @try{NSMethodSignature *signature=[controller methodSignatureForSelector:sel];if(signature){NSInvocation *invocation=[NSInvocation invocationWithMethodSignature:signature];invocation.target=controller;invocation.selector=sel;[invocation invoke];}}
+                @catch(NSException *exception){[controller append:exception.reason ?: @"SDK 调用异常"];}
+                dispatch_async(dispatch_get_main_queue(),^{button.enabled=YES;});
+            });
+        }] forControlEvents:UIControlEventTouchUpInside];
         [row addArrangedSubview:b];
     }
     [row.heightAnchor constraintEqualToConstant:34].active = YES;
@@ -167,6 +183,7 @@
 
 /// 目标块中心换算成"归一化到整屏"的坐标：注入接口要的就是这个。
 - (CGPoint)currentTargetCenter {
+    if(!NSThread.isMainThread){__block CGPoint result;dispatch_sync(dispatch_get_main_queue(),^{result=[self currentTargetCenter];});return result;}
     if (self.counterLabel.window == nil) {
         return self.targetCenter;
     }
@@ -212,8 +229,7 @@
     NSData *data = [self dataFromBase64InJSON:r];
     if (data.length > 0) {
         UIImage *img = [UIImage imageWithData:data];
-        self.shotView.image = img;
-        self.shotView.hidden = (img == nil);
+        dispatch_async(dispatch_get_main_queue(),^{self.shotView.image=img;self.shotView.hidden=(img==nil);});
         NSString *path = [[self documentsDir] stringByAppendingPathComponent:@"capture.jpg"];
         [data writeToFile:path atomically:YES];
         [self append:[NSString stringWithFormat:@"截图已保存 %lu 字节 → %@",
@@ -244,10 +260,11 @@
 }
 
 - (void)runScript {
-    [self append:[NSString stringWithFormat:@"script.run → %@",
-                  [self shorten:[AGBridge invoke:@"script.run"
-                                         payload:@"{\"name\":\"demo\",\"x\":0.5,\"y\":0.5}"]
-                             to:400]]];
+    NSString *raw=[AGBridge invoke:@"script.run" payload:@"{\"name\":\"demo\",\"x\":0.5,\"y\":0.5}"];
+    [self append:[NSString stringWithFormat:@"script.run → %@",[self shorten:raw to:600]]];
+    // CI 读取完整回执，不能仅凭启动截图或截断日志判断脚本进程执行成功。
+    NSData *data=[raw dataUsingEncoding:NSUTF8StringEncoding];
+    [data writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"script-check.json"] atomically:YES];
 }
 
 - (void)injectTap {
@@ -295,11 +312,13 @@
         @[@"注入点击(目标块)", @"motion.tap", [self injectPayload]],
         @[@"注入上滑", @"motion.swipe", @"{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":300}"],
         @[@"SDK 状态", @"sdk.status", @"{}"],
+        @[@"宿主 JS 通道", @"apkctl.selftest", @"{}"],
     ];
     for (NSArray<NSString *> *p in probes) {
         NSString *label = p[0], *method = p[1], *payload = p[2];
         NSInteger before = self.tapCount;
         NSString *r = [AGBridge invoke:method payload:payload];
+        if([method isEqualToString:@"apkctl.selftest"])[[r dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"js-check.json"] atomically:YES];
         [self append:[NSString stringWithFormat:@"%@ → %@", label, [self shorten:r to:200]]];
         if ([method isEqualToString:@"motion.tap"]) {
             __weak typeof(self) weakSelf = self;
@@ -328,6 +347,7 @@
     [self append:@"—— 全量 API 自检开始 ——"];
     NSString *raw = [AGBridge invoke:@"runtime.selftest.all" payload:@"{}"];
     NSData *data = [raw dataUsingEncoding:NSUTF8StringEncoding];
+    [data writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"selftest-all.json"] atomically:YES];
     NSDictionary *obj = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
     NSDictionary *payload = [obj isKindOfClass:NSDictionary.class] ? obj[@"data"] : nil;
     if (![payload isKindOfClass:NSDictionary.class]) {
@@ -346,21 +366,45 @@
             continue;
         }
         NSString *status = item[@"status"];
-        if ([status isEqualToString:@"missing"]) {
+        if ([status isEqualToString:@"unsupported"]) {
             [missing addObject:item[@"op"] ?: @"?"];
         } else if ([status isEqualToString:@"env"]) {
             [limited addObject:[NSString stringWithFormat:@"%@：%@", item[@"op"] ?: @"?", item[@"detail"] ?: @""]];
         }
     }
     NSString *missingLine = missing.count == 0
-        ? @"未实现：无"
-        : [@"未实现：" stringByAppendingString:[missing componentsJoinedByString:@", "]];
+        ? @"当前构建或环境不支持：无"
+        : [@"当前构建或环境不支持：" stringByAppendingString:[missing componentsJoinedByString:@", "]];
     [self append:missingLine];
     [self append:[NSString stringWithFormat:@"受环境限制：%lu 项", (unsigned long)limited.count]];
     for (NSUInteger i = 0; i < MIN(limited.count, (NSUInteger)8); i++) {
         [self append:[NSString stringWithFormat:@"  %@", [self shorten:limited[i] to:80]]];
     }
     [self append:@"—— 全量 API 自检结束 ——"];
+}
+
+
+// 保存宿主与任务进程的完整对照结果；界面不展开节点树和图片 base64。
+- (void)runNativeDiagnostics {
+    NSArray *entries=@[@[@"host",@"runtime.diagnostics"],@[@"worker",@"runtime.diagnostics.worker"]];
+    for(NSArray *entry in entries){
+        NSString *raw=[AGBridge invoke:entry[1] payload:@"{}"];
+        NSData *data=[raw dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *filename=[NSString stringWithFormat:@"native-diagnostics-%@.json",entry[0]];
+        [data writeToFile:[[self documentsDir] stringByAppendingPathComponent:filename] atomically:YES];
+        NSDictionary *envelope=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
+        NSDictionary *report=[envelope isKindOfClass:NSDictionary.class] ? envelope[@"data"] : nil;
+        if([entry[0] isEqualToString:@"worker"] && [report isKindOfClass:NSDictionary.class])report=report[@"result"];
+        if(![report isKindOfClass:NSDictionary.class]){[self append:[NSString stringWithFormat:@"原生诊断(%@)失败：%@",entry[0],[self shorten:raw to:300]]];continue;}
+        NSDictionary *capture=report[@"capture"],*ax=report[@"ax"];
+        [self append:[NSString stringWithFormat:@"原生诊断(%@)：截图=%@；AX=%@；完整结果=%@",entry[0],[capture[@"ok"] boolValue] ? @"成功" : @"失败",[ax[@"ok"] boolValue] ? [NSString stringWithFormat:@"%@ 节点",ax[@"nodeCount"]] : @"失败",filename]];
+        if([capture[@"ok"] boolValue]){
+            NSString *base64=capture[@"data"][@"base64"];
+            NSData *image=[[NSData alloc] initWithBase64EncodedString:base64 options:0];
+            [image writeToFile:[[self documentsDir] stringByAppendingPathComponent:[NSString stringWithFormat:@"native-capture-%@.jpg",entry[0]]] atomically:YES];
+        }
+    }
+    [@"done" writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"native-diagnostics.done"] atomically:YES encoding:NSUTF8StringEncoding error:NULL];
 }
 
 #pragma mark - 日志
@@ -385,6 +429,7 @@
 }
 
 - (void)appendToFile:(NSString *)line {
+ @synchronized(self){
     NSString *path = [[self documentsDir] stringByAppendingPathComponent:@"app.log"];
     NSString *text = [line stringByAppendingString:@"\n"];
     NSData *data = [text dataUsingEncoding:NSUTF8StringEncoding];
@@ -405,6 +450,7 @@
     } @finally {
         [fh closeFile];
     }
+ }
 }
 
 - (NSString *)shorten:(NSString *)s to:(NSUInteger)max {

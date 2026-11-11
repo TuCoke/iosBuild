@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "provenance": "锁定已有 iosBuild 验证仓提交 54cfbb5 的预编译运行库；算法引擎并非本仓库自建源码。libppocr 与 resources 原始样本文件大小/摘要不同，不混用两套资源。模型文件仍由调用方显式提供。",
+  "resources": [
+    {
+      "path": "host/ios/Runtime/libncnn.dylib",
+      "source": "libncnn.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "recognition",
+      "bytes": 3177152,
+      "sha256": "0df097cb0f5642b2ae855aaea7a832ba7619de4aa58eda01156ca5d1eb149792",
+      "bundlePath": "Runtime/libncnn.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libncnn.dylib"
+    },
+    {
+      "path": "host/ios/Runtime/libopencv_core.dylib",
+      "source": "libopencv_core.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "opencv",
+      "bytes": 2358560,
+      "sha256": "5805d88d05bce47f8f777d65e66bf4385d6dc3f6b4ba292aae07baccf89ff028",
+      "bundlePath": "Runtime/libopencv_core.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libopencv_core.dylib"
+    },
+    {
+      "path": "host/ios/Runtime/libopencv_imgproc.dylib",
+      "source": "libopencv_imgproc.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "opencv",
+      "bytes": 2884248,
+      "sha256": "e3443025d4e66529204e042b3e87195fa9a37a41b21ebc88bce5dcfdefe8f6d7",
+      "bundlePath": "Runtime/libopencv_imgproc.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libopencv_imgproc.dylib"
+    },
+    {
+      "path": "host/ios/Runtime/libopencv_imgcodecs.dylib",
+      "source": "libopencv_imgcodecs.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "opencv",
+      "bytes": 1345760,
+      "sha256": "0d86a47375d951e9965f93315c075e94659a1a56a882fdc816a2787ea5af7135",
+      "bundlePath": "Runtime/libopencv_imgcodecs.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libopencv_imgcodecs.dylib"
+    },
+    {
+      "path": "host/ios/Runtime/libppocr.dylib",
+      "source": "libppocr.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "recognition",
+      "bytes": 23950440,
+      "sha256": "108faab4e3b2dd9ec9b105db2bd4fffee0a9e8db1f3c0662844e8e0e4f10bed2",
+      "bundlePath": "Runtime/libppocr.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libppocr.dylib"
+    },
+    {
+      "path": "host/ios/Runtime/libyolo.dylib",
+      "source": "libyolo.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "recognition",
+      "bytes": 88272,
+      "sha256": "9f88bbe508f87f7c1058344c0607b9c77a215c6436d68b5185f1d71d50b39429",
+      "bundlePath": "Runtime/libyolo.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libyolo.dylib"
+    },
+    {
+      "path": "host/ios/Runtime/libdotocr.dylib",
+      "source": "libdotocr.dylib",
+      "kind": "macho",
+      "platform": "ios",
+      "group": "recognition",
+      "bytes": 144680,
+      "sha256": "802372f5e4fd1cfa72c6fc3c586efb0ac219d8fe00bf28f90f0cc5d75df74b10",
+      "bundlePath": "Runtime/libdotocr.dylib",
+      "url": "https://raw.githubusercontent.com/TuCoke/iosBuild/54cfbb5e4c623411f9e79de9ef7c1911c03dc9a4/host/ios/Runtime/libdotocr.dylib"
+    }
+  ]
+}

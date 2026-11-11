@@ -25,6 +25,9 @@ static id AGProxy(NSString *bundleID) {
 
 ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
     NSString *bundleID = args[@"bundleId"];
+    // 安装工具的进程等待必须在 UIKit 主线程外；未命中 helper 时再走 workspace。
+    if([op isEqualToString:@"app.install"]){BOOL handled=NO;ag_ios_result result=AGInstallPackage(args[@"path"],&handled);if(handled || result.code)return result;free(result.data);}
+    if([op isEqualToString:@"app.uninstall"]){BOOL handled=NO;ag_ios_result result=AGUninstallPackage(bundleID,&handled);if(handled || result.code)return result;free(result.data);}
 
     if ([op isEqualToString:@"app.foreground"]) {
         CFStringRef (*copyFront)(void) = AGSymbol("SBSCopyFrontmostApplicationDisplayIdentifier");
@@ -39,14 +42,14 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
     // app 包路径：给"执行 app 包内附带的可执行文件"用（例如 frpc-ios）。
     // 用 NSBundle 而不是猜路径：iOS 上包路径带 UUID，猜必错。
     if ([op isEqualToString:@"app.bundle_dir"]) {
-        NSString *dir = [[NSBundle mainBundle] bundlePath];
+        NSString *dir = AGApplicationBundlePath();
         if (dir.length == 0) return AGError(3,@"拿不到 app 包路径");
         return AGJSON(@{@"path":dir});
     }
 
     // 自身包名不需要任何私有入口。
     if ([op isEqualToString:@"app.self"]) {
-        NSString *selfID = [[NSBundle mainBundle] bundleIdentifier];
+        NSString *selfID = [NSBundle bundleWithPath:AGApplicationBundlePath()].bundleIdentifier;
         if (!selfID) return AGError(3,@"无法读取自身 bundleId");
         return AGJSON(@{@"bundleId":selfID});
     }
@@ -93,19 +96,13 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
                 ((void(*)(id,SEL,id,NSUInteger,NSUInteger))objc_msgSend)(workspace, terminate, bundleID, 0, 0);
                 return AGJSON(@{@"stopped":@YES});
             }
-            id service = ((id(*)(id,SEL))objc_msgSend)(NSClassFromString(@"FBSSystemService"),
-                                                      NSSelectorFromString(@"sharedService"));
-            SEL kill = NSSelectorFromString(@"terminateApplication:forReason:andReport:withDescription:");
-            if (service && [service respondsToSelector:kill]) {
-                pid_t pid = 0;
-                SEL findByBundle = NSSelectorFromString(@"processIdentifierForBundleIdentifier:");
-                if ([service respondsToSelector:findByBundle]) {
-                    pid = ((pid_t(*)(id,SEL,id))objc_msgSend)(service, findByBundle, bundleID);
-                }
-                if (pid > 0) {
-                    ((void(*)(id,SEL,pid_t,NSUInteger,BOOL,id))objc_msgSend)(service, kill, pid, 0, NO, nil);
-                    return AGJSON(@{@"stopped":@YES});
-                }
+            Class serviceClass=NSClassFromString(@"FBSSystemService");SEL shared=NSSelectorFromString(@"sharedService");
+            id service=[serviceClass respondsToSelector:shared]?((id(*)(id,SEL))objc_msgSend)(serviceClass,shared):nil;
+            SEL kill=NSSelectorFromString(@"terminateApplication:forReason:andReport:withDescription:");
+            if([service respondsToSelector:kill]){
+                // 样本传入 bundleID 与 reason=5，不能把 pid 按对象 ABI 传入。
+                ((void(*)(id,SEL,id,NSInteger,BOOL,id))objc_msgSend)(service,kill,bundleID,5,NO,nil);
+                return AGJSON(@{@"submitted":@YES,@"stopped":@YES});
             }
             return AGError(1,@"强杀接口不可用");
         }
@@ -184,30 +181,31 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
         if ([op isEqualToString:@"app.install"]) {
             NSString *path = args[@"path"];
             if (path.length == 0) return AGError(2,@"缺少 path");
-            id mobile = NSClassFromString(@"MobileInstallation");
-            SEL install = NSSelectorFromString(@"installApplication:withOptions:error:");
-            if (![mobile respondsToSelector:install]) return AGError(1,@"安装接口不可用（需要 platform-application 权限）");
-            NSError *err = nil;
-            BOOL ok = ((BOOL(*)(id,SEL,id,id,id*))objc_msgSend)(mobile, install, path, @{}, &err);
-            return ok ? AGJSON(@{@"installed":@YES}) : AGError(3, err.localizedDescription ?: @"安装失败");
+            NSString *resolved=[[path stringByStandardizingPath] stringByResolvingSymlinksInPath];
+            if(![[NSFileManager defaultManager] fileExistsAtPath:resolved])return AGError(2,@"安装包不存在");
+            SEL install=NSSelectorFromString(@"installApplication:withOptions:error:");
+            if(![workspace respondsToSelector:install])return AGError(1,@"LSApplicationWorkspace 安装入口不可用，需要受支持的已授权安装环境");
+            NSError *error=nil;BOOL accepted=((BOOL(*)(id,SEL,id,id,NSError **))objc_msgSend)(workspace,install,[NSURL fileURLWithPath:resolved],@{},&error);
+            return accepted?AGJSON(@{@"installed":@YES}):AGError(3,error.localizedDescription ?: @"系统拒绝安装");
         }
-        if ([op isEqualToString:@"app.uninstall"]) {
-            if (bundleID.length == 0) return AGError(2,@"缺少 bundleId");
-            id mobile = NSClassFromString(@"MobileInstallation");
-            SEL uninstall = NSSelectorFromString(@"uninstallApplication:withOptions:error:");
-            if (![mobile respondsToSelector:uninstall]) return AGError(1,@"卸载接口不可用（需要 platform-application 权限）");
-            NSError *err = nil;
-            BOOL ok = ((BOOL(*)(id,SEL,id,id,id*))objc_msgSend)(mobile, uninstall, bundleID, @{}, &err);
-            return ok ? AGJSON(@{@"uninstalled":@YES}) : AGError(3, err.localizedDescription ?: @"卸载失败");
+        if([op isEqualToString:@"app.uninstall"]){
+            if(!bundleID.length)return AGError(2,@"缺少 bundleId");
+            SEL uninstall=NSSelectorFromString(@"uninstallApplication:withOptions:");
+            if(![workspace respondsToSelector:uninstall])return AGError(1,@"LSApplicationWorkspace 卸载入口不可用");
+            BOOL accepted=((BOOL(*)(id,SEL,id,id))objc_msgSend)(workspace,uninstall,bundleID,@{});
+            return accepted?AGJSON(@{@"uninstalled":@YES}):AGError(3,@"系统拒绝卸载");
         }
-        if ([op isEqualToString:@"app.clear"]) {
-            if (bundleID.length == 0) return AGError(2,@"缺少 bundleId");
-            id mobile = NSClassFromString(@"MobileInstallation");
-            SEL clear = NSSelectorFromString(@"clearApplicationData:completion:");
-            if (![mobile respondsToSelector:clear]) return AGError(1,@"清数据接口不可用（需要 platform-application 权限）");
-            __block BOOL done = NO;
-            ((void(*)(id,SEL,id,id))objc_msgSend)(mobile, clear, bundleID, ^(BOOL ok){ done = ok; });
-            return done ? AGJSON(@{@"cleared":@YES}) : AGError(3,@"清数据失败");
+        if([op isEqualToString:@"app.clear"]){
+            if(!bundleID.length || [bundleID isEqualToString:[NSBundle bundleWithPath:AGApplicationBundlePath()].bundleIdentifier])return AGError(2,@"包名为空或正在清理 SDK 宿主自身");
+            id url=AGRead(AGProxy(bundleID),@"dataContainerURL",nil);
+            if(![url isKindOfClass:[NSURL class]])return AGError(3,@"应用数据容器不可读");
+            NSString *root=[[[url path] stringByStandardizingPath] stringByResolvingSymlinksInPath];
+            if(![root hasPrefix:@"/private/var/mobile/Containers/Data/Application/"] && ![root hasPrefix:@"/var/mobile/Containers/Data/Application/"])return AGError(2,@"拒绝清理不属于应用数据容器的路径");
+            if([[[NSUUID alloc] initWithUUIDString:root.lastPathComponent] autorelease]==nil)return AGError(2,@"容器标识无效");
+            NSError *error=nil;NSFileManager *manager=NSFileManager.defaultManager;NSArray *children=[manager contentsOfDirectoryAtPath:root error:&error];if(!children)return AGError(3,error.localizedDescription);
+            // 参考样本逐项删除容器内容；保留容器管理元数据，不能删除容器根或跟随链接递归到外部。
+            for(NSString *name in children){if([name hasPrefix:@".com.apple."])continue;NSString *child=[root stringByAppendingPathComponent:name];if(![manager removeItemAtPath:child error:&error])return AGError(4,error.localizedDescription ?: @"部分数据已清理，请核对");}
+            return AGJSON(@{@"cleared":@YES});
         }
 
         return AGError(1,@"未知应用操作");

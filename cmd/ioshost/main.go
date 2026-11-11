@@ -2,7 +2,7 @@
 
 // ioshost 是给 iOS 宿主 App 用的 C ABI 入口。
 //
-// SDK 本身是纯 Go 库（sdk/ios/...），直接被 Xcode 链接需要一个 c-archive：
+// SDK 包含 Go 与原生桥（sdk/ios/...），直接被 Xcode 链接需要一个 c-archive：
 //
 //	GOOS=ios GOARCH=arm64 CGO_ENABLED=1 \
 //	  go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
@@ -35,19 +35,24 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
+	"autogov1/v2/sdk/ios/apkctl"
 	"autogov1/v2/sdk/ios/app"
 	"autogov1/v2/sdk/ios/capture"
 	"autogov1/v2/sdk/ios/device"
-	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
+	"autogov1/v2/sdk/ios/resources"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/script/api"
+	"autogov1/v2/sdk/ios/script/worker"
 	"autogov1/v2/sdk/ios/selftest"
 	"autogov1/v2/sdk/ios/tunnel"
+	"autogov1/v2/sdk/ios/update"
 )
 
 type reply struct {
@@ -117,15 +122,16 @@ func boolean(m map[string]any, key string) bool {
 // ---- 本地 API ----
 //
 // 宿主在 127.0.0.1 上开一个小 HTTP 服务，两个用途：
-//   1. 隧道有东西可暴露（frpc 需要一个 localPort）
-//   2. 服务端经隧道探活，确认设备在线（GET /status）
+//  1. 隧道有东西可暴露（frpc 需要一个 localPort）
+//  2. 服务端经隧道探活，确认设备在线（GET /status）
 //
 // 只监听 127.0.0.1，不监听 0.0.0.0 —— 避免局域网里的人直接连上来。
 var (
-	localAPIMu      sync.Mutex
-	localAPIServer  *http.Server
-	localAPIPort    int
-	localAPIStarted time.Time
+	executionControl sync.RWMutex // SDK 安装与整个脚本执行互斥，保证子进程加载的版本稳定。
+	localAPIMu       sync.Mutex
+	localAPIServer   *http.Server
+	localAPIPort     int
+	localAPIStarted  time.Time
 )
 
 func startLocalAPI(port int) error {
@@ -157,20 +163,30 @@ func startLocalAPI(port int) error {
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
+
 // agov_ios_invoke 是壳唯一的调用入口：method + payloadJson → JSON 结果。
 //
 // 注意：//export 必须【紧邻】函数声明，cgo 才会生成导出符号。
 // 之前它被上面新加的代码隔开了，结果归档里只有 agov_ios_free、没有 invoke，
 // 表现就是 clang 报 <initial-undefines> / dlsym 失败 —— 踩过一次，别再挪。
+//
 //export agov_ios_invoke
 func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	if method == nil {
 		return fail(contextError("缺少方法名"))
 	}
 	name := C.GoString(method)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	args := input(payload)
+	duration := 30 * time.Second
+	if name == "script.executeFile" {
+		ms := num(args, "timeoutMs", 120000)
+		if ms <= 0 || ms > 300000 {
+			return fail(contextError("脚本期限必须在 1..300000 毫秒"))
+		}
+		duration = time.Duration(ms) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
 
 	switch name {
 	case "capabilities":
@@ -194,6 +210,21 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(v)
 
+	case "runtime.diagnostics":
+		report, err := selftest.Diagnostics(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(report)
+	case "runtime.diagnostics.worker":
+		executionControl.RLock()
+		defer executionControl.RUnlock()
+		result, err := worker.Run(ctx, selftest.DiagnosticSource, "", map[string]any{})
+		response := reply{OK: err == nil, Data: map[string]any{"processId": result.ProcessID, "elapsedMs": result.Elapsed.Milliseconds(), "logs": result.Logs, "result": result.Value}}
+		if err != nil {
+			response.Error = err.Error()
+		}
+		return encode(response)
 	case "runtime.selftest.all":
 		// 全量自检：逐个 op 真调一次，报告 可用/受环境限制/未实现/未验证
 		return okData(selftest.All(ctx))
@@ -205,37 +236,49 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(v)
 
-	case "sdk.status":
-		// 报告 SDK 来源：静态（编进主程序）还是动态（dylib，可热更）。
-		dylib := files.Path("Plugins/libagovios.dylib")
-		return okData(map[string]any{
-			"pluginsDir":  files.Path("Plugins"),
-			"dylibPath":   dylib,
-			"dylibExists": files.Exists(dylib),
-			"dylibBytes":  len(files.ReadBytes(dylib)),
-		})
-
-	case "sdk.install":
-		// 热更入口：把下发的 dylib 落盘到沙盒 Plugins。
-		// 已加载过动态库时 iOS 不允许卸载，需要重启进程才生效 —— 如实返回。
-		b64 := str(args, "base64")
-		if b64 == "" {
-			return fail(contextError("缺少 base64"))
-		}
-		raw, err := base64.StdEncoding.DecodeString(b64)
+	case "resources.status":
+		report, err := resources.Inspect(ctx, args["verifyHash"] == true)
 		if err != nil {
 			return fail(err)
 		}
-		if len(raw) < 1024 {
-			return fail(contextError("dylib 太小，不像有效产物"))
+		return okData(report)
+	case "sdk.health":
+		// 启动器仅探测运行时能否响应；不要求 AX、截图等受授权限制的能力可用。
+		return okData(map[string]any{"ready": true, "protocol": 1})
+	case "sdk.rollback":
+		executionControl.Lock()
+		defer executionControl.Unlock()
+		state, err := update.Rollback(ctx)
+		if err != nil {
+			return fail(err)
 		}
-		files.EnsureDir("Plugins")
-		path := files.Path("Plugins/libagovios.dylib")
-		files.WriteBytes(path, raw)
-		if !files.Exists(path) {
-			return fail(contextError("写入 dylib 失败: " + path))
+		return okData(map[string]any{"release": state, "needRestart": true})
+	case "sdk.status":
+		status, err := update.Status(ctx)
+		if err != nil {
+			return fail(err)
 		}
-		return okData(map[string]any{"path": path, "bytes": len(raw), "needRestart": true})
+		return okData(status)
+	case "sdk.install":
+		executionControl.Lock()
+		defer executionControl.Unlock()
+		raw, err := base64.StdEncoding.DecodeString(str(args, "base64"))
+		if err != nil {
+			return fail(err)
+		}
+		result, err := update.Install(ctx, raw, str(args, "sha256"))
+		if err != nil {
+			return fail(err)
+		}
+		return okData(result)
+	case "apkctl.selftest":
+		control := apkctl.NewSession(ctx)
+		defer control.Close()
+		value := control.Eval("selftest", "1+2")
+		if value != "3" {
+			return fail(contextError("宿主 JavaScriptCore 通道未返回 3"))
+		}
+		return okData(map[string]any{"result": value, "engine": "JavaScriptCore", "transport": "tcp-binary"})
 
 	case "localapi.start":
 		port := int(num(args, "port", 18989))
@@ -276,14 +319,25 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	case "tunnel.logs":
 		return okData(map[string]any{"logs": tunnel.Logs(int(num(args, "lines", 50)))})
 
+	case "script.executeFile":
+		// 仅供独立执行体在自己进程内调用；解释器和能力仍来自同一份动态 SDK。
+		params, _ := args["params"].(map[string]any)
+		runner := script.New(script.Options{Params: params, Timeout: duration})
+		res, err := runner.RunFile(ctx, str(args, "path"))
+		out := reply{OK: err == nil, Data: map[string]any{"logs": res.Logs, "result": res.Value, "elapsedMs": res.Elapsed.Milliseconds()}}
+		if err != nil {
+			out.Error = err.Error()
+		}
+		return encode(out)
 	case "script.run":
+		executionControl.RLock()
+		defer executionControl.RUnlock()
 		source := str(args, "source")
-		builtin := source == ""
+		builtin := source == "" && str(args, "path") == ""
 		if builtin {
 			source = script.DemoSource
 		}
-		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
-		res, err := runner.Run(ctx, source)
+		res, err := worker.Run(ctx, source, str(args, "path"), args)
 		if err != nil {
 			// 失败也把脚本日志带回去：排错主要靠它。
 			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})
@@ -294,20 +348,27 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			"logs":      res.Logs,
 			"result":    res.Value,
 			"elapsedMs": res.Elapsed.Milliseconds(),
+			"processId": res.ProcessID,
 		})
 
+	case "script.status":
+		return okData(worker.Status())
 	case "script.remote":
+		executionControl.RLock()
+		defer executionControl.RUnlock()
 		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
-		res, err := runner.RunRemote(ctx, script.RemoteOptions{
+		res, err := runner.RunRemoteWithExecutor(ctx, script.RemoteOptions{
 			URL:       str(args, "url"),
 			SHA256:    str(args, "sha256"),
 			CacheName: str(args, "name"),
+		}, func(runCtx context.Context, source string) (script.Result, error) {
+			return worker.Run(runCtx, source, "", args)
 		})
 		if err != nil {
 			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})
 		}
 		return okData(map[string]any{"ok": true, "logs": res.Logs, "result": res.Value,
-			"elapsedMs": res.Elapsed.Milliseconds()})
+			"elapsedMs": res.Elapsed.Milliseconds(), "processId": res.ProcessID})
 
 	case "motion.tap":
 		if err := motion.Tap(ctx, num(args, "x", 0.5), num(args, "y", 0.5)); err != nil {
@@ -367,15 +428,34 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		return okData(map[string]any{"typed": len(str(args, "text"))})
 
 	default:
+		// 复用现有脚本能力边界，避免每增加一个设备能力就再手写一个宿主分支。
+		// 此通道只承载 JSON，截图二进制仍使用 capture.screenshot/capture.json。
+		if name == "capture.image" {
+			return fail(contextError("二进制截图请使用 capture.screenshot 或 capture.json"))
+		}
+		for _, prefix := range []string{"app.", "device.", "motion.", "ime.", "capture.", "uiacc.", "system.", "utils.", "hud.", "console.", "ppocr.", "yolo.", "dotocr.", "opencv.", "video."} {
+			if strings.HasPrefix(name, prefix) {
+				session, err := api.NewSession(ctx, nil)
+				if err != nil {
+					return fail(err)
+				}
+				data, err := session.Call(name, args)
+				if err != nil {
+					return fail(err)
+				}
+				return okData(data)
+			}
+		}
 		return fail(contextError("未知方法: " + name))
 	}
 }
 
-// GoMain 与参考实现同名：dylib 被 dlopen 之后由宿主/自身初始化调用一次，
-// 用来确保原生能力就绪。参考实现里它是 void(void)，我们也保持一样。
+// GoMain 是本项目动态库初始化入口，由宿主加载后调用一次。
+// 样本的同名入口还会运行文件解释器；本项目将文件入口放在 Runtime/app。
 //
 //export GoMain
 func GoMain() {
+	_ = update.CaptureLoaded(context.Background())
 	// 幂等：这里只做"确保 AX 引导"，失败也不 panic —— 之后脚本调用时会再试一次。
 	if C.AXBootstrap() != 0 {
 		// 不可用是正常情况（普通签名/无授权），不阻断启动。

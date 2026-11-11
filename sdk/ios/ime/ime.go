@@ -12,7 +12,7 @@ import (
 	"autogov1/v2/sdk/ios/types"
 )
 
-// InputTextContext 逐个 Unicode 码点提交 UTF-8 数据；取消时返回已经提交的事实，不自动重发。
+// InputTextContext 按系统组合字符边界提交 UTF-8 数据；取消时返回已经提交的事实，不自动重发。
 // （简版 InputText 在 text.go。）
 func InputTextContext(ctx context.Context, text string) error {
 	if !utf8.ValidString(text) || len(text) > 65536 {
@@ -26,25 +26,36 @@ func InputTextContext(ctx context.Context, text string) error {
 	}
 	defer inputstate.Release()
 	sent := false
-	runes := []rune(text)
-	for i, r := range runes {
+	var parts struct {
+		Segments []string `json:"segments"`
+	}
+	if text == "" {
+		return nil
+	}
+	if err := native.Call(ctx, "ime.segments", map[string]any{"text": text}, &parts); err != nil {
+		return err
+	}
+	for i, segment := range parts.Segments {
 		if err := ctx.Err(); err != nil {
 			if sent {
 				return &types.Error{Op: "ime.text", Kind: types.ErrUnknown, Detail: "部分文字已提交: " + err.Error()}
 			}
 			return err
 		}
-		if err := native.Call(ctx, "ime.text", map[string]any{"text": string(r)}, nil); err != nil {
+		if err := native.Call(ctx, "ime.text", map[string]any{"text": segment}, nil); err != nil {
 			if sent {
 				return &types.Error{Op: "ime.text", Kind: types.ErrUnknown, Detail: "部分文字已提交: " + err.Error()}
 			}
 			return err
 		}
 		sent = true
-		if i == len(runes)-1 {
+		if i == len(parts.Segments)-1 {
 			break
 		}
-		t := time.NewTimer(12 * time.Millisecond)
+		if (i+1)%4 != 0 {
+			continue
+		}
+		t := time.NewTimer(15 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			t.Stop()

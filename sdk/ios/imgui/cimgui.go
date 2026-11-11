@@ -2,16 +2,15 @@
 
 // Package imgui 是 cimgui（Dear ImGui 的 C API）的 Go 绑定。
 //
-// 【依据（逆向 libimgui.dylib 实测）】
-// 参考实现的 libimgui.dylib 导出 6527 个符号，UI 入口是 ig* 那一套
-// （_igNewFrame / _igBegin / _igEnd / _igTextUnformatted / _igSetNextWindowPos …），
-// 版本号串是 1.92.5，并且带 __Z24ImGui_ImplMetal_NewFrame… → 官方 Metal 后端。
-// 所以它 = imgui 1.92.5 + cimgui 生成产物 + imgui_impl_metal，编成独立 dylib。
+// 参考样本包含 ig* C 接口和 Metal 后端；当前 vendor 为 1.92.5 / 19250，
+// 样本记录为 1.92.5 WIP / 19244，不能仅凭版本名称宣称完全一致。
+// 本文件封装基础窗口、文字、样式与滚动接口；常用控件见 widgets_gen.go/widgets_ios.go。
 //
 // 【我们照同一结构】
-//   host/ios/third_party/cimgui/        cimgui 1.92.5（cimgui.h / cimgui.cpp）
-//   host/ios/third_party/cimgui/imgui/  imgui 1.92.5（子模块布局）
-//   → CI 编成独立 libimgui.dylib，libagovios 用 @rpath 链接
+//
+//	host/ios/third_party/cimgui/        cimgui 当前 vendor（cimgui.h / cimgui.cpp）
+//	host/ios/third_party/cimgui/imgui/  imgui 1.92.5（子模块布局）
+//	→ CI 编成独立 libimgui.dylib，libagovios 用 @rpath 链接
 //
 // 【为什么这里只 include ag_bridge.h】
 // cimgui.h 会拉进 C++ 头（imgui.h / imgui_freetype.h），而 cgo 把 .go 里的
@@ -35,44 +34,47 @@ import "unsafe"
 // Vec2 对应 ImVec2（单位是点，不是像素）
 type Vec2 struct{ X, Y float32 }
 
-// NewFrame 开始一帧（由原生 Metal 桥每帧调用）
-func NewFrame() { C.agImNewFrame() }
+// NewFrame 不允许脚本自行调用；原生 Metal 桥拥有帧生命周期。
+func NewFrame() { panic("帧由宿主 Metal 循环管理，请使用 Run") }
 
 // Begin 开窗口；返回 false 表示被裁剪（仍要与 End 配对）
 func Begin(name string) bool {
+	requireFrame()
 	cs := C.CString(name)
 	defer C.free(unsafe.Pointer(cs))
 	return C.agImBegin(cs) != 0
 }
 
 // End 关窗口
-func End() { C.agImEnd() }
+func End() { requireFrame(); C.agImEnd() }
 
 // Text 输出一行文本
 func Text(s string) {
+	requireFrame()
 	cs := C.CString(s)
 	defer C.free(unsafe.Pointer(cs))
 	C.agImText(cs)
 }
 
 // SetNextWindowPos 设置下一个窗口位置
-func SetNextWindowPos(v Vec2) { C.agImSetNextWindowPos(C.float(v.X), C.float(v.Y)) }
+func SetNextWindowPos(v Vec2) { requireFrame(); C.agImSetNextWindowPos(C.float(v.X), C.float(v.Y)) }
 
 // SetNextWindowSize 设置下一个窗口尺寸
-func SetNextWindowSize(v Vec2) { C.agImSetNextWindowSize(C.float(v.X), C.float(v.Y)) }
+func SetNextWindowSize(v Vec2) { requireFrame(); C.agImSetNextWindowSize(C.float(v.X), C.float(v.Y)) }
 
 // WindowBg 设置窗口背景色（RGBA 各 0-255）
 func WindowBg(r, g, b, a uint8) {
+	requireFrame()
 	C.agImPushWindowBg(C.uint(uint32(r) | uint32(g)<<8 | uint32(b)<<16 | uint32(a)<<24))
 }
 
 // PopStyleColor 与 WindowBg 成对
-func PopStyleColor() { C.agImPopStyleColor() }
+func PopStyleColor() { requireFrame(); C.agImPopStyleColor() }
 
 // ScrollY / ScrollMaxY / SetScrollHereY：控制台自动滚到底用
-func ScrollY() float32         { return float32(C.agImScrollY()) }
-func ScrollMaxY() float32      { return float32(C.agImScrollMaxY()) }
-func SetScrollHereY(c float32) { C.agImSetScrollHereY(C.float(c)) }
+func ScrollY() float32         { requireFrame(); return float32(C.agImScrollY()) }
+func ScrollMaxY() float32      { requireFrame(); return float32(C.agImScrollMaxY()) }
+func SetScrollHereY(c float32) { requireFrame(); C.agImSetScrollHereY(C.float(c)) }
 
 // FontSize 当前字体大小（cimgui 没导出 SetWindowFontScale，只能读）
-func FontSize() float32 { return float32(C.agImFontSize()) }
+func FontSize() float32 { requireFrame(); return float32(C.agImFontSize()) }

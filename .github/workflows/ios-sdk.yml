@@ -6,14 +6,30 @@ on:
   push:
     paths:
       - 'sdk/ios/**'
+      - 'sdk/imaging/**'
+      - 'cmd/runtimeapp/**'
+      - 'cmd/symbolgen/**'
+      - 'cmd/precheck/**'
+      - 'go.mod'
+      - 'go.sum'
       - 'cmd/ioshost/**'
       - 'host/ios/**'
+      - 'tools/native_resources.py'
+      - 'tools/imgui_bindings.py'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
       - 'sdk/ios/**'
+      - 'sdk/imaging/**'
+      - 'cmd/runtimeapp/**'
+      - 'cmd/symbolgen/**'
+      - 'cmd/precheck/**'
+      - 'go.mod'
+      - 'go.sum'
       - 'cmd/ioshost/**'
       - 'host/ios/**'
+      - 'tools/native_resources.py'
+      - 'tools/imgui_bindings.py'
   workflow_dispatch:
 
 permissions:
@@ -41,12 +57,12 @@ jobs:
         run: go run ./cmd/precheck
 
       - name: go vet
-        run: go vet ./sdk/...
+        run: go vet ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen
 
       - name: go test（非 cgo）
         run: |
           set -euo pipefail
-          go test ./sdk/... -count=1 -v 2>&1 | tee test.log
+          go test ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen -count=1 -v 2>&1 | tee test.log
           echo "---- 汇总 ----"
           grep -E "^(ok|FAIL|---)" test.log | tail -40
 
@@ -159,6 +175,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 获取并校验锁定的原生运行库（缺件即停止发布）
+        run: python3 tools/native_resources.py --fetch --groups opencv,recognition
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
@@ -184,7 +203,7 @@ jobs:
           cd host/ios/Frameworks
           if [ ! -d opencv2.framework ]; then
             curl -fL --retry 3 -o /tmp/opencv-ios.zip \
-              https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip \
+              https://github.com/opencv/opencv/releases/download/4.10.0/opencv-4.10.0-ios-framework.zip \
               && unzip -q /tmp/opencv-ios.zip -d /tmp/opencv-ios \
               && cp -R /tmp/opencv-ios/opencv2.framework . \
               || echo "::warning::OpenCV 下载失败，ag_rec.mm 会降级为无 OpenCV"
@@ -231,6 +250,7 @@ jobs:
           # agIm* 包装层：实现调 ig*，供 Go 的 cgo 使用（Go 包里不能放 .cpp，否则非 cgo 构建报错）
           xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -I sdk/ios/imgui \
             "${CIMGUI}/ag_bridge.cpp" -o "${OBJ}/ag_bridge.o"
+          xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_widgets_gen.cpp" -o "${OBJ}/ag_widgets_gen.o"
           # 独立 dylib：libagovios 用 @rpath 链接它（与参考实现的 libimgui.dylib 同形态）
           xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -isysroot "${SDK_DIR}" \
             -mios-version-min=15.0 -install_name @rpath/libimgui.dylib \
@@ -265,9 +285,9 @@ jobs:
             -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui -I host/ios/third_party/cimgui/imgui/backends"
           OPENCV_INC=""
           if [ -d host/ios/Frameworks/opencv2.framework ]; then
-            OPENCV_INC="-I host/ios/Frameworks/opencv2.framework/Headers"
+            OPENCV_INC="-F host/ios/Frameworks -I host/ios/Frameworks/opencv2.framework/Headers"
           fi
-          for f in ag_rec imgui_overlay; do
+          for f in ag_rec ag_cv imgui_overlay; do
             xcrun --sdk iphoneos clang++ -c ${FLAGS} ${OPENCV_INC} "${NATIVE}/$f.mm" -o "${OBJ}/$f.o"
           done
           libtool -static -o host/ios/Frameworks/libagovnative.a "${OBJ}"/*.o
@@ -315,7 +335,7 @@ jobs:
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
             host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
-            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework Foundation -framework UIKit -framework JavaScriptCore -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
             -framework QuartzCore \
@@ -341,17 +361,13 @@ jobs:
             fi
           done
           echo "✅ 五个入口都导出了"
-          # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
-          # 然后通过 http://127.0.0.1:8989/{status,task?cmd=} 通信。
-          #
-          # 它 import 了 sdk/ios/script（解释器）→ 间接拉进 native 层，所以链接时要带：
-          #   host/ios/Frameworks/libagovnative.a  （AGRecognition / AGImGuiOverlay 的定义）
-          #   -L host/ios/Frameworks -limgui        （imgui_overlay.o 调 ImGui::）
-          #   -Wl,-rpath,@executable_path           （libimgui.dylib 与 app 同在 Runtime/）
+          # 原生任务启动器加载与宿主相同的动态 SDK，保持更新版本一致。
           mkdir -p host/ios/Runtime
-          export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
-          go build -buildmode=exe -trimpath -ldflags "-s -w" \
-            -o host/ios/Runtime/app ./cmd/runtimeapp
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "${SDK}" \
+            -mios-version-min="${IOS_MIN}" -fobjc-arc host/ios/RuntimeMain.m \
+            -framework Foundation -framework CoreFoundation \
+            -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/.. \
+            -o host/ios/Runtime/app
           file host/ios/Runtime/app
           ls -lh host/ios/Runtime/app
           ls -lh host/ios/Frameworks/libagovios.dylib
@@ -385,7 +401,7 @@ jobs:
           export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
           # CXX 必须显式指向 iOS/simulator 的 clang++：cgo 编 .mm（ag_rec / imgui_overlay）靠它，
           # 缺省会退回 g++，.mm 直接被跳过 → 链接期报 _AGRecognition 未定义。
-          export CXX="${CC_SIM}"
+          export CXX="${CC_IOS}"
           export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
           # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
           # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
@@ -436,6 +452,7 @@ jobs:
           APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
           mkdir -p "${APP}/Runtime"
           copied=0
+          cp host/ios/native-resources.lock.json "${APP}/native-resources.lock.json"
           for f in host/ios/Runtime/*.dylib; do
             [ -e "$f" ] || continue
             cp "$f" "${APP}/Runtime/"
@@ -589,9 +606,9 @@ jobs:
 
   # ── 3. 模拟器冒烟：启动 + 截图 ───────────────────────────────────────
   #
-  # 这一轮的用途只有一个：证明 App 能启动、界面正常、Go↔ObjC 桥接通。
-  # 模拟器里没有 IOHIDEvent / CARenderServer / Accessibility，
-  # 所以 capabilities 会全 false —— 那是预期结果，不是失败。
+  # 验证启动、桥接、独立脚本进程与 JavaScriptCore，并采集真实截图/AX 诊断。
+  # 模拟器可能有私有 API 符号，但符号存在不代表调用成功；结果以报告为准。
+  # simctl 截图只用于查看测试界面，不能计入 SDK 截图成功。
   ios-sim:
     name: 模拟器冒烟（启动 + 截图）
     needs: ios-sdk
@@ -673,6 +690,7 @@ jobs:
           done
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} "${CIMGUI}/cimgui.cpp" -o "${OBJ}/cimgui.o"
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_bridge.cpp" -o "${OBJ}/ag_bridge.o"
+          xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_widgets_gen.cpp" -o "${OBJ}/ag_widgets_gen.o"
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -fobjc-arc "${IMGUI}/backends/imgui_impl_metal.mm" -o "${OBJ}/imgui_impl_metal.o"
           xcrun --sdk iphonesimulator clang++ -dynamiclib -arch "${XCARCH}" -isysroot "${SDK_DIR}" \
             -mios-simulator-version-min=15.0 -install_name @rpath/libimgui.dylib \
@@ -691,7 +709,7 @@ jobs:
           FLAGS="-O2 -std=c++17 -fobjc-arc -isysroot ${SDK_DIR} -mios-simulator-version-min=15.0 -arch ${XCARCH} \
             -I sdk/ios/internal/native \
             -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui -I host/ios/third_party/cimgui/imgui/backends"
-          for f in ag_rec imgui_overlay; do
+          for f in ag_rec ag_cv imgui_overlay; do
             xcrun --sdk iphonesimulator clang++ -c ${FLAGS} "host/ios/objc/$f.mm" -o "${OBJ}/$f.o"
           done
           libtool -static -o host/ios/Frameworks/libagovnative.a "${OBJ}"/*.o
@@ -719,7 +737,7 @@ jobs:
             -Wl,-all_load host/ios/GoLib/libagovios.a \
             host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
-            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework Foundation -framework UIKit -framework JavaScriptCore -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
             -framework QuartzCore \
@@ -746,9 +764,12 @@ jobs:
           done
           echo "✅ 五个入口都导出了"
           mkdir -p host/ios/Runtime
-          export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
-          go build -buildmode=exe -trimpath -ldflags "-s -w" -o host/ios/Runtime/app ./cmd/runtimeapp || true
-          ls -lh host/ios/Runtime/app 2>/dev/null || echo "（Runtime/app 未生成，模拟器里任务隔离不可用）"
+          xcrun --sdk iphonesimulator clang -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
+            -mios-simulator-version-min="${IOS_MIN}" -fobjc-arc host/ios/RuntimeMain.m \
+            -framework Foundation -framework CoreFoundation \
+            -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/.. \
+            -o host/ios/Runtime/app
+          ls -lh host/ios/Runtime/app
           ls -lh host/ios/Frameworks/libagovios.dylib
 
       - name: 生成 Xcode 工程
@@ -803,6 +824,8 @@ jobs:
             cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"; chmod +x "${APP}/frpc-ios"
             echo "已放入 frpc-ios"
           fi
+          # 独立执行体必须先签名，再签外层 App。
+          [ ! -f "${APP}/Runtime/app" ] || codesign -f -s - "${APP}/Runtime/app"
           # 往已签名的 app 里塞文件会让签名失效，模拟器也要重签一次
           codesign -f -s - "${APP}" 2>/dev/null || echo "（重签失败，模拟器通常仍可运行）"
           ls -lh "${APP}"; ls -lh "${APP}/Runtime" 2>/dev/null || true
@@ -818,7 +841,44 @@ jobs:
           [ -d "${APP}" ] || { echo "::error::没找到模拟器产物"; ls -R host/ios/build/Build/Products || true; exit 1; }
           xcrun simctl install "${UDID}" "${APP}"
           xcrun simctl launch "${UDID}" dev.autogov.host || true
-          sleep 8
+          # 安装后执行真正的工作进程和宿主 JS 检查；不再固定睡 8 秒便宣称成功。
+          CONTAINER=$(xcrun simctl get_app_container "${UDID}" dev.autogov.host data)
+          for attempt in $(seq 1 90); do
+            [ -f "${CONTAINER}/Documents/script-check.json" ] && [ -f "${CONTAINER}/Documents/js-check.json" ] && [ -f "${CONTAINER}/Documents/native-diagnostics.done" ] && break
+            sleep 1
+          done
+          python3 - "${CONTAINER}/Documents" <<'PY'
+          import json, pathlib, sys
+          root=pathlib.Path(sys.argv[1])
+          assert (root/'native-diagnostics.done').exists(), '截图/AX 专项诊断未完成，不能只收集半份结果'
+          for context in ['host','worker']:
+              report=json.loads((root/f'native-diagnostics-{context}.json').read_text())
+              print('原生诊断',context,'调用完成:',report.get('ok'), '；采集成功与否以完整 JSON 为准')
+              assert report.get('ok'), context+' 诊断调用失败: '+str(report.get('error'))
+              native=report.get('data',{})
+              if context=='worker': native=native.get('result',{})
+              ax=native.get('ax',{})
+              assert ax.get('ok'), context+' AX 采集失败: '+str(ax.get('error'))
+              nodes=ax.get('data',{}).get('nodes',[])
+              assert any(n.get('text')=='能力探测' and n.get('button') and n.get('right',0)>n.get('left',0) for n in nodes), context+' AX 没有识别到界面上的真实按钮'
+              print('AX 实际节点数:',len(nodes),'；能力探测按钮已识别')
+              capture=native.get('capture',{})
+              assert capture.get('ok'), context+' SDK 截图失败: '+str(capture.get('error'))
+              image=capture.get('data',{})
+              assert image.get('width',0)>0 and image.get('height',0)>0, context+' 截图尺寸无效'
+              jpeg=(root/f'native-capture-{context}.jpg').read_bytes()
+              assert jpeg.startswith(bytes.fromhex('ffd8ff')) and len(jpeg)>100, context+' SDK 没有生成有效 JPEG'
+              print('SDK JPEG:',image['width'],image['height'],'字节数:',len(jpeg))
+          script=json.loads((root/'script-check.json').read_text())
+          data=script.get('data',{})
+          assert script.get('ok') and data.get('ok'), '工作进程执行失败: '+str(data.get('error',script.get('error')))
+          assert data.get('processId',0)>0, '没有返回真实工作进程 PID'
+          assert data.get('result',{}).get('interpreterCompleted'), '解释器没有完整执行'
+          assert data.get('result',{}).get('captureSucceeded'), '脚本内调用 SDK 截图未成功'
+          js=json.loads((root/'js-check.json').read_text())
+          assert js.get('ok') and js.get('data',{}).get('result')=='3', 'JavaScriptCore 通道没有实际返回 3'
+          print('工作进程 PID:',data['processId'],'；JavaScriptCore: 1+2=3')
+          PY
           xcrun simctl io "${UDID}" screenshot "${RUNNER_TEMP}/sim.png"
           ls -l "${RUNNER_TEMP}/sim.png"
 

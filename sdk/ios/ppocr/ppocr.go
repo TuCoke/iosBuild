@@ -8,13 +8,17 @@
 package ppocr
 
 import (
+	"context"
 	"encoding/base64"
 	"image"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/images"
-	"autogov1/v2/sdk/ios/internal/bridge"
+	"autogov1/v2/sdk/ios/internal/native"
+	"autogov1/v2/sdk/ios/types"
 )
 
 // Result 是一条识别结果（物理像素 + 文本 + 置信度 + 中心点）。
@@ -30,13 +34,19 @@ type Result struct {
 }
 
 // Ppocr 是一个 OCR 引擎实例；Close 后不应再调用。
+var sequence atomic.Uint64
+
 type Ppocr struct {
+	mu      sync.Mutex
+	token   uint64
+	loaded  bool
+	lastErr error
 	version string
 	closed  bool
 }
 
 // New 创建引擎。version 对应模型版本（如 "v5"），空串用原生默认。
-func New(version string) *Ppocr { return &Ppocr{version: version} }
+func New(version string) *Ppocr { return &Ppocr{version: version, token: sequence.Add(1)} }
 
 type rawResult struct {
 	Items []Result `json:"items"`
@@ -58,31 +68,64 @@ func (p *Ppocr) Ocr(x1, y1, x2, y2 int, colorStr string) []Result {
 	if img == nil {
 		return nil
 	}
-	return p.OcrFromImage(img, colorStr)
+	items := p.OcrFromImage(img, colorStr)
+	for i := range items {
+		items[i].X += max(x1, 0)
+		items[i].Y += max(y1, 0)
+	}
+	return finish(items)
 }
 
 func (p *Ppocr) OcrFromImage(img *image.NRGBA, colorStr string) []Result {
-	if p == nil || p.closed || img == nil {
+	if p == nil || img == nil {
 		return nil
 	}
 	b64 := images.EncodeToBase64(img, "png", 100)
 	if b64 == "" {
 		return nil
 	}
-	return p.OcrFromBase64(b64, colorStr)
+	items := p.OcrFromBase64(b64, colorStr)
+	for i := range items {
+		items[i].X += img.Bounds().Min.X
+		items[i].Y += img.Bounds().Min.Y
+	}
+	return finish(items)
 }
 
 func (p *Ppocr) OcrFromBase64(b64 string, colorStr string) []Result {
-	if p == nil || p.closed || b64 == "" {
+	if p == nil || b64 == "" {
 		return nil
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		p.lastErr = types.ErrClosed
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if !p.loaded {
+		if p.lastErr = native.Call(ctx, "ppocr.load", map[string]any{"token": p.token, "version": p.version}, nil); p.lastErr != nil {
+			return nil
+		}
+		p.loaded = true
+	}
 	var out rawResult
-	if !bridge.DoTimeout("ppocr.ocr", map[string]any{
-		"version": p.version, "base64": b64, "color": colorStr,
-	}, &out, 60*time.Second) {
+	p.lastErr = native.Call(ctx, "ppocr.ocr", map[string]any{"token": p.token, "base64": b64, "color": colorStr}, &out)
+	if p.lastErr != nil {
 		return nil
 	}
 	return finish(out.Items)
+}
+
+// Error 返回最近一次加载、识别或关闭错误，空结果不再必然表示没有识别到文字。
+func (p *Ppocr) Error() error {
+	if p == nil {
+		return types.ErrClosed
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastErr
 }
 
 func (p *Ppocr) OcrFromPath(path string, colorStr string) []Result {
@@ -95,9 +138,22 @@ func (p *Ppocr) OcrFromPath(path string, colorStr string) []Result {
 
 // Close 释放原生引擎（模型常驻几十 MB，用完要还）。
 func (p *Ppocr) Close() {
-	if p == nil || p.closed {
+	if p == nil {
 		return
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	if p.loaded {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		p.lastErr = native.Call(ctx, "ppocr.close", map[string]any{"token": p.token}, nil)
+		if p.lastErr != nil {
+			return
+		}
+	}
 	p.closed = true
-	_ = bridge.Do("ppocr.close", map[string]any{"version": p.version}, nil)
+	p.loaded = false
 }

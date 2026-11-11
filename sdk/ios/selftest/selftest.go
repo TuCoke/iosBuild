@@ -5,18 +5,20 @@
 // 【为什么要做】
 // 逐个按钮点只能看到几个功能；用户真正关心的是"所有 API 都能用吗"。
 // 这里按 op 列表逐个调，三类结论：
-//   ok        —— 调用成功
-//   env       —— 已实现，但当前环境拿不到（例：模拟器没有 render server）
-//   missing   —— 原生根本没实现（返回"尚未提供此原生能力"）
+//
+//	ok        —— 调用成功
+//	env       —— 已实现，但当前环境拿不到（例：模拟器没有 render server）
+//	missing   —— 当前构建或系统不支持（返回"尚未提供此原生能力"）
 //
 // 【安全边界】
 // 会改状态或伤设备的 op（重启、锁屏）不真调，只标 unsafe —— 自检不能把手机弄挂。
 package selftest
 
 import (
+	"autogov1/v2/sdk/ios/types"
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"autogov1/v2/sdk/ios/internal/native"
@@ -58,8 +60,8 @@ func probeList() []opProbe {
 		{"device.clipset", map[string]any{"text": ""}, false},
 		{"device.button", map[string]any{"button": "__probe__"}, false},
 		{"device.brightness", map[string]any{"value": -1}, false}, // 越界 → 参数错误
-		{"device.reboot", nil, true},                             // 危险，不调
-		{"device.lock", nil, true},                               // 危险，不调
+		{"device.reboot", nil, true},                              // 危险，不调
+		{"device.lock", nil, true},                                // 危险，不调
 		{"device.vpn_set", map[string]any{}, true},
 		{"device.wifi_set", map[string]any{}, true},
 		{"device.keep_awake", map[string]any{"on": false}, false},
@@ -73,13 +75,13 @@ func probeList() []opProbe {
 		{"app.bundle_path", map[string]any{"bundleId": "__probe__"}, false},
 		{"app.data_path", map[string]any{"bundleId": "__probe__"}, false},
 		{"app.bundle_dir", nil, false},
-		{"app.launch", map[string]any{"bundleId": ""}, false},     // 缺参 → 参数错误
-		{"app.stop", map[string]any{"bundleId": ""}, false},       // 缺参
-		{"app.open_url", map[string]any{"url": ""}, false},        // 缺参
+		{"app.launch", map[string]any{"bundleId": ""}, false}, // 缺参 → 参数错误
+		{"app.stop", map[string]any{"bundleId": ""}, false},   // 缺参
+		{"app.open_url", map[string]any{"url": ""}, false},    // 缺参
 		{"app.icon", map[string]any{"bundleId": "__probe__"}, false},
-		{"app.install", map[string]any{"path": ""}, false},        // 缺参，不会真装
-		{"app.uninstall", map[string]any{"bundleId": ""}, false},  // 缺参
-		{"app.clear", map[string]any{"bundleId": ""}, false},      // 缺参
+		{"app.install", map[string]any{"path": ""}, false},       // 缺参，不会真装
+		{"app.uninstall", map[string]any{"bundleId": ""}, false}, // 缺参
+		{"app.clear", map[string]any{"bundleId": ""}, false},     // 缺参
 		// 输入
 		{"motion.frame", map[string]any{"contacts": []any{}}, false},
 		{"motion.configure", map[string]any{"senderId": 0}, false},
@@ -107,8 +109,8 @@ func probeList() []opProbe {
 		{"utils.input_alert", map[string]any{"title": "", "content": "", "placeholder": ""}, true},
 		{"utils.alive", map[string]any{"pid": 1}, false},
 		{"utils.kill", map[string]any{"pid": -1}, false},
-		{"utils.spawn", map[string]any{"path": ""}, false},  // 缺参
-		{"utils.exec", map[string]any{"path": ""}, false},   // 缺参
+		{"utils.spawn", map[string]any{"path": ""}, false}, // 缺参
+		{"utils.exec", map[string]any{"path": ""}, false},  // 缺参
 		// 控件树
 		{"uiacc.snapshot", map[string]any{"limit": 10}, false},
 		// 识别栈（未装库时应报"识别栈未安装"，属于 env）
@@ -119,8 +121,6 @@ func probeList() []opProbe {
 		{"video.start", map[string]any{"fps": 1}, false},
 		{"video.stop", nil, false},
 		// 外壳通道
-		{"apkctl.poll", nil, false},
-		{"apkctl.reg_event", map[string]any{"event": "__probe__"}, false},
 	}
 }
 
@@ -128,16 +128,21 @@ func probeList() []opProbe {
 func All(ctx context.Context) map[string]any {
 	type item struct {
 		Op     string `json:"op"`
-		Status string `json:"status"` // ok / env / missing / unsafe
+		Status string `json:"status"` // ok / env / unsupported / unsafe / invalid / unverified
 		Detail string `json:"detail"`
 	}
 	var items []item
-	counts := map[string]int{"ok": 0, "env": 0, "missing": 0, "unsafe": 0}
+	counts := map[string]int{"ok": 0, "env": 0, "unsupported": 0, "unsafe": 0, "invalid": 0, "unverified": 0}
 
 	for _, p := range probeList() {
 		if p.unsafe {
 			items = append(items, item{Op: p.op, Status: "unsafe", Detail: "会改状态，自检不调"})
 			counts["unsafe"]++
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
+			counts["unverified"]++
 			continue
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -147,27 +152,47 @@ func All(ctx context.Context) map[string]any {
 		case err == nil:
 			items = append(items, item{Op: p.op, Status: "ok"})
 			counts["ok"]++
-		case strings.Contains(err.Error(), "尚未提供此原生能力"):
-			items = append(items, item{Op: p.op, Status: "missing", Detail: err.Error()})
-			counts["missing"]++
+		case errors.Is(err, types.ErrInvalid):
+			items = append(items, item{Op: p.op, Status: "invalid", Detail: "只验证了参数拒绝，未验证能力成功: " + err.Error()})
+			counts["invalid"]++
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			items = append(items, item{Op: p.op, Status: "unverified", Detail: err.Error()})
+			counts["unverified"]++
+		case errors.Is(err, types.ErrUnsupported):
+			items = append(items, item{Op: p.op, Status: "unsupported", Detail: err.Error()})
+			counts["unsupported"]++
 		default:
 			// 已实现，但这次调用的参数/环境不满足（越界、缺参、无权限、未装库…）
 			detail := err.Error()
-			if len(detail) > 120 {
-				detail = detail[:120]
+			// 完整错误保留到 JSON，不能在界面缩略之前丢掉根因。
+			if text := []rune(detail); len(text) > 16384 {
+				detail = string(text[:16384])
 			}
 			items = append(items, item{Op: p.op, Status: "env", Detail: detail})
 			counts["env"]++
 		}
 	}
 	return map[string]any{
-		"total":   len(items),
-		"ok":      counts["ok"],
-		"env":     counts["env"],
-		"missing": counts["missing"],
-		"unsafe":  counts["unsafe"],
-		"items":   items,
-		"summary": fmt.Sprintf("共 %d 项：可用 %d / 受环境限制 %d / 未实现 %d / 未验证 %d",
-			len(items), counts["ok"], counts["env"], counts["missing"], counts["unsafe"]),
+		"total":       len(items),
+		"ok":          counts["ok"],
+		"env":         counts["env"],
+		"unsupported": counts["unsupported"],
+		"unsafe":      counts["unsafe"],
+		"invalid":     counts["invalid"], "unverified": counts["unverified"],
+		"items": items,
+		"summary": fmt.Sprintf("共 %d 项：调用成功 %d / 环境失败 %d / 不支持 %d / 跳过有副作用 %d / 仅参数拒绝 %d / 未验证 %d",
+			len(items), counts["ok"], counts["env"], counts["unsupported"], counts["unsafe"], counts["invalid"], counts["unverified"]),
 	}
 }
+
+// Diagnostics 在当前进程执行相同的原生诊断；也供独立任务进程调用。
+func Diagnostics(ctx context.Context) (map[string]any, error) {
+	var report map[string]any
+	err := native.Call(ctx, "runtime.diagnostics", nil, &report)
+	return report, err
+}
+
+const DiagnosticSource = `package main
+import "autogov1/v2/sdk/ios/script/api"
+func main(){report,err:=api.Call("runtime.diagnostics",nil);if err!=nil{panic(err)};api.SetResult(report)}
+`

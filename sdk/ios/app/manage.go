@@ -66,13 +66,21 @@ func GetDataPath(packageName string) string {
 
 // GetList 列出已安装应用；includeSystemApps=false 时过滤系统应用。
 func GetList(includeSystemApps bool) []AppInfo {
-	var out struct {
-		Items []AppInfo `json:"items"`
+	var rows []struct {
+		BundleID string `json:"bundleId"`
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		Build    string `json:"build"`
+		System   bool   `json:"system"`
 	}
-	if !bridge.DoTimeout("app.list_all", map[string]any{"system": includeSystemApps}, &out, 30*time.Second) {
+	if !bridge.DoTimeout("app.list_all", map[string]any{"system": includeSystemApps}, &rows, 30*time.Second) {
 		return nil
 	}
-	return out.Items
+	result := make([]AppInfo, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, AppInfo{PackageName: row.BundleID, AppName: row.Name, VersionName: row.Version, VersionCode: row.Build, IsSystemApp: row.System})
+	}
+	return result
 }
 
 // SelfPackage 返回本应用自己的 bundleID。

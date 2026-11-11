@@ -1,73 +1,76 @@
-# iosBuild — iOS 设备能力 SDK（编译验证仓）
+# iOS SDK 构建与宿主
 
-这个仓库只放 **iOS 能力 SDK 的源码** 和 **它的编译验证工作流**，不含服务端、控制台、安卓任何内容。
+主能力源码在 `v2/sdk/ios/`；本目录 `v2/ios/` 提供 Apple 构建镜像和原生宿主。GitHub 独立验证仓的相同布局直接位于仓库根目录。
 
-- 主仓库（Gitee）：`agent-cgo` 的 `v2/sdk/ios/`
-- 本仓库作用：让 GitHub 的 macOS 跑器用**真正的 iPhoneOS SDK** 编译一遍，验证 `go build`（cgo）与 6 个 Objective-C 文件都能过
+本轮本地静态检查、纯 Go 编译和 GitHub 四项检查已通过。新增功能的完整行为与真机验收仍待补齐：
 
-## 这个仓库里有什么
+- [能力对标及剩余缺项](docs/ios-autogo-status.md)
+- [新增功能、调用示例及更新流程](docs/ios-sdk-features.md)
+- [本地编译与 GitHub 验证记录](docs/ios-sdk-ci-20261111.md)
 
-```
-go.mod                      module autogov1/v2（零第三方依赖）
-go.sum                      空
-sdk/ios/
-├── app/ capture/ device/ ime/ motion/ uiacc/ video/ types/    能力包
-├── internal/inputstate/                                       进程内输入串行闸门
-├── internal/native/                                           6 个 .m + bridge.h + bridge_ios.go
-└── examples/                                                  调用示例
-.github/workflows/ios-sdk.yml                                  编译验证（只用 macOS 跑器）
-```
+## 已验证的代码版本
 
-## 编译验证做了什么
+- GitHub 仓库：[TuCoke/iosBuild](https://github.com/TuCoke/iosBuild)。
+- 本轮验证分支：[codex/ios-sdk-features-20261111](https://github.com/TuCoke/iosBuild/tree/codex/ios-sdk-features-20261111)。不表示已经合并至 GitHub main。
+- 通过验证的代码提交：`3c08dbec75a940d99ef2a7db7cee68ef1088545d`。
+- [GitHub Actions：4/4 通过及产物](https://github.com/TuCoke/iosBuild/actions/runs/43001526920)。包含 Go 检查/测试、iPhoneOS/CGo 编译、原生宿主/动态库/IPA/DEB 打包、模拟器基础回归。
+- 模拟器验证了 SDK 截图、79/80 个 AX 节点、独立脚本进程和 JS 基础通道；没有完成实体 iPhone、新增全部控件、找图算法和升级回退的完整行为验收。
 
-每次 push 到 `sdk/ios/**` 会触发 `ios-sdk` 工作流（macOS 15 / Apple Silicon / 自带 Xcode）：
+## 目录与职责
 
-1. 环境自检：`sw_vers`、`xcodebuild -version`、`go version`、iPhoneOS SDK 路径
-2. **用真实 iPhoneOS SDK 编译 6 个 `.m`**
-   - 必须带 `-fno-objc-arc`：代码是 MRR（手动引用计数），开 ARC 会报 `release`/`dealloc` 错误
-   - 不 import `IOSurface/IOSurface.h`：iOS SDK 里没有这个头（它是 macOS 的），代码改用 `dlsym`
-3. `go build ./...` + `go test ./...`（`CGO_ENABLED=0`，走非 iOS stub）
-4. **`GOOS=ios GOARCH=arm64 CGO_ENABLED=1 go build ./...`** —— 验证 Go + cgo + ObjC 桥能一起编过
-5. 上传 `.o` 产物（保留 7 天）
-
-## 它证明了什么、没证明什么
-
-**已证明（真机 SDK 编译）：**
-- 6 个 `.m` 能被 iPhoneOS SDK 编译（2026-11-09 在 macOS 15.7.7 / Xcode 26.3 / SDK 26.2 上实测 6/6 通过）
-- Go 侧代码与非 cgo 路径的单测通过
-
-**未证明：**
-- 链接、签名、安装到真机
-- 运行行为：私有 API（IOHIDEvent 注入、CARenderServer 截图）在各机型/iOS 版本上的实际效果
-- 控件树采集：`uiacc` 只有查询与采集器契约，没有原生 AX 采集实现
-
-## 私有 API 的处理原则
-
-iOS 上要操作其它 App，只能用私有 API。这里的做法是：
-
-- **不 import 私有头文件**（`IOSurface.h` 之类在 iOS SDK 里根本不存在）
-- 本地声明类型，函数一律 `dlsym`（`AGSymbol`），链接期不依赖私有框架
-- 解析不到就返回明确错误，**不假装成功**
-
-用到的私有入口：`IOHIDEventSystemClientCreate` / `IOHIDEventCreateDigitizerFingerEvent` / `IOHIDEventSystemClientDispatchEvent` / `CARenderServerRenderDisplay` / `IOSurface*`。
-
-## 本地怎么跑（macOS，可选）
-
-```bash
-./build-on-mac.sh 2>&1 | tee build.log     # 如果从主仓库带过来的话
+```text
+sdk/ios/                      主能力源码的构建镜像
+sdk/imaging/                  公共图像计算依赖
+cmd/
+├── ioshost/                  Go 动态 SDK 的 C ABI 入口
+├── runtimeapp/               Go 文件解释入口；原生 Runtime/app 调用相同 SDK
+├── symbolgen/                Yaegi 能力符号表生成
+└── precheck/                 Go/ObjC/ObjC++、分派、C 链接与构建约定检查
+host/ios/
+├── Sources/                  ObjC 壳、SDKLoader、JS 原生 UI、控制服务与检查界面
+├── objc/                     ag_rec、ag_cv、imgui_overlay 原生胶水
+├── third_party/cimgui/       cimgui、ImGui、Metal 后端及自维护包装层
+├── RuntimeMain.m             独立任务薄执行体、父进程看护与超时
+├── Runtime/                  构建时获取的识别/OpenCV 运行库
+├── Frameworks/               构建产物与 frpc
+├── native-resources.lock.json 原生库来源、摘要、大小、平台与包内路径
+├── project.yml               xcodegen 宿主工程；壳通过 dlopen 加载 Go SDK
+└── entitlements.plist         已授权运行环境所需的能力声明
+tools/
+├── imgui_bindings.py          已核对 ABI 的控件绑定生成器
+└── native_resources.py        原生资源获取与静态校验
+docs/                        对标、功能、编译与历史诊断记录
+.github/workflows/
+├── ios-sdk.yml               Go / iOS SDK / 宿主打包 / 模拟器四项检查
+└── reverse.yml               参考样本静态分析工作流
 ```
 
-或者直接：
+`Runtime/app` 是原生薄执行体，加载宿主实际使用的同一个 `libagovios.dylib`，不另装一套 Go SDK。UIKit 主线程必须保持事件循环。
 
-```bash
-SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-for f in sdk/ios/internal/native/*.m; do
-  xcrun --sdk iphoneos clang -c -arch arm64 -mios-version-min=14.0 \
-    -isysroot "$SDK" -fno-objc-arc -fblocks -o /tmp/x.o "$f"
-done
+## 原生资源交付
 
-CGO_ENABLED=1 GOOS=ios GOARCH=arm64 \
-CC="$(xcrun --sdk iphoneos -f clang)" \
-CGO_CFLAGS="-arch arm64 -mios-version-min=14.0 -isysroot $SDK -fno-objc-arc" \
-go build ./...
+主仓库不提交分析样本和预编译大文件。构建需要的 7 个识别/OpenCV 库通过 `host/ios/native-resources.lock.json` 锁定，发布前缺件、摘要或平台不符即失败。
+
+锁定的是已有验证仓提交中的产物；算法引擎并非本仓库已实现的自建源码。PPOCR 验证仓文件与 resources 原始样本摘要不同，按清单选用，不能混装。模型仍由调用方明确提供。frpc 可以使用匹配的预编译产物或工作流中的源码构建回退。
+
+从本构建目录执行（主仓库为 `v2/ios/`，独立验证仓为仓库根目录）：
+
+```sh
+python3 tools/native_resources.py --fetch --groups opencv,recognition
+# 受信任的离线目录也必须符合锁定摘要：
+python3 tools/native_resources.py --fetch --source-dir /path/to/locked-libs
 ```
+
+## 本地静态检查与编译
+
+Windows 可以检查源码、纯 Go 构建及资源元数据；ObjC/ObjC++/CGo 的 iOS 编译需要 Apple SDK/Xcode。以下命令从本构建目录执行：
+
+```sh
+go run ./cmd/precheck
+# POSIX shell 写法；PowerShell 用 $env:CGO_ENABLED='0' 设置环境变量。
+CGO_ENABLED=0 go build ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen ./cmd/precheck
+CGO_ENABLED=0 go vet ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen ./cmd/precheck
+python3 tools/native_resources.py --groups opencv,recognition
+```
+
+`precheck` 是源码/约定检查，不替代 Apple 编译器或运行时验收。GitHub 的 `ios-sdk.yml` 使用 macOS runner 完成原生构建和模拟器检查，产出 IPA/DEB、编译对象、日志和截图。包可用于后续匹配系统版本与授权环境的安装验收，打包成功不等于所有设备功能已验证。

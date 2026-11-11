@@ -15,11 +15,12 @@ import (
 )
 
 type Config struct {
-	MaxSize    int `json:"maxSize"`
-	Bitrate    int `json:"bitrate"`
-	FPS        int `json:"fps"`
-	Rotation   int `json:"rotation"`
-	QueueBytes int `json:"queueBytes"`
+	AutoRotation bool `json:"autoRotation"`
+	MaxSize      int  `json:"maxSize"`
+	Bitrate      int  `json:"bitrate"`
+	FPS          int  `json:"fps"`
+	Rotation     int  `json:"rotation"`
+	QueueBytes   int  `json:"queueBytes"`
 }
 
 // Packet 每包对应一个访问单元；IDR 包前附 SPS/PPS，PTS 从本次流启动起按微秒递增。

@@ -1,108 +1,141 @@
-// Package storages 对齐 AutoGo iOS 的本地存储 API（6 个函数）。
-//
-// 语义：按「表」分组存键值，值一律是字符串。表落成沙盒里的一个 JSON 文件
-// （<root>/.storages/<表名>.json），进程重启后仍在。
-//
-// 【为什么不用 NSUserDefaults】那是原生桥的另一条路径，每次 Put 都要过一次 JSON 往返；
-// 而这张表的读写都在 App 自己的沙盒里，直接用文件最省，也方便备份/导出。
+// Package storages 按参考样本的 database/sql + SQLite 路径保存分表字符串键值。
 package storages
 
 import (
-	"encoding/json"
+	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"autogov1/v2/sdk/ios/files"
 )
 
-var mu sync.Mutex
+var databaseState struct {
+	sync.Mutex
+	path   string
+	handle *sql.DB
+}
 
-func tableFile(table string) string {
+// database 复用当前工作根对应的连接。根变化时关闭旧连接，不跨工程复用数据库。
+// 参考样本使用执行目录下的 storages.db、默认 storages 表及 key/value 两列。
+func database() (*sql.DB, error) {
+	databaseState.Lock()
+	defer databaseState.Unlock()
+	filename := files.Path("storages.db")
+	if databaseState.handle != nil && databaseState.path == filename {
+		return databaseState.handle, nil
+	}
+	if databaseState.handle != nil {
+		_ = databaseState.handle.Close()
+		databaseState.handle = nil
+	}
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return nil, err
+	}
+	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(filename)}
+	if len(uri.Path) > 1 && uri.Path[1] == ':' {
+		uri.Path = "/" + uri.Path
+	}
+	query := uri.Query()
+	configureSQLite(query)
+	uri.RawQuery = query.Encode()
+	handle, err := sql.Open(sqliteDriver, uri.String())
+	if err != nil {
+		return nil, err
+	}
+	handle.SetMaxOpenConns(1)
+	if err = handle.Ping(); err != nil {
+		handle.Close()
+		return nil, err
+	}
+	databaseState.path = filename
+	databaseState.handle = handle
+	return handle, nil
+}
+func closeDatabase() {
+	databaseState.Lock()
+	defer databaseState.Unlock()
+	if databaseState.handle != nil {
+		_ = databaseState.handle.Close()
+	}
+	databaseState.handle = nil
+	databaseState.path = ""
+}
+func tableName(table string) string {
 	if table == "" {
-		table = "default"
+		table = "storages"
 	}
-	// 表名要做最小净化：不允许路径分隔符，避免 call 方把整个沙盒写穿。
-	safe := make([]rune, 0, len(table))
-	for _, r := range table {
-		if r == '/' || r == '\\' || r == 0 || r == '.' && len(safe) == 0 {
-			safe = append(safe, '_')
-			continue
-		}
-		safe = append(safe, r)
-	}
-	return files.Path(filepath.Join(".storages", string(safe)+".json"))
+	return `"` + strings.ReplaceAll(table, `"`, `""`) + `"`
 }
-
-func load(table string) map[string]string {
-	data, err := os.ReadFile(tableFile(table))
-	if err != nil || len(data) == 0 {
-		return map[string]string{}
+func Get(table, key string) string {
+	db, err := database()
+	if err != nil {
+		return ""
 	}
-	out := map[string]string{}
-	if json.Unmarshal(data, &out) != nil {
-		return map[string]string{}
-	}
-	return out
+	var value string
+	_ = db.QueryRow("SELECT value FROM "+tableName(table)+" WHERE key = ?", key).Scan(&value)
+	return value
 }
-
-func save(table string, data map[string]string) {
-	p := tableFile(table)
-	_ = os.MkdirAll(filepath.Dir(p), 0o755)
-	b, err := json.Marshal(data)
+func Put(table, key, value string) {
+	db, err := database()
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(p, b, 0o644)
-}
-
-// Get 取不到返回空串（与 AutoGo 一致，不区分"没有"和"空值"）。
-func Get(table, key string) string {
-	mu.Lock()
-	defer mu.Unlock()
-	return load(table)[key]
-}
-
-func Put(table, key, value string) {
-	mu.Lock()
-	defer mu.Unlock()
-	data := load(table)
-	data[key] = value
-	save(table, data)
-}
-
-func Remove(table, key string) {
-	mu.Lock()
-	defer mu.Unlock()
-	data := load(table)
-	if _, ok := data[key]; !ok {
+	name := tableName(table)
+	tx, err := db.Begin()
+	if err != nil {
 		return
 	}
-	delete(data, key)
-	save(table, data)
+	defer tx.Rollback()
+	if _, err = tx.Exec("CREATE TABLE IF NOT EXISTS " + name + " (key TEXT NOT NULL PRIMARY KEY, value TEXT)"); err != nil {
+		return
+	}
+	if _, err = tx.Exec("INSERT OR REPLACE INTO "+name+" (key, value) VALUES (?, ?)", key, value); err != nil {
+		return
+	}
+	_ = tx.Commit()
 }
-
+func Remove(table, key string) {
+	db, err := database()
+	if err != nil {
+		return
+	}
+	_, _ = db.Exec("DELETE FROM "+tableName(table)+" WHERE key = ?", key)
+}
 func Contains(table, key string) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	_, ok := load(table)[key]
-	return ok
+	db, err := database()
+	if err != nil {
+		return false
+	}
+	var count int
+	return db.QueryRow("SELECT COUNT(*) FROM "+tableName(table)+" WHERE key = ?", key).Scan(&count) == nil && count > 0
 }
-
-// GetAll 返回整张表的副本，调用方改它不会影响存储。
-func GetAll(table string) map[string]string {
-	mu.Lock()
-	defer mu.Unlock()
-	data := load(table)
-	out := make(map[string]string, len(data))
-	for k, v := range data {
-		out[k] = v
+func GetAll(table string) map[string]string { return load(table) }
+func load(table string) map[string]string {
+	out := map[string]string{}
+	db, err := database()
+	if err != nil {
+		return out
+	}
+	rows, err := db.Query("SELECT key, value FROM " + tableName(table))
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		if rows.Scan(&key, &value) == nil {
+			out[key] = value
+		}
 	}
 	return out
 }
-
 func Clear(table string) {
-	mu.Lock()
-	defer mu.Unlock()
-	_ = os.Remove(tableFile(table))
+	db, err := database()
+	if err != nil {
+		return
+	}
+	_, _ = db.Exec("DELETE FROM " + tableName(table))
 }

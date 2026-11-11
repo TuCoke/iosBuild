@@ -1,12 +1,12 @@
 // Package images 对齐 AutoGo iOS 的图像 API（23 个函数，同名同参同返回）。
 //
 // 分工：
-//   · 取图：CaptureScreen 走我们的 capture 包（CARenderServer + IOSurface）
-//   · 算法：复用 autogov1/v2/sdk/imaging 的纯 Go 实现（找色/比色/多点/阈值/裁剪）
-//   · 编解码：标准库 image/png、image/jpeg
 //
-// 【为什么算法复用安卓侧那份】它没有任何平台依赖（只吃 []byte + 宽高），
-// 而且已经在真机上被闲鱼/小红书模板用过；为 iOS 重写一份等于把踩过的坑再踩一遍。
+//	· 取图：CaptureScreen 走我们的 capture 包（CARenderServer + IOSurface）
+//	· 算法：复用 autogov1/v2/sdk/imaging 的纯 Go 实现（找色/比色/多点/阈值/裁剪）
+//	· 编解码：标准库 image/png、image/jpeg
+//
+// 样本 images 并非全部走 OpenCV；不能将识别引擎使用 OpenCV 与图像 API 的实现混为一谈。
 package images
 
 import (
@@ -14,7 +14,12 @@ import (
 	"context"
 	"encoding/base64"
 	"image"
+	"image/color"
 	"image/jpeg"
+	"math"
+	"runtime"
+
+	resample "github.com/disintegration/imaging"
 	"image/png"
 	"strings"
 	"sync"
@@ -23,6 +28,7 @@ import (
 	core "autogov1/v2/sdk/imaging"
 	"autogov1/v2/sdk/ios/capture"
 	"autogov1/v2/sdk/ios/files"
+	"autogov1/v2/sdk/ios/internal/native"
 )
 
 // Point 是 FindMultiColorsAll 的返回项（物理像素坐标）。
@@ -55,7 +61,7 @@ func grab() *image.NRGBA {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	f, err := capture.Screenshot(ctx, capture.Options{})
+	f, err := capture.Screenshot(ctx, capture.Options{AutoRotation: true})
 	if err != nil || len(f.Data) == 0 {
 		return nil
 	}
@@ -90,53 +96,48 @@ func CaptureScreen(x1, y1, x2, y2 int) *image.NRGBA {
 }
 
 // ---- 回调式取图 ----
-//
-// AutoGo 的 SetCallback 是"新帧到达就回调"。我们没有原生的连续采集回调，
-// 用固定节拍的拉取实现同样语义；传 nil 停止。
-var (
-	cbMu     sync.Mutex
-	cbFunc   func(*image.NRGBA)
-	cbStop   chan struct{}
-	cbPeriod = 100 * time.Millisecond
-)
+// 与参考实现一样使用原生连续采集；传 nil 停止。与 video.RawFrameStart 共享原始帧通道。
+var cbMu sync.Mutex
+var cbError error
 
-func SetCallback(callback func(img *image.NRGBA)) {
-	cbMu.Lock()
-	defer cbMu.Unlock()
-	if cbStop != nil {
-		close(cbStop)
-		cbStop = nil
+func SetCallback(callback func(*image.NRGBA)) {
+	err := native.RawStop()
+	if err == nil && callback == nil {
+		err = native.RawCallbackSet(nil)
 	}
-	cbFunc = callback
-	if callback == nil {
-		return
-	}
-	stop := make(chan struct{})
-	cbStop = stop
-	go func() {
-		ticker := time.NewTicker(cbPeriod)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				cbMu.Lock()
-				fn := cbFunc
-				cbMu.Unlock()
-				if fn == nil {
-					return
-				}
-				// 缓存必须绕过：回调要的就是"新帧"。
-				frameMu.Lock()
-				frameImg, frameAt = nil, time.Time{}
-				frameMu.Unlock()
-				if img := grab(); img != nil {
-					fn(img)
+	if err == nil && callback != nil {
+		err = native.RawCallbackSet(func(data []byte, w, h, stride int) {
+			img := image.NewNRGBA(image.Rect(0, 0, w, h))
+			for y := 0; y < h; y++ {
+				for x := 0; x < w; x++ {
+					src := y*stride + x*4
+					dst := y*img.Stride + x*4
+					img.Pix[dst], img.Pix[dst+1], img.Pix[dst+2], img.Pix[dst+3] = data[src+2], data[src+1], data[src], 255
 				}
 			}
+			frameMu.Lock()
+			cached := image.NewNRGBA(img.Bounds())
+			copy(cached.Pix, img.Pix)
+			frameImg, frameAt = cached, time.Now()
+			frameMu.Unlock()
+			callback(img)
+		})
+		if err == nil {
+			err = native.RawStart()
 		}
-	}()
+	}
+	cbMu.Lock()
+	cbError = err
+	cbMu.Unlock()
+}
+func CallbackError() error {
+	cbMu.Lock()
+	err := cbError
+	cbMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return native.CallbackError()
 }
 
 // ---- 像素与颜色 ----
@@ -354,107 +355,153 @@ func Clip(img *image.NRGBA, x1, y1, x2, y2 int) *image.NRGBA {
 	return dst
 }
 
-// Resize 用最近邻缩放：够快，且不引入额外依赖（AutoGo 走 opencv，效果更好但重得多）。
+// Resize 与样本相同使用 Lanczos（support=3）；一个维度为零时按比例计算。
 func Resize(img *image.NRGBA, width, height int) *image.NRGBA {
-	if img == nil || width <= 0 || height <= 0 {
+	if img == nil || img.Bounds().Empty() || width < 0 || height < 0 || (width == 0 && height == 0) {
 		return nil
 	}
-	src := img.Bounds()
-	sw, sh := src.Dx(), src.Dy()
-	dst := image.NewNRGBA(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		sy := y * sh / height
-		for x := 0; x < width; x++ {
-			sx := x * sw / width
-			copy(dst.Pix[y*dst.Stride+x*4:y*dst.Stride+x*4+4], img.Pix[sy*img.Stride+sx*4:sy*img.Stride+sx*4+4])
-		}
-	}
-	return dst
+	return resample.Resize(img, width, height, resample.Lanczos)
 }
 
-// Rotate 只支持 90 的整数倍（顺时针）；其它角度按最近的角度处理。
+// Rotate 接收顺时针角度；样本向 imaging.Rotate 传负角度，背景为透明 Alpha16(0)。
 func Rotate(img *image.NRGBA, degree int) *image.NRGBA {
-	if img == nil {
+	if img == nil || img.Bounds().Empty() {
 		return nil
 	}
-	d := ((degree % 360) + 360) % 360
-	d = (d / 90) * 90
-	b := img.Bounds()
-	w, h := b.Dx(), b.Dy()
-	switch d {
-	case 0:
-		return img
-	case 90, 270:
-		dst := image.NewNRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				var dx, dy int
-				if d == 90 {
-					dx, dy = h-1-y, x
-				} else {
-					dx, dy = y, w-1-x
-				}
-				copy(dst.Pix[dy*dst.Stride+dx*4:dy*dst.Stride+dx*4+4], img.Pix[y*img.Stride+x*4:y*img.Stride+x*4+4])
-			}
-		}
-		return dst
-	default: // 180
-		dst := image.NewNRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dx, dy := w-1-x, h-1-y
-				copy(dst.Pix[dy*dst.Stride+dx*4:dy*dst.Stride+dx*4+4], img.Pix[y*img.Stride+x*4:y*img.Stride+x*4+4])
-			}
-		}
-		return dst
-	}
+	return resample.Rotate(img, -float64(degree), color.Transparent)
 }
 
-// ---- 灰度与阈值 ----
+// parallelRows 只并行处理不同输出行，避免按屏幕高度无限创建 goroutine。
+func parallelRows(bounds image.Rectangle, work func(int)) {
+	workers := min(runtime.GOMAXPROCS(0), bounds.Dy())
+	if workers <= 0 {
+		return
+	}
+	var group sync.WaitGroup
+	group.Add(workers)
+	for worker := 0; worker < workers; worker++ {
+		go func(start int) {
+			defer group.Done()
+			for y := bounds.Min.Y + start; y < bounds.Max.Y; y += workers {
+				work(y)
+			}
+		}(worker)
+	}
+	group.Wait()
+}
 
+// Grayscale 走样本使用的 color.GrayModel，保留非零图像原点并正确处理 NRGBA 透明度。
 func Grayscale(img *image.NRGBA) *image.Gray {
 	if img == nil {
 		return nil
 	}
-	rgb, w, h := toRGB(img)
-	g := core.Grayscale(rgb, w, h)
-	out := image.NewGray(image.Rect(0, 0, w, h))
-	copy(out.Pix, g)
+	bounds := img.Bounds()
+	out := image.NewGray(bounds)
+	parallelRows(bounds, func(y int) {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			out.SetGray(x, y, color.GrayModel.Convert(img.NRGBAAt(x, y)).(color.Gray))
+		}
+	})
 	return out
 }
 
 func ApplyThreshold(img *image.NRGBA, threshold, maxVal int, typ string) *image.Gray {
-	if img == nil {
+	out := Grayscale(img)
+	if out == nil {
 		return nil
 	}
-	gray := Grayscale(img)
-	out := core.Threshold(gray.Pix, threshold, maxVal, typ)
-	dst := image.NewGray(gray.Bounds())
-	copy(dst.Pix, out)
-	return dst
+	bounds := out.Bounds()
+	parallelRows(bounds, func(y int) {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			value := int(out.GrayAt(x, y).Y)
+			switch typ {
+			case "BINARY":
+				if value > threshold {
+					value = maxVal
+				} else {
+					value = 0
+				}
+			case "BINARY_INV":
+				if value > threshold {
+					value = 0
+				} else {
+					value = maxVal
+				}
+			case "TRUNC":
+				value = min(value, threshold)
+			case "TOZERO":
+				if value <= threshold {
+					value = 0
+				}
+			case "TOZERO_INV":
+				if value > threshold {
+					value = 0
+				}
+				// 样本对未知类型保留原灰度，不静默替换成 BINARY。
+			}
+			out.SetGray(x, y, color.Gray{Y: uint8(value)})
+		}
+	})
+	return out
 }
 
+// ApplyAdaptiveThreshold 对齐样本的浮点阈值与边界处理；blockSize 应为正奇数。
+// MEAN_C 在边界外视为零，分母仍为 blockSize²；GAUSSIAN_C 按有效邻域权重归一化，sigma=blockSize。
 func ApplyAdaptiveThreshold(img *image.NRGBA, maxValue float64, adaptiveMethod, thresholdType string, blockSize int, C float64) *image.Gray {
-	if img == nil {
+	if img == nil || blockSize <= 0 || math.IsNaN(maxValue) || math.IsInf(maxValue, 0) || math.IsNaN(C) || math.IsInf(C, 0) {
 		return nil
 	}
 	gray := Grayscale(img)
-	b := gray.Bounds()
-	out := core.AdaptiveThreshold(gray.Pix, b.Dx(), b.Dy(), int(maxValue), adaptiveMethod, thresholdType, blockSize, int(C))
-	dst := image.NewGray(b)
-	copy(dst.Pix, out)
-	return dst
+	bounds := gray.Bounds()
+	out := image.NewGray(bounds)
+	radius := blockSize / 2
+	// 窗口外的权重不会使用；限制预计算长度为实际可能命中的距离。
+	rx, ry := min(radius, max(0, bounds.Dx()-1)), min(radius, max(0, bounds.Dy()-1))
+	gaussian := adaptiveMethod == "GAUSSIAN_C"
+	var wx, wy []float64
+	if gaussian {
+		wx = make([]float64, 2*rx+1)
+		wy = make([]float64, 2*ry+1)
+		sigma := float64(blockSize)
+		for i := -rx; i <= rx; i++ {
+			d := float64(i)
+			wx[i+rx] = math.Exp(-d * d / (2 * sigma * sigma))
+		}
+		for i := -ry; i <= ry; i++ {
+			d := float64(i)
+			wy[i+ry] = math.Exp(-d * d / (2 * sigma * sigma))
+		}
+	}
+	parallelRows(bounds, func(y int) {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			sum, weightSum := 0.0, 0.0
+			for ny := max(bounds.Min.Y, y-ry); ny <= min(bounds.Max.Y-1, y+ry); ny++ {
+				for nx := max(bounds.Min.X, x-rx); nx <= min(bounds.Max.X-1, x+rx); nx++ {
+					weight := 1.0
+					if gaussian {
+						weight = wx[nx-x+rx] * wy[ny-y+ry]
+					}
+					sum += float64(gray.GrayAt(nx, ny).Y) * weight
+					weightSum += weight
+				}
+			}
+			if !gaussian {
+				weightSum = float64(blockSize) * float64(blockSize)
+			}
+			threshold := sum/weightSum - C
+			over := float64(gray.GrayAt(x, y).Y) > threshold
+			value := uint8(0)
+			if (thresholdType == "BINARY" && over) || (thresholdType == "BINARY_INV" && !over) {
+				value = uint8(maxValue)
+			}
+			out.SetGray(x, y, color.Gray{Y: value})
+		}
+	})
+	return out
 }
 
 func ApplyBinarization(img *image.NRGBA, threshold int) *image.Gray {
-	if img == nil {
-		return nil
-	}
-	gray := Grayscale(img)
-	out := core.Binarize(gray.Pix, threshold)
-	dst := image.NewGray(gray.Bounds())
-	copy(dst.Pix, out)
-	return dst
+	return ApplyThreshold(img, threshold, 255, "BINARY")
 }
 
 // ---- 小工具 ----
@@ -477,4 +524,4 @@ func writeFile(p string, data []byte) bool {
 	return files.Exists(p)
 }
 
-func lowerExt(p string) string { return strings.ToLower(files.GetExtension(p)) }
+func lowerExt(p string) string { return "." + strings.ToLower(files.GetExtension(p)) }
