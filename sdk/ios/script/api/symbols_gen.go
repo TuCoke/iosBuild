@@ -315,6 +315,7 @@ var SDKPackages = interp.Exports{
 		"Wait":               reflect.ValueOf(sdkuiacc.Wait),
 	},
 	"autogov1/v2/sdk/ios/update/update": {
+		"ActiveLibrary": reflect.ValueOf(sdkupdate.ActiveLibrary),
 		"CaptureLoaded": reflect.ValueOf(sdkupdate.CaptureLoaded),
 		"Install":       reflect.ValueOf(sdkupdate.Install),
 		"Status":        reflect.ValueOf(sdkupdate.Status),

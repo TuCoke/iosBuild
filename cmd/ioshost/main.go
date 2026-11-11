@@ -124,10 +124,11 @@ func boolean(m map[string]any, key string) bool {
 //
 // 只监听 127.0.0.1，不监听 0.0.0.0 —— 避免局域网里的人直接连上来。
 var (
-	localAPIMu      sync.Mutex
-	localAPIServer  *http.Server
-	localAPIPort    int
-	localAPIStarted time.Time
+	executionControl sync.RWMutex // SDK 安装与整个脚本执行互斥，保证子进程加载的版本稳定。
+	localAPIMu       sync.Mutex
+	localAPIServer   *http.Server
+	localAPIPort     int
+	localAPIStarted  time.Time
 )
 
 func startLocalAPI(port int) error {
@@ -171,9 +172,17 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		return fail(contextError("缺少方法名"))
 	}
 	name := C.GoString(method)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	args := input(payload)
+	duration := 30 * time.Second
+	if name == "script.executeFile" {
+		ms := num(args, "timeoutMs", 120000)
+		if ms <= 0 || ms > 300000 {
+			return fail(contextError("脚本期限必须在 1..300000 毫秒"))
+		}
+		duration = time.Duration(ms) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
 
 	switch name {
 	case "capabilities":
@@ -215,6 +224,8 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(status)
 	case "sdk.install":
+		executionControl.Lock()
+		defer executionControl.Unlock()
 		raw, err := base64.StdEncoding.DecodeString(str(args, "base64"))
 		if err != nil {
 			return fail(err)
@@ -272,7 +283,19 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	case "tunnel.logs":
 		return okData(map[string]any{"logs": tunnel.Logs(int(num(args, "lines", 50)))})
 
+	case "script.executeFile":
+		// 仅供独立执行体在自己进程内调用；解释器和能力仍来自同一份动态 SDK。
+		params, _ := args["params"].(map[string]any)
+		runner := script.New(script.Options{Params: params, Timeout: duration})
+		res, err := runner.RunFile(ctx, str(args, "path"))
+		out := reply{OK: err == nil, Data: map[string]any{"logs": res.Logs, "result": res.Value, "elapsedMs": res.Elapsed.Milliseconds()}}
+		if err != nil {
+			out.Error = err.Error()
+		}
+		return encode(out)
 	case "script.run":
+		executionControl.RLock()
+		defer executionControl.RUnlock()
 		source := str(args, "source")
 		builtin := source == "" && str(args, "path") == ""
 		if builtin {
@@ -289,11 +312,14 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			"logs":      res.Logs,
 			"result":    res.Value,
 			"elapsedMs": res.Elapsed.Milliseconds(),
+			"processId": res.ProcessID,
 		})
 
 	case "script.status":
 		return okData(worker.Status())
 	case "script.remote":
+		executionControl.RLock()
+		defer executionControl.RUnlock()
 		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
 		res, err := runner.RunRemoteWithExecutor(ctx, script.RemoteOptions{
 			URL:       str(args, "url"),
@@ -306,7 +332,7 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})
 		}
 		return okData(map[string]any{"ok": true, "logs": res.Logs, "result": res.Value,
-			"elapsedMs": res.Elapsed.Milliseconds()})
+			"elapsedMs": res.Elapsed.Milliseconds(), "processId": res.ProcessID})
 
 	case "motion.tap":
 		if err := motion.Tap(ctx, num(args, "x", 0.5), num(args, "y", 0.5)); err != nil {

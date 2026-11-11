@@ -259,10 +259,11 @@
 }
 
 - (void)runScript {
-    [self append:[NSString stringWithFormat:@"script.run → %@",
-                  [self shorten:[AGBridge invoke:@"script.run"
-                                         payload:@"{\"name\":\"demo\",\"x\":0.5,\"y\":0.5}"]
-                             to:400]]];
+    NSString *raw=[AGBridge invoke:@"script.run" payload:@"{\"name\":\"demo\",\"x\":0.5,\"y\":0.5}"];
+    [self append:[NSString stringWithFormat:@"script.run → %@",[self shorten:raw to:600]]];
+    // CI 读取完整回执，不能仅凭启动截图或截断日志判断脚本进程执行成功。
+    NSData *data=[raw dataUsingEncoding:NSUTF8StringEncoding];
+    [data writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"script-check.json"] atomically:YES];
 }
 
 - (void)injectTap {
@@ -316,6 +317,7 @@
         NSString *label = p[0], *method = p[1], *payload = p[2];
         NSInteger before = self.tapCount;
         NSString *r = [AGBridge invoke:method payload:payload];
+        if([method isEqualToString:@"apkctl.selftest"])[[r dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[[self documentsDir] stringByAppendingPathComponent:@"js-check.json"] atomically:YES];
         [self append:[NSString stringWithFormat:@"%@ → %@", label, [self shorten:r to:200]]];
         if ([method isEqualToString:@"motion.tap"]) {
             __weak typeof(self) weakSelf = self;

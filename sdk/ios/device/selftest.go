@@ -31,10 +31,12 @@ type Check struct {
 type SelfTestResult struct {
 	// Touch 是"投一次点击"的结果：提交成功不代表界面响应，Detail 里会写清。
 	Touch Check `json:"touch"`
-	// Capture 是"抓一帧"的结果：全黑帧会被判为失败（能调但不生效）。
+	// Capture 表示采集是否返回非空图像；不在此推断图像内容或业务成功。
 	Capture Check `json:"capture"`
-	// Injected 只有 Touch 与 Capture 都成功时为 true。
-	Injected bool `json:"injected"`
+	// Injected 仅表示触摸事件已经提交；不依赖截图是否成功。
+	Injected         bool `json:"injected"`
+	CaptureSucceeded bool `json:"captureSucceeded"`
+	EffectVerified   bool `json:"effectVerified"`
 }
 
 // SelfTest 跑一次自检：在给定位置（归一化坐标，传 0.5/0.5 即屏幕中心）投一次点击，

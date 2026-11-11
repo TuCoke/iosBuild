@@ -196,7 +196,7 @@ jobs:
           cd host/ios/Frameworks
           if [ ! -d opencv2.framework ]; then
             curl -fL --retry 3 -o /tmp/opencv-ios.zip \
-              https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-ios-framework.zip \
+              https://github.com/opencv/opencv/releases/download/4.10.0/opencv-4.10.0-ios-framework.zip \
               && unzip -q /tmp/opencv-ios.zip -d /tmp/opencv-ios \
               && cp -R /tmp/opencv-ios/opencv2.framework . \
               || echo "::warning::OpenCV 下载失败，ag_rec.mm 会降级为无 OpenCV"
@@ -353,17 +353,13 @@ jobs:
             fi
           done
           echo "✅ 五个入口都导出了"
-          # 任务执行体：与参考实现同路径（Runtime/app），壳 posix_spawn 它，
-          # 然后通过 http://127.0.0.1:8989/{status,task?cmd=} 通信。
-          #
-          # 它 import 了 sdk/ios/script（解释器）→ 间接拉进 native 层，所以链接时要带：
-          #   host/ios/Frameworks/libagovnative.a  （AGRecognition / AGImGuiOverlay 的定义）
-          #   -L host/ios/Frameworks -limgui        （imgui_overlay.o 调 ImGui::）
-          #   -Wl,-rpath,@executable_path           （libimgui.dylib 与 app 同在 Runtime/）
+          # 原生任务启动器加载与宿主相同的动态 SDK，保持更新版本一致。
           mkdir -p host/ios/Runtime
-          export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
-          go build -buildmode=exe -trimpath -ldflags "-s -w" \
-            -o host/ios/Runtime/app ./cmd/runtimeapp
+          xcrun --sdk iphoneos clang -arch arm64 -isysroot "${SDK}" \
+            -mios-version-min="${IOS_MIN}" -fobjc-arc host/ios/RuntimeMain.m \
+            -framework Foundation -framework CoreFoundation \
+            -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/.. \
+            -o host/ios/Runtime/app
           file host/ios/Runtime/app
           ls -lh host/ios/Runtime/app
           ls -lh host/ios/Frameworks/libagovios.dylib
@@ -758,8 +754,11 @@ jobs:
           done
           echo "✅ 五个入口都导出了"
           mkdir -p host/ios/Runtime
-          export CGO_LDFLAGS="${CGO_LDFLAGS} host/ios/Frameworks/libagovnative.a -L host/ios/Frameworks -limgui -framework Metal -framework MetalKit -framework QuartzCore -lc++ -Wl,-rpath,@executable_path"
-          go build -buildmode=exe -trimpath -ldflags "-s -w" -o host/ios/Runtime/app ./cmd/runtimeapp
+          xcrun --sdk iphonesimulator clang -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
+            -mios-simulator-version-min="${IOS_MIN}" -fobjc-arc host/ios/RuntimeMain.m \
+            -framework Foundation -framework CoreFoundation \
+            -Wl,-rpath,@executable_path -Wl,-rpath,@executable_path/.. \
+            -o host/ios/Runtime/app
           ls -lh host/ios/Runtime/app
           ls -lh host/ios/Frameworks/libagovios.dylib
 
@@ -815,6 +814,8 @@ jobs:
             cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"; chmod +x "${APP}/frpc-ios"
             echo "已放入 frpc-ios"
           fi
+          # 独立执行体必须先签名，再签外层 App。
+          [ ! -f "${APP}/Runtime/app" ] || codesign -f -s - "${APP}/Runtime/app"
           # 往已签名的 app 里塞文件会让签名失效，模拟器也要重签一次
           codesign -f -s - "${APP}" 2>/dev/null || echo "（重签失败，模拟器通常仍可运行）"
           ls -lh "${APP}"; ls -lh "${APP}/Runtime" 2>/dev/null || true
@@ -830,7 +831,24 @@ jobs:
           [ -d "${APP}" ] || { echo "::error::没找到模拟器产物"; ls -R host/ios/build/Build/Products || true; exit 1; }
           xcrun simctl install "${UDID}" "${APP}"
           xcrun simctl launch "${UDID}" dev.autogov.host || true
-          sleep 8
+          # 安装后执行真正的工作进程和宿主 JS 检查；不再固定睡 8 秒便宣称成功。
+          CONTAINER=$(xcrun simctl get_app_container "${UDID}" dev.autogov.host data)
+          for attempt in $(seq 1 60); do
+            [ -f "${CONTAINER}/Documents/script-check.json" ] && [ -f "${CONTAINER}/Documents/js-check.json" ] && break
+            sleep 1
+          done
+          python3 - "${CONTAINER}/Documents" <<'PY'
+          import json, pathlib, sys
+          root=pathlib.Path(sys.argv[1])
+          script=json.loads((root/'script-check.json').read_text())
+          data=script.get('data',{})
+          assert script.get('ok') and data.get('ok'), '工作进程执行失败: '+str(data.get('error',script.get('error')))
+          assert data.get('processId',0)>0, '没有返回真实工作进程 PID'
+          assert data.get('result',{}).get('interpreterCompleted'), '解释器没有完整执行'
+          js=json.loads((root/'js-check.json').read_text())
+          assert js.get('ok') and js.get('data',{}).get('result')=='3', 'JavaScriptCore 通道没有实际返回 3'
+          print('工作进程 PID:',data['processId'],'；JavaScriptCore: 1+2=3')
+          PY
           xcrun simctl io "${UDID}" screenshot "${RUNNER_TEMP}/sim.png"
           ls -l "${RUNNER_TEMP}/sim.png"
 

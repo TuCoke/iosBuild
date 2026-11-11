@@ -20,8 +20,8 @@
 | Plist | 支持苹果属性列表数据 | 补齐二进制/XML、嵌套字典、数组、日期和 data，写失败如实返回 |
 | 宿主控制 | TCP 127.0.0.1:8990，messageID + length + status，大端；长度前缀字符串 | 删除轮询设计；建立请求匹配、事件推送、等待事件应答、断连唤醒和任务回调释放 |
 | JS 引擎 | 原生壳链接 JavaScriptCore；存在 AGAppCtlSession | 宿主使用 JavaScriptCore，每连接独立上下文；目前实现 Eval/消息/生命周期基础通道，完整 AGJSSelector/Struct/ActionTarget UI 桥仍未对齐 |
-| 脚本入口 | GoMain → chdirToExecutableDir → main → runGoFile/runZip | Runtime/app 改为文件/ZIP 执行后退出；不再凭 8989 URL 猜测为常驻源码 HTTP 服务 |
-| 进程隔离 | 壳包含 posix_spawn 等进程管理能力 | 宿主 script.run 使用独立工作进程，等待结束、超时终止、waitpid 回收；参数/结果文件为本项目明确自定义协议 |
+| 脚本入口 | GoMain → chdirToExecutableDir → main → runGoFile/runZip | Runtime/app 改为原生薄启动器，加载与宿主相同的动态 SDK 执行 Go/ZIP 后退出；Go CLI 保留为开发示例 |
+| 进程隔离 | 壳包含 posix_spawn 等进程管理能力 | 宿主 script.run/remote 使用独立工作进程，启动前 chmod(0755)、等待结束、超时终止、waitpid 回收；终止未知时隔离直到确认退出；参数/结果文件为本项目明确自定义协议 |
 | 更新目录 | 更新与实际加载路径必须对应 | Documents/Plugins 由原生解析；安装前校验 Mach-O/arm64/dylib 和可选 SHA256；临时文件同步后原子替换；重启生效 |
 | 加载来源 | 不能把候选文件当实际已加载库 | sdk.status 使用 dladdr 返回真实加载路径，并分别显示候选文件与加载文件摘要 |
 | 悬浮层 | ImGui + Metal，有独立全局宿主辅助进程 | 统一现有 C/Go 渲染入口、切主线程、分配不同面板 ID，修复绘制开关/帧参数/GPU 回调竞争；全局窗口辅助进程仍未实现 |
@@ -61,3 +61,15 @@
 - SQLite iOS 驱动：github.com/mattn/go-sqlite3 v1.14.27（MIT，许可附于 third_party/licenses）。
 - Plist：howett.net/plist v1.0.1（MIT，许可同上）。
 - 不使用 cimgui-go 最新版本直接替代样本绑定：现有上游新版本已到 ImGui 1.93，必须先核对样本 1.92.5 的 ABI 和对应生成器。
+
+## 后续运行证据与版本差距
+
+`ff984c8` 的 Apple 四项 CI 均通过，但从实际 app.log 发现 Runtime/app 安装后为 0644，script.run 因缺少执行位失败。因此这次绿色 CI 只能证明编译/打包/启动，不能作为脚本验收。样本宿主的 ARM64 调用点 `0x1000237b0`、`0x100023b4c`、`0x100023cd8`、`0x100025218`、`0x100027908`、`0x100027b20` 均存在 chmod，mode=0x1ed（0755）；已补齐执行体的这一准备步骤。
+
+本轮进一步将打包的 Runtime/app 改为 Foundation/CoreFoundation 的原生薄启动器，dlopen 宿主指定的同一份动态 SDK，调用 script.executeFile。SDK 不再同时被静态复制进任务二进制；整个任务期间与 SDK 安装互斥。同名已加载文件被更新替换后，要求先重启，避免旧宿主和新任务使用不同映像。Go cmd/runtimeapp 仍是开发用 CLI 示例，不是打包的工作进程。
+
+已实际验证的上轮运行结果：宿主 JS 通道 `1+2=3`、界面点击计数 0→1；截图仍返回 render server 错误 1。修复执行位及原生启动器后的验收，以后续 CI 的 processId、解释器完成回执、JS 结果断言为准。全量探针已区分“调用返回”“环境失败”“仅参数拒绝”“未验证”，不能把参数校验成功视为功能通过。
+
+样本原生库中的字符串进一步确认：OpenCV 4.10.0，ImGui `1.92.5 WIP (19244)`。旧构建下载了 4.12.0 的 OpenCV 头文件，现已锁回 4.10.0；当前 C RGBA 识别胶水不依赖 cv::Mat 的 C++ 布局。仓库现有 cimgui/ImGui 源码为 1.92.5 final（19250），仍不同于样本 19244；不能只改版本宏就宣称 ABI 一致。这项随完整 ImGui 生成绑定继续核实。上游 cimgui 的 1.92.5 WIP 提交也已到 19247，并不能直接当作样本原版。
+
+[函数名静态清单](ios-autogo-function-inventory.json) 分别记录参考程序中可见的公开函数/方法名和源码名称。基础分组目前没有发现名字缺项，但没有验证全部签名/语义；OpenCV 有 428 个候选函数/方法名未覆盖，ImGui 有数千项候选名称未覆盖。core 为转发门面，也尚未提供相同导入路径。不能将此名字清单换算成可用率。

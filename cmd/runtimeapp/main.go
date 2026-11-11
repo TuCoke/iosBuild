@@ -69,7 +69,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		files.SetRoot(root)
 	}
 	res, err := script.New(script.Options{Params: params, Timeout: *timeout}).RunFile(context.Background(), filename)
-	reply := worker.Reply{OK: err == nil, Logs: res.Logs, Value: res.Value, ElapsedMS: res.Elapsed.Milliseconds()}
+	reply := worker.Reply{ProcessID: os.Getpid(), OK: err == nil, Logs: res.Logs, Value: res.Value, ElapsedMS: res.Elapsed.Milliseconds()}
 	code := 0
 	if err != nil {
 		reply.Error = err.Error()

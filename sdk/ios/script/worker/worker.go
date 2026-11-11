@@ -14,17 +14,21 @@ import (
 	"autogov1/v2/sdk/ios/device"
 	"autogov1/v2/sdk/ios/internal/native"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/types"
+	"autogov1/v2/sdk/ios/update"
 )
 
 // 同一设备同一时刻只启动一个工作进程，防止不同解释器同时写入设备。
 var gate = make(chan struct{}, 1)
 var state struct {
 	sync.Mutex
-	PID     int
-	Started time.Time
+	PID       int
+	Started   time.Time
+	Directory string
 }
 
 type Reply struct {
+	ProcessID int      `json:"processId"`
 	OK        bool     `json:"ok"`
 	Error     string   `json:"error,omitempty"`
 	Logs      []string `json:"logs,omitempty"`
@@ -46,6 +50,23 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 		defer func() { <-gate }()
 	case <-ctx.Done():
 		return script.Result{}, ctx.Err()
+	}
+	// 上一次终止结果未知时保留隔离状态；确认旧进程退出前不得启动下一份脚本。
+	state.Lock()
+	previous, previousDir := state.PID, state.Directory
+	state.Unlock()
+	if previous > 0 {
+		var wait struct {
+			Finished bool `json:"finished"`
+		}
+		if err := native.Call(ctx, "utils.wait", map[string]any{"pid": previous}, &wait); err != nil || !wait.Finished {
+			return script.Result{}, fmt.Errorf("%w: 上一工作进程 %d 尚未确认退出", types.ErrBusy, previous)
+		}
+		_ = os.RemoveAll(previousDir)
+		state.Lock()
+		state.PID = 0
+		state.Directory = ""
+		state.Unlock()
 	}
 	paths, err := device.Paths(ctx)
 	if err != nil {
@@ -76,6 +97,9 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 			return script.Result{}, err
 		}
 	}
+	if params == nil {
+		params = map[string]any{}
+	}
 	parameters, err := json.Marshal(params)
 	if err != nil {
 		return script.Result{}, err
@@ -95,10 +119,19 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 	if timeout <= 0 {
 		return script.Result{}, ctx.Err()
 	}
+	// 样本宿主在拉起 Runtime 文件前调用 chmod(0755)；安装器可能把资源权限还原为 0644。
+	binary := filepath.Join(paths.Bundle, "Runtime", "app")
+	if err = os.Chmod(binary, 0755); err != nil {
+		return script.Result{}, fmt.Errorf("准备工作进程执行权限失败: %w", err)
+	}
+	sdkLibrary, err := update.ActiveLibrary(ctx)
+	if err != nil {
+		return script.Result{}, err
+	}
 	var launched struct {
 		PID int `json:"pid"`
 	}
-	err = native.Call(ctx, "utils.spawn", map[string]any{"path": filepath.Join(paths.Bundle, "Runtime", "app"), "args": []string{"--result", resultPath, "--params", paramsPath, "--timeout", timeout.String(), filename}, "logPath": filepath.Join(dir, "worker.log")}, &launched)
+	err = native.Call(ctx, "utils.spawn", map[string]any{"path": binary, "args": []string{"--result", resultPath, "--params", paramsPath, "--sdk", sdkLibrary, "--timeout-ms", fmt.Sprint(timeout.Milliseconds()), filename}, "logPath": filepath.Join(dir, "worker.log")}, &launched)
 	if err != nil {
 		return script.Result{}, err
 	}
@@ -109,8 +142,16 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 	state.Lock()
 	state.PID = pid
 	state.Started = time.Now()
+	state.Directory = dir
 	state.Unlock()
-	defer func() { state.Lock(); state.PID = 0; state.Unlock() }()
+	defer func() {
+		if clean {
+			state.Lock()
+			state.PID = 0
+			state.Directory = ""
+			state.Unlock()
+		}
+	}()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -127,7 +168,10 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 			if err = json.Unmarshal(body, &reply); err != nil {
 				return script.Result{}, err
 			}
-			res := script.Result{Logs: reply.Logs, Value: reply.Value, Elapsed: time.Duration(reply.ElapsedMS) * time.Millisecond}
+			if reply.ProcessID != pid {
+				return script.Result{}, fmt.Errorf("工作进程结果 PID 不匹配: 期望 %d，实际 %d", pid, reply.ProcessID)
+			}
+			res := script.Result{ProcessID: pid, Logs: reply.Logs, Value: reply.Value, Elapsed: time.Duration(reply.ElapsedMS) * time.Millisecond}
 			if !reply.OK || wait.Code != 0 {
 				return res, fmt.Errorf("脚本工作进程失败(code=%d): %s", wait.Code, reply.Error)
 			}

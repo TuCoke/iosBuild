@@ -30,9 +30,10 @@ type Options struct {
 	ImportAliases map[string]string
 }
 type Result struct {
-	Value   any
-	Logs    []string
-	Elapsed time.Duration
+	ProcessID int // 独立工作进程的 PID；内嵌执行时为 0。
+	Value     any
+	Logs      []string
+	Elapsed   time.Duration
 }
 type Runner struct {
 	opts Options

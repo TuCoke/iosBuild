@@ -170,3 +170,18 @@ func Status(ctx context.Context) (map[string]any, error) {
 	pending := installed["exists"] == true && installed["sha256"] != loaded["sha256"]
 	return map[string]any{"loaded": loaded, "loadedFileNow": fileStatus(paths.LoadedImage), "candidate": installed, "runningBuild": runningBuild(), "pluginsDir": filepath.Dir(filename), "pendingRestart": pending, "restartRequiredForInstall": true}, nil
 }
+
+// ActiveLibrary 返回当前进程实际使用的 SDK 文件。更新替换了同名文件时要求先重启，
+// 防止宿主仍是旧内存映像而新任务悄悄加载了待生效的新版本。
+func ActiveLibrary(ctx context.Context) (string, error) {
+	if err := CaptureLoaded(ctx); err != nil {
+		return "", err
+	}
+	snapshot := snapshotCopy()
+	filename, _ := snapshot["path"].(string)
+	current := fileStatus(filename)
+	if current["exists"] != true || current["sha256"] != snapshot["sha256"] {
+		return "", fmt.Errorf("SDK 文件已变化，请重启宿主后再执行脚本")
+	}
+	return filename, nil
+}
