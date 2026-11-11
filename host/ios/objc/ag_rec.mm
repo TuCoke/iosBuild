@@ -92,7 +92,12 @@ ag_ios_result AGRecognition(NSString *op,NSDictionary *args){
   int w=0,h=0;NSData *pixels=AGRGBA(args[@"base64"],&w,&h);
   if(!pixels && [op isEqualToString:@"yolo.detect"]){pixels=engine->image;w=engine->width;h=engine->height;}
   if(!pixels)return AGError(2,@"识别图片解码失败或没有预置图像");
-  if(isPP && [op isEqualToString:@"ppocr.ocr"])return AGItems(ppOcr(engine->handle,(const uint8_t *)pixels.bytes,w,h,(args[@"color"] ?: @"").UTF8String));
+  if(isPP && [op isEqualToString:@"ppocr.ocr"]){
+   // 字典下标返回 id；先检查并保存为 NSString，供 ObjC++ 正确解析 UTF8String 属性。
+   NSString *color=args[@"color"] ?: @"";
+   if(![color isKindOfClass:[NSString class]])return AGError(2,@"OCR 颜色参数必须是字符串");
+   return AGItems(ppOcr(engine->handle,(const uint8_t *)pixels.bytes,w,h,color.UTF8String));
+  }
   if(isYolo && ([op isEqualToString:@"yolo.detect"] || [op isEqualToString:@"yolo.detect_image"])){
    float probability=args[@"threshold"]?[args[@"threshold"] floatValue]:0.35f,nms=args[@"nms"]?[args[@"nms"] floatValue]:0.25f;int target=[args[@"targetSize"] intValue];if(target<=0)target=640;
    if(probability<0 || probability>1 || nms<0 || nms>1 || target>4096)return AGError(2,@"YOLO 检测阈值或尺寸越界");
