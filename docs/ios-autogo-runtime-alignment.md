@@ -84,3 +84,15 @@
 
 
 执行体补充了独立看护：每秒检查宿主是否仍为父进程，宿主退出则结束任务；另外设置进程级硬期限，避免 SDK 内部原生调用阻塞后留下永久进程。进程终止仍不代表已经提交给系统的动作能够回滚。自检的 unsupported 明确表示当前构建/系统不支持，不再把模拟器缺少私有入口或未装识别库一律写成“源码未实现”。
+
+## 最终本轮验证（97cae42）
+
+构建记录：https://github.com/TuCoke/iosBuild/actions/runs/42975852051 。Go 检查、iPhoneOS SDK 编译、完整 App 打包、模拟器关键链路四项均通过。
+
+模拟器产物中的 `script-check.json` 记录：processId=5874，解释器耗时 133ms，data.ok=true，result.interpreterCompleted=true，result.touchSubmitted=true。`js-check.json` 记录 JavaScriptCore 实际返回字符串 3。界面日志记录目标块点击计数 0→1。
+
+示例的 result.captureSucceeded=false、result.effectVerified=false、result.ok=false，原因仍为 render server 错误 1；没有把这些字段改成成功。70 项探针的计数为：调用返回成功 37、环境失败 7、当前构建/环境不支持 2、跳过有副作用项 6、仅验证参数拒绝 18、未运行 0。此统计不是“70 项设备能力全部可用”。
+
+本轮验证了正常进程完成和 JS 通道。父进程意外退出看护、进程硬期限已经实现并通过 Apple 编译，但没有单独注入杀宿主或不可中断原生阻塞来验收。SDK 安装后的真实手机重启加载、回滚，以及截图/视频/AX/识别等真机功能仍需真机验收。
+
+最终代码同步到主仓库 `v2/sdk/ios` 及 `v2/ios` 构建镜像；SDK 源码比较未发现内容差异（忽略换行）。iOS 构建仓库验证分支为 `codex/ios-reference-runtime-20261111`。未将主仓库其他 Android、WDA 或本地内核的未提交改动混入验证分支。
