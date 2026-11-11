@@ -70,5 +70,3 @@ func TestDetectsMultiColors(t *testing.T) {
 		t.Fatal("颜色不符不该命中")
 	}
 }
-
-

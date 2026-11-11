@@ -1,5 +1,7 @@
 # AutoGo iOS 运行逻辑对齐记录
 
+> 当前总表：[AutoGo iOS 对标进度与缺项](ios-autogo-status.md)。本文件保留对应分析时点的细节，完成状态以总表为准。
+
 日期：2026-11-11。主能力目录为 `v2/sdk/ios`；独立 Apple 构建镜像为 `v2/ios`。本轮不修改 Android、Agent 或 MCP。
 
 ## 参考依据和范围

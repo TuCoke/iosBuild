@@ -1,5 +1,7 @@
 # iosBuild — iOS 设备能力 SDK（编译验证仓）
 
+当前完整对标与缺项：[iOS SDK 状态总表](docs/ios-autogo-status.md)。
+
 这个仓库只放 **iOS 能力 SDK 的源码** 和 **它的编译验证工作流**，不含服务端、控制台、安卓任何内容。
 
 最新截图/AX 根因、修复和 SDK 原生 JPEG 验收记录：[截图与节点树失败定位](docs/ios-capture-ax-diagnostics.md)。模拟器结果与真机验收边界分别记录。

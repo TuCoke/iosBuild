@@ -1,5 +1,7 @@
 # iOS SDK：按 AutoGo 技术栈与调用逻辑对齐
 
+> 当前总表：[AutoGo iOS 对标进度与缺项](ios-autogo-status.md)。本文件保留对应分析时点的细节，完成状态以总表为准。
+
 > 运行链路与剩余完整性差距见 [后续对齐记录](ios-autogo-runtime-alignment.md)。SQLite、宿主控制和工作进程已继续修正；完整 OpenCV/ImGui、全局悬浮宿主和原生 JS UI 桥仍未对齐。
 
 更新：2026-11-11。本轮覆盖用户图片中的全部分组，不改云控 Agent、MCP 或服务端路由。

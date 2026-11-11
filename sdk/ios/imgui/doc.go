@@ -1,15 +1,10 @@
-// Package imgui 是 Dear ImGui（cimgui）的 Go 绑定占位。
+// Package imgui 提供 Dear ImGui / cimgui 的基础 Go 绑定。
 //
-// 【为什么是占位】AutoGo 的 iOS imgui 包有 4835 个导出符号 —— 它们不是手写的，
-// 是用 cimgui 的 C API（imgui.h / cimgui.h）批量生成的绑定。手抄没有意义，
-// 而且会立刻和上游版本漂移。
+// 当前已有 12 个基础函数，供 HUD/Console 的 ImGui + Metal 面板使用；
+// 不是完整生成绑定，不能把原生 cimgui 的全部导出符号当成 Go API 已覆盖。
+// Button、输入框、表格等完整控件、结构访问器与脚本绑定仍需生成和封装。
 //
-// 生成方式（与 AutoGo 同一套）：
-//  1. 原生：把 cimgui 编成 iOS arm64 dylib（libimgui.dylib，AutoGo 那份 1.8 MB）
-//  2. 绑定：用 cimgui 的 C 头做机械转换，一个 C 函数对应一个 Go 函数，
-//     命名沿用 ImGui 原名（Begin/End/Text/Button…），参数按 C 类型映射
-//  3. 生成物放 imgui/gen_*.go，不要手改
-//
-// 目前 SDK 里没有任何业务代码依赖 imgui：我们的窗口/悬浮 UI 走 WebView 与服务端控制台。
-// 等要做"设备端悬浮控制台"时再按上面的流程生成，避免现在引入 4 万行无法维护的绑定。
+// 当前 vendor 为 1.92.5 / 19250；样本有 1.92.5 WIP / 19244 的版本记录，
+// 不宣称具体版本及全部接口完全相同。当前面板依附宿主 WindowScene，
+// 独立的跨 App 全局悬浮宿主仍未实现。当前状态见 docs/ios-autogo-status.md。
 package imgui

@@ -1,29 +1,24 @@
 # iOS 设备能力 SDK
 
-> 2026-11-11 运行链路补充：见独立镜像 `docs/ios-autogo-runtime-alignment.md`（主仓库 `v2/docs/references/memory/ios-autogo-runtime-alignment.md`）。已重做 SQLite、宿主 TCP/JavaScriptCore 与文件/ZIP 工作进程；完整 OpenCV/ImGui 绑定和全局悬浮宿主仍有明确差距。
-
-> 2026-11-11 已继续按样本校正输入、方向、视频回调、AX、应用管理与识别 ABI。当前结论见主仓库 `v2/docs/references/memory/ios-autogo-sdk-alignment.md`；本轮原生源码尚待 Apple 编译与真机验收。
-
-> 2026-11-11 状态核查：见主仓库 `v2/docs/references/memory/ios-autogo-stack-audit.md`。下面早期接口与构建记录应按核查中的当前状态理解。
-
+> 当前进度与明确缺项见 [AutoGo iOS 对标总表](../../docs/ios-autogo-status.md)。已有实现、已验证范围、缺少的代码和运行差异分别登记；历史文档不再作为当前完成状态。
 
 源码位于 `v2/sdk/ios/`，属于现有 `autogov1/v2` 模块。与安卓 SDK 独立；当前不迁移安卓目录、不改 Agent、不接入 MCP；已包含 Go 脚本解释器，区别于服务器 JS 工作流。
 
 ## 代码状态
 
-这是参考 AutoGo iOS 资源包的接口与静态调用关系，独立编写的第一版实现。没有链接、复制或打包 `AutoGo-ios/resources/libs/ios/libgoeval.dylib`。仓库有后续 Apple 构建与模拟器记录；这些记录不代表所有跨 App 能力已在真机验证。2026-11-11 的 AX 原生改动尚待 Apple 编译和真机验收。
+当前源码依据提供样本的接口和静态调用关系独立实现，不加载闭源 `libgoeval.dylib` 充当本项目 SDK。真实 iPhoneOS/CGo 编译、IPA/DEB 打包与模拟器功能检查已通过。
 
-2026-11-09 补充验证：Windows 下的 Go 编译和 Go 单元测试已通过；iOS/arm64 原生构建因本机缺少 `clang` 而失败。该结果不证明 Objective-C 已可编译，也不证明手机操作已生效。详细命令和范围见 [验证记录](ANALYSIS.md#验证记录)。
+SDK 原生 JPEG 已查看确认内容与方向；AX 在宿主和独立进程分别采集到 79 / 80 个真实节点，脚本内截图和宿主 JavaScriptCore 基础通道也已通过。本轮没有实体 iPhone 验收，不能将这些结果推广到全部跨 App 能力。完整 OpenCV/ImGui 绑定、全局悬浮宿主、JS 原生 UI 桥和依赖交付/更新恢复仍有明确缺项。
 
 | 模块 | 已写入的实现 | 尚需确认的部分 |
 | --- | --- | --- |
 | motion | 点击、长按、滑动、完整多指帧、双指缩放、输入串行、取消抬手 | IOHID 权限、事件来源、各机型实际响应 |
 | ime | 已核实 ABI 的 UTF-8 Unicode、系统组合字符分段、HID 按键、部分输入失败语义 | 各应用输入效果及系统授权需真机验收 |
-| capture | 渲染服务器 → IOSurface → PNG/JPEG、缩放、方向转换 | 系统权限、方向、黑屏及受保护画面 |
+| capture | 渲染服务器 → IOSurface → PNG/JPEG；模拟器已实际出图 | 真机系统权限、方向、黑屏及受保护画面 |
 | video | VideoToolbox H.264、Annex B、SPS/PPS、PTS、调码率、请求 IDR、有界缓冲、停止释放 | 真机编码表现、CPU/延迟、与现有媒体源约定适配 |
 | app | 启动应用、应用列表、查询前台应用 | 私有选择器与权限适配；启动被接受不等于前台已切换 |
 | device | 系统版本、型号、电量、显示信息、剪贴板、亮度、系统按键、锁屏请求 | 读取限制、后台行为；不提供密码锁绕过 |
-| uiacc | AX 私有快照、坐标补采、共享刷新、带 context 查询、任务结束释放 | 本轮原生重写尚待 Apple 编译、权限与跨 App 真机验收 |
+| uiacc | AX 私有快照、共享刷新、查询与任务释放；模拟器真实节点验证通过 | 初始化顺序差异、权限与跨 App 真机验收 |
 | images | Lanczos、任意角度旋转、透明度灰度、样本阈值语义、连续帧回调 | 找色与闭源样本尚未逐像素比对；完整 OpenCV Go 绑定仍未提供 |
 | OCR/YOLO | Go API 与识别胶水已有；独立镜像构建引用 iOS 预编译识别库 | 模型、来源、C++ ABI 和真实识别结果待验收，不能复用安卓二进制 |
 | script | 独立任务状态、SDK 类型绑定、取消、工程/ZIP/import/embed | 宿主已接工作进程看护；完整 Yaegi 分支、第三方绑定仍待对齐 |
@@ -108,7 +103,7 @@ for {
 
 原生文件只参与 `ios && cgo` 构建。需要 Apple 工具链、真实设备 SDK 和 arm64 目标；Windows 上的 stub 可导入，但不能操作手机。Objective-C 文件当前使用手工引用计数，不应全局强制 ARC。
 
-本 SDK 使用 UIKit，宿主必须已经运行主线程事件循环，且不能阻塞主线程等待执行 SDK 的 Go 工作线程。`examples` 是宿主调用示例库，不是可直接安装的 IPA。单独的 Go 命令行 bin、iOS 启动器、签名、安装、权限配置、Agent 入口和热更新均未在本轮实现。
+本 SDK 使用 UIKit，宿主必须运行主线程事件循环，且不能阻塞主线程等待执行 SDK 的 Go 工作线程。`examples` 是调用示例库。已有 ObjC 宿主、原生 `Runtime/app` 薄执行体、Go/ZIP 独立任务进程与 CI 打包；执行体加载与宿主相同的动态 SDK。`update/` 已实现候选库安装和重启后加载，完整平台/依赖校验、升级健康检查与恢复仍待完善。实体设备的安装授权与最终效果仍需验收；Agent/MCP 装配另列。
 
 私有符号可用性与系统授权是两回事。当前实现不安装提权工具、不修改系统授权、不执行漏洞。TrollStore、越狱或其他已授权运行环境的适用系统版本需要单独确认，不能根据包中出现某个函数推断所有 iPhone 都可运行。
 

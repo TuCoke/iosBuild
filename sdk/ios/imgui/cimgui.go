@@ -2,14 +2,12 @@
 
 // Package imgui 是 cimgui（Dear ImGui 的 C API）的 Go 绑定。
 //
-// 【依据（逆向 libimgui.dylib 实测）】
-// 参考实现的 libimgui.dylib 导出 6527 个符号，UI 入口是 ig* 那一套
-// （_igNewFrame / _igBegin / _igEnd / _igTextUnformatted / _igSetNextWindowPos …），
-// 版本号串是 1.92.5，并且带 __Z24ImGui_ImplMetal_NewFrame… → 官方 Metal 后端。
-// 所以它 = imgui 1.92.5 + cimgui 生成产物 + imgui_impl_metal，编成独立 dylib。
+// 参考样本包含 ig* C 接口和 Metal 后端；当前 vendor 为 1.92.5 / 19250，
+// 样本记录为 1.92.5 WIP / 19244，不能仅凭版本名称宣称完全一致。
+// 本文件只封装基础窗口、文字、样式与滚动接口；完整 Go 控件绑定仍缺。
 //
 // 【我们照同一结构】
-//   host/ios/third_party/cimgui/        cimgui 1.92.5（cimgui.h / cimgui.cpp）
+//   host/ios/third_party/cimgui/        cimgui 当前 vendor（cimgui.h / cimgui.cpp）
 //   host/ios/third_party/cimgui/imgui/  imgui 1.92.5（子模块布局）
 //   → CI 编成独立 libimgui.dylib，libagovios 用 @rpath 链接
 //
