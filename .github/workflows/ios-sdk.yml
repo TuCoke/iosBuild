@@ -500,6 +500,23 @@ jobs:
           fi
           echo "放进包内的文件："; ls -lh "${APP}"
 
+      - name: 注入可编辑的默认穿透密钥
+        env:
+          IOS_FRPS_TOKEN: ${{ secrets.IOS_FRPS_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, plistlib
+          token = os.environ.get('IOS_FRPS_TOKEN', '')
+          if token:
+              path = pathlib.Path('host/ios/build/Build/Products/Release-iphoneos/AgovHost.app/Info.plist')
+              data = plistlib.loads(path.read_bytes())
+              data['AGDefaultFrpsToken'] = token
+              path.write_bytes(plistlib.dumps(data, fmt=plistlib.FMT_BINARY))
+              print('默认穿透凭据已注入安装包；密钥不输出到日志')
+          else:
+              print('未配置 IOS_FRPS_TOKEN，安装后需在穿透设置手动填写')
+          PY
+
       - name: 安装打包工具（ldid / dpkg）
         run: |
           set +e

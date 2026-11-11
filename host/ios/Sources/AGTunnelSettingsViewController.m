@@ -23,7 +23,7 @@ static NSMutableDictionary *AGTunnelTokenQuery(void) {
 
 + (NSDictionary *)configurationWithError:(NSError **)error {
     NSMutableDictionary *config=[@{@"server":@"49.235.187.13",@"serverPort":@7000,
-                                   @"localPort":@18990,@"remotePort":@18990,
+                                   @"localPort":@18989,@"remotePort":@18989,
                                    @"name":@"agov-iphone",@"disableTls":@NO} mutableCopy];
     NSDictionary *saved=[[NSUserDefaults standardUserDefaults] dictionaryForKey:AGTunnelDefaultsKey];
     if(saved)[config addEntriesFromDictionary:saved];
@@ -36,7 +36,13 @@ static NSMutableDictionary *AGTunnelTokenQuery(void) {
     if(status==errSecSuccess){
         NSData *data=CFBridgingRelease(result);
         config[@"token"]=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
-    }else if(status==errSecItemNotFound){config[@"token"]=@"";}
+    }else if(status==errSecItemNotFound){
+        // 仅首次无已保存密钥、且仍使用对应服务器时使用构建预填值。
+        // 构建密钥由 CI 注入安装包，不在 Git 中保存；用户保存后的 Keychain 值优先。
+        id preset=NSBundle.mainBundle.infoDictionary[@"AGDefaultFrpsToken"];
+        BOOL matching=[config[@"server"] isEqualToString:@"49.235.187.13"] && [config[@"serverPort"] integerValue]==7000;
+        config[@"token"]=(matching && [preset isKindOfClass:NSString.class]) ? preset : @"";
+    }
     else {AGTunnelFail(error,[NSString stringWithFormat:@"读取 frps 密钥失败（Keychain %d）",(int)status]);return nil;}
     return config;
 }
