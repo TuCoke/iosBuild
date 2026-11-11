@@ -119,24 +119,26 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 	if timeout <= 0 {
 		return script.Result{}, ctx.Err()
 	}
-	// 【为什么不再直接对包内 Runtime/app 做 chmod】
-	// 真机日志实测（iPhone 11 / iOS 16.5.1）：
-	//   chmod /private/var/containers/Bundle/Application/…/AgovHost.app/Runtime/app:
-	//   operation not permitted
-	// App 包在设备上是只读挂载的，运行期 chmod 必然失败；模拟器的 App 包可写，
-	// 所以这条只在真机暴露。做法：复制到沙盒可写目录（Documents/Worker）再 chmod。
-	binary, err := prepareWorkerBinary(paths)
+	// 先确认当前实际加载的 SDK，再准备与其匹配的独立进程运行目录。
+	sdkLibrary, err := update.ActiveLibrary(ctx)
 	if err != nil {
 		return script.Result{}, err
 	}
-	sdkLibrary, err := update.ActiveLibrary(ctx)
+	binary, err := prepareWorkerBinary(ctx, paths, sdkLibrary)
 	if err != nil {
+		return script.Result{}, err
+	}
+	// 文件准备也消耗任务期限，不能给子进程传入准备之前的剩余时间。
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	if err := ctx.Err(); err != nil {
 		return script.Result{}, err
 	}
 	var launched struct {
 		PID int `json:"pid"`
 	}
-	err = native.Call(ctx, "utils.spawn", map[string]any{"path": binary, "args": []string{"--result", resultPath, "--params", paramsPath, "--sdk", sdkLibrary, "--timeout-ms", fmt.Sprint(timeout.Milliseconds()), filename}, "logPath": filepath.Join(dir, "worker.log")}, &launched)
+	err = native.Call(ctx, "utils.spawn", map[string]any{"path": binary, "args": []string{"--result", resultPath, "--params", paramsPath, "--sdk", sdkLibrary, "--bundle", paths.Bundle, "--timeout-ms", fmt.Sprint(timeout.Milliseconds()), filename}, "logPath": filepath.Join(dir, "worker.log")}, &launched)
 	if err != nil {
 		return script.Result{}, err
 	}
@@ -201,74 +203,4 @@ func stopWorker(pid int, dir string, clean *bool, cause error) error {
 		return fmt.Errorf("%w；未确认工作进程退出，保留现场 %s: %v", cause, dir, err)
 	}
 	return cause
-}
-
-// prepareWorkerBinary 把包内的 Runtime/app 复制到沙盒可写目录，并在那里设置执行位。
-//
-// 【为什么必须复制】
-// 设备上的 App 包是只读挂载，运行期 chmod 一定 operation not permitted（真机实测）。
-// Documents/Worker 属于 App 自己，chmod 才能成功。
-//
-// 【为什么先比对大小】
-// 工作进程二进制十几 MB，每次跑脚本都拷一遍没必要；大小一致就复用，
-// 只重设权限。内容不一致（SDK 升级后）才重新写。
-func prepareWorkerBinary(paths device.RuntimePaths) (string, error) {
-	src := filepath.Join(paths.Bundle, "Runtime", "app")
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return "", fmt.Errorf("读取工作进程失败: %w", err)
-	}
-	if len(data) == 0 {
-		return "", fmt.Errorf("工作进程二进制为空: %s", src)
-	}
-	dir := filepath.Join(paths.Documents, "Worker")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("创建工作进程目录失败: %w", err)
-	}
-	dst := filepath.Join(dir, "app")
-	if old, err := os.ReadFile(dst); err == nil && len(old) == len(data) {
-		if err := os.Chmod(dst, 0755); err == nil {
-			// 二进制没变也要确保依赖库在位（用户可能手动清过 Documents）
-			copyWorkerDylibs(paths.Bundle, dir)
-			return dst, nil
-		}
-	}
-	if err := os.WriteFile(dst, data, 0755); err != nil {
-		return "", fmt.Errorf("写入工作进程失败: %w", err)
-	}
-	if err := os.Chmod(dst, 0755); err != nil {
-		return "", fmt.Errorf("设置工作进程执行权限失败: %w", err)
-	}
-	// 【必须把依赖库一起搬过来】
-	// 真机日志实测：工作进程从 Documents/Worker 启动后
-	//   dlopen(bundle/libagovios.dylib) → "Library not loaded: @rpath/libimgui.dylib"
-	// 原因：libagovios.dylib 的 install_name 是 @rpath/libimgui.dylib，
-	//      dyld 只用【可执行文件】的 rpath 解析（这里是 Documents/Worker），
-	//      而 libimgui.dylib 在 App 包根目录，找不到。
-	// 处理：把包里会被 @rpath 引用的 dylib 复制到工作进程同目录。
-	copyWorkerDylibs(paths.Bundle, dir)
-	return dst, nil
-}
-
-// copyWorkerDylibs 把 App 包里会被 @rpath 引用的动态库复制到工作进程目录。
-//
-// 目前是 libimgui.dylib（libagovios.dylib 的依赖）。
-// 识别栈的 libppocr/libncnn/libopencv_* 由 ag_rec 用绝对路径 dlopen，
-// 不经过 @rpath，所以不在这里搬。
-// 复制失败不致命：工作进程会给出明确的 dlopen 错误，便于排查。
-func copyWorkerDylibs(bundleDir, workerDir string) {
-	for _, name := range []string{"libimgui.dylib"} {
-		data, err := os.ReadFile(filepath.Join(bundleDir, name))
-		if err != nil || len(data) == 0 {
-			continue
-		}
-		dst := filepath.Join(workerDir, name)
-		if old, err := os.ReadFile(dst); err == nil && len(old) == len(data) {
-			_ = os.Chmod(dst, 0755)
-			continue
-		}
-		if err := os.WriteFile(dst, data, 0755); err == nil {
-			_ = os.Chmod(dst, 0755)
-		}
-	}
 }

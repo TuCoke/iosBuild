@@ -1,4 +1,5 @@
 name: ios-sdk
+run-name: "iOS | ${{ github.ref_name }} | ${{ github.sha }}"
 
 # 只负责 iOS：能力 SDK 编译验证 + 宿主 App 出未签名 ipa。
 # 不构建服务端、控制台或安卓任何内容。
@@ -16,6 +17,7 @@ on:
       - 'host/ios/**'
       - 'tools/native_resources.py'
       - 'tools/imgui_bindings.py'
+      - 'tools/debugapi_smoke.py'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
@@ -30,6 +32,7 @@ on:
       - 'host/ios/**'
       - 'tools/native_resources.py'
       - 'tools/imgui_bindings.py'
+      - 'tools/debugapi_smoke.py'
   workflow_dispatch:
 
 permissions:
@@ -57,12 +60,12 @@ jobs:
         run: go run ./cmd/precheck
 
       - name: go vet
-        run: go vet ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen
+        run: go vet ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen ./cmd/ioshost/debugapi
 
       - name: go test（非 cgo）
         run: |
           set -euo pipefail
-          go test ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen -count=1 -v 2>&1 | tee test.log
+          go test ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen ./cmd/ioshost/debugapi -count=1 -v 2>&1 | tee test.log
           echo "---- 汇总 ----"
           grep -E "^(ok|FAIL|---)" test.log | tail -40
 
@@ -332,6 +335,8 @@ jobs:
             OPENCV_FLAGS="-L host/ios/Runtime -lopencv_core -lopencv_imgproc -lopencv_imgcodecs"
           fi
           clang -dynamiclib -arch arm64 -isysroot "${SDK}" -mios-version-min="${IOS_MIN}" \
+            -Wl,-rpath,@loader_path/Runtime -Wl,-rpath,@loader_path \
+            -Wl,-rpath,@executable_path \
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
             host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
@@ -350,6 +355,10 @@ jobs:
             -Wl,-exported_symbol,_AXSweepNodesJSON \
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
+          # 签名前检查 SDK 自身的 LC_RPATH；仅把依赖复制到磁盘并不足以保证 dyld 可找到。
+          otool -l host/ios/Frameworks/libagovios.dylib > /tmp/agov-sdk-load-commands.txt
+          grep -F 'path @loader_path/Runtime (' /tmp/agov-sdk-load-commands.txt
+          grep -F 'path @loader_path (' /tmp/agov-sdk-load-commands.txt
           # 断言导出符号真的在（dlsym 失败过两次，所以这里必须校验）
           # 同样先落盘再 grep：`nm | grep -q` 在 pipefail 下会因 SIGPIPE 假失败
           nm -gU host/ios/Frameworks/libagovios.dylib > /tmp/agov-syms.txt 2>/dev/null || true
@@ -734,6 +743,8 @@ jobs:
           if [ -f host/ios/Frameworks/libimgui.dylib ]; then IMGUI_LIB="-L host/ios/Frameworks -limgui"; fi
           clang -dynamiclib -arch ${{ steps.arch.outputs.xcarch }} -isysroot "${SDK}" \
             -mios-simulator-version-min="${IOS_MIN}" \
+            -Wl,-rpath,@loader_path/Runtime -Wl,-rpath,@loader_path \
+            -Wl,-rpath,@executable_path \
             -Wl,-all_load host/ios/GoLib/libagovios.a \
             host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
@@ -752,6 +763,10 @@ jobs:
             -Wl,-exported_symbol,_AXSweepNodesJSON \
             -o host/ios/Frameworks/libagovios.dylib
           file host/ios/Frameworks/libagovios.dylib
+          # 签名前检查 SDK 自身的 LC_RPATH；仅把依赖复制到磁盘并不足以保证 dyld 可找到。
+          otool -l host/ios/Frameworks/libagovios.dylib > /tmp/agov-sdk-load-commands.txt
+          grep -F 'path @loader_path/Runtime (' /tmp/agov-sdk-load-commands.txt
+          grep -F 'path @loader_path (' /tmp/agov-sdk-load-commands.txt
           # 断言导出符号真的在（dlsym 失败过两次，所以这里必须校验）
           # 同样先落盘再 grep：`nm | grep -q` 在 pipefail 下会因 SIGPIPE 假失败
           nm -gU host/ios/Frameworks/libagovios.dylib > /tmp/agov-syms.txt 2>/dev/null || true
@@ -807,9 +822,11 @@ jobs:
             cp host/ios/Frameworks/libagovios.dylib "${APP}/libagovios.dylib"
             echo "已放入 libagovios.dylib"
           fi
-          # imgui：libagovios 的 install_name 是 @rpath/libimgui.dylib，必须和它同目录
+          # 与真机保持相同布局，禁止根目录副本掩盖 Runtime 搜索路径问题。
           if [ -f host/ios/Frameworks/libimgui.dylib ]; then
-            cp host/ios/Frameworks/libimgui.dylib "${APP}/libimgui.dylib"
+            mkdir -p "${APP}/Runtime"
+            cp host/ios/Frameworks/libimgui.dylib "${APP}/Runtime/libimgui.dylib"
+            test ! -e "${APP}/libimgui.dylib"
             echo "已放入 libimgui.dylib（模拟器版）"
           else
             echo "::warning::没有模拟器版 libimgui.dylib，dlopen 会失败"
@@ -881,6 +898,12 @@ jobs:
           PY
           xcrun simctl io "${UDID}" screenshot "${RUNNER_TEMP}/sim.png"
           ls -l "${RUNNER_TEMP}/sim.png"
+
+      - name: 验证局域网调试 HTTP 入口
+        run: |
+          UDID="${{ steps.sim.outputs.udid }}"
+          CONTAINER=$(xcrun simctl get_app_container "${UDID}" dev.autogov.host data)
+          python3 tools/debugapi_smoke.py "${CONTAINER}/Documents"
 
       - name: 取 App 沙盒里的文件（capture.jpg 等）
         if: always()

@@ -4,9 +4,17 @@
 #include <mach-o/dyld.h>
 #include <stdlib.h>
 
-// 独立执行体位于 .app/Runtime/app，NSBundle 的默认目录未必是外层 .app。
-// 与样本一样先定位真正的应用根，供模型、动态库和自身应用信息共用。
+// 独立执行体可能已复制到 Documents/Worker，不能再从执行体目录猜测 App 根。
+// 优先使用宿主传入且包含 Info.plist 的 --bundle，供模型、动态库及应用信息共用。
 NSString *AGApplicationBundlePath(void){
+    NSArray<NSString *> *arguments=NSProcessInfo.processInfo.arguments;
+    for(NSUInteger i=1;i+1<arguments.count;i++) {
+        if(![arguments[i] isEqualToString:@"--bundle"])continue;
+        NSString *candidate=[arguments[i+1] stringByStandardizingPath];
+        if(candidate.isAbsolutePath && [candidate.pathExtension.lowercaseString isEqualToString:@"app"] &&
+           [NSFileManager.defaultManager fileExistsAtPath:[candidate stringByAppendingPathComponent:@"Info.plist"]])return candidate;
+    }
+
     NSString *bundle=NSBundle.mainBundle.bundlePath;
     if([bundle.pathExtension.lowercaseString isEqualToString:@"app"])return bundle;
     uint32_t size=0;_NSGetExecutablePath(NULL,&size);if(!size || size>1024*1024)return bundle;

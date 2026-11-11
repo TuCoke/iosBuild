@@ -32,6 +32,10 @@
     <array>
         <string>arm64</string>
     </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>允许开发电脑在局域网连接设备调试服务，读取测试日志和执行已授权的调试操作。</string>
+    <key>NSBonjourServices</key>
+    <array><string>_agovhost._tcp</string></array>
     <key>MinimumOSVersion</key>
     <string>15.0</string>
 </dict>
