@@ -66,3 +66,11 @@ Invoke-RestMethod "$phone/invoke" -Method Post -Headers $headers -ContentType 'a
 新增纯 Go 测试覆盖鉴权/随机 token、跨源拒绝、路由分派、危险方法拒绝、请求大小与 JSON 校验、内置脚本、并发/取消、日志/回执读取、非法 SDK 响应、日志软链接。Windows 无软链接权限时该项跳过，Linux CI 执行。
 
 GitHub 模拟器增加真实 HTTP 冒烟：读取 App 日志内 token，以请求头鉴权测试设备状态、自检、worker 诊断、截图、节点和内置脚本，结果写入 `Documents/debugapi-smoke.json`。单元测试和模拟器成功不能替代真机局域网连通性、Bonjour 发现及动作效果验证。
+
+## 本轮构建验收（2026-11-11）
+
+- 主仓库功能提交 `25e9a05`；独立 GitHub 构建提交 `9371300`。
+- [本轮 Actions](https://github.com/TuCoke/iosBuild/actions/runs/43042316464) 四项全部成功：Go 检查、iOS SDK 原生编译、宿主 IPA/DEB 打包、模拟器运行与调试 HTTP 冒烟。
+- 已读取本轮 `debugapi-smoke.json`：未授权请求 HTTP 401；health、status、api、capabilities、worker、selftest、worker diagnostics、screenshot、ui-tree 和内置脚本共 10 项实际 HTTP 检查通过；日志读取也已执行。
+- 本机 Windows 的新测试通过；日志软链接用例因系统权限跳过，由 Linux CI 补验。静态检查、vet、Python 和 plist 语法检查通过。
+- 本轮模拟器验证不包含真机局域网连接、Bonjour 自动发现或所有动作的界面效果；真机需要安装新包后单独验收。
