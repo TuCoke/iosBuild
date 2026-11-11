@@ -51,8 +51,11 @@ func TestAuthentication(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	other := serverForTest(t, nil)
-	if s.Token() == other.Token() || len(s.Token()) != 64 {
-		t.Fatal("token 未随机生成")
+	if s.Token() != "1234567" || other.Token() != "1234567" {
+		t.Fatal("调试 token 必须保持用户指定的固定值")
+	}
+	if w := req(s, "GET", "/status?token=wrong", "", false); w.Code != 401 {
+		t.Fatal(w.Code)
 	}
 	if w := req(s, "GET", "/api", "", true); strings.Contains(w.Body.String(), s.Token()) || w.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("发现接口泄漏 token 或允许缓存")

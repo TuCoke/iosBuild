@@ -327,7 +327,7 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 				}
 			}
 		}
-		return okData(map[string]any{"port": 18990, "listen": "0.0.0.0:18990", "token": debugServer.Token(), "addresses": addresses, "mdns": "_agovhost._tcp.", "note": "token 仅用于本次进程；不要把带 token 的日志公开分享"})
+		return okData(map[string]any{"port": 18990, "listen": "0.0.0.0:18990", "token": debugServer.Token(), "addresses": addresses, "mdns": "_agovhost._tcp.", "note": "固定调试 token；不要把调试端口暴露到公网"})
 	case "debugapi.stop":
 		debugMu.Lock()
 		defer debugMu.Unlock()

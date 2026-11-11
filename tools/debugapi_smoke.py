@@ -21,6 +21,8 @@ def run(documents):
         time.sleep(0.5)
     if not token:
         raise RuntimeError("调试服务没有返回启动成功和 token")
+    if token != "1234567":
+        raise RuntimeError("调试服务没有使用约定的固定 token")
 
     def call(path, method="GET", auth=True):
         req = urllib.request.Request("http://127.0.0.1:18990" + path, method=method)

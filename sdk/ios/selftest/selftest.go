@@ -64,7 +64,7 @@ func probeList() []opProbe {
 		{"device.lock", nil, true},                                // 危险，不调
 		{"device.vpn_set", map[string]any{}, true},
 		{"device.wifi_set", map[string]any{}, true},
-		{"device.keep_awake", map[string]any{"on": false}, false},
+		{"device.keep_awake", nil, true}, // 防息屏会改变宿主状态，自检不得把调试保活关掉。
 		{"device.wake", nil, false},
 		// 应用
 		{"app.foreground", nil, false},

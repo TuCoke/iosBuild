@@ -30,6 +30,8 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"AgovHost";
+    // 调试宿主在前台时保持亮屏，避免等待远程请求期间自动息屏。
+    UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.sdkQueue=dispatch_queue_create("agov.host.sdk.actions",DISPATCH_QUEUE_SERIAL);
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.targetCenter = CGPointMake(0.5, 0.35);

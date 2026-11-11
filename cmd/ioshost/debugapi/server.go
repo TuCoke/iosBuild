@@ -3,9 +3,7 @@ package debugapi
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,15 +46,11 @@ func start(cfg Config, addr string) (*Server, error) {
 	if cfg.Invoke == nil || !filepath.IsAbs(cfg.Documents) {
 		return nil, fmt.Errorf("调试服务缺少调用器或 Documents 绝对路径")
 	}
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return nil, err
-	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("调试端口监听失败: %w", err)
 	}
-	s := &Server{cfg: cfg, token: hex.EncodeToString(raw), started: time.Now(), gate: make(chan struct{}, 1), results: map[string]json.RawMessage{}}
+	s := &Server{cfg: cfg, token: "1234567", started: time.Now(), gate: make(chan struct{}, 1), results: map[string]json.RawMessage{}}
 	s.http = &http.Server{Addr: listener.Addr().String(), Handler: s, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 125 * time.Second, IdleTimeout: 15 * time.Second, MaxHeaderBytes: 16 << 10}
 	go func() { _ = s.http.Serve(listener) }()
 	return s, nil

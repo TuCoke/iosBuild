@@ -5,15 +5,15 @@
 ## 连接
 
 1. 安装包含此改动的新 IPA，允许系统提示的“本地网络”访问。
-2. 查看界面日志中的 `debugapi.start`：包含 `addresses` 和随机 `token`。只有 `ok:true` 才表示监听成功；端口占用会明确失败。
+2. 查看界面日志中的 `debugapi.start`：包含 `addresses` 和固定 `token`（`1234567`）。只有 `ok:true` 才表示监听成功；端口占用会明确失败。
 3. 电脑与手机处于可互通的局域网，使用手机 IP；日志里的 `127.0.0.1` 不是手机的局域网地址。
 4. Bonjour 广播 `_agovhost._tcp.local.`，只含协议版本，不包含 token。Mac 可用 `dns-sd -B _agovhost._tcp local.` 发现实例，再用 `dns-sd -L <实例名> _agovhost._tcp local.` 查询主机/端口。Windows 需要 Bonjour 客户端；没有客户端时直接使用日志中的 IP。广播失败会写日志，不能把广播配置成功当成已经在网络中发现设备。
 
-每次进程重新启动生成新的 32 字节随机 token。优先使用 `Authorization: Bearer <token>`；兼容用户需要的 `?token=<token>`。日志包含访问凭据，不要公开分享仍在运行设备的完整日志。此服务使用局域网 HTTP，不应直接暴露到公网。
+调试 token 按当前约定固定为 `1234567`，重新启动不会改变。优先使用 `Authorization: Bearer <token>`；兼容用户需要的 `?token=<token>`。日志包含访问凭据，不要公开分享仍在运行设备的完整日志。此服务使用局域网 HTTP，不应直接暴露到公网。
 
 ```powershell
 $phone = 'http://192.168.1.100:18990'
-$headers = @{ Authorization = 'Bearer 替换为日志中的token' }
+$headers = @{ Authorization = 'Bearer 1234567' }
 Invoke-RestMethod "$phone/status" -Headers $headers
 Invoke-RestMethod "$phone/selftest" -Headers $headers
 Invoke-WebRequest "$phone/log" -Headers $headers -OutFile './iphone-app.log'
@@ -63,7 +63,7 @@ Invoke-RestMethod "$phone/invoke" -Method Post -Headers $headers -ContentType 'a
 
 ## 验证范围
 
-新增纯 Go 测试覆盖鉴权/随机 token、跨源拒绝、路由分派、危险方法拒绝、请求大小与 JSON 校验、内置脚本、并发/取消、日志/回执读取、非法 SDK 响应、日志软链接。Windows 无软链接权限时该项跳过，Linux CI 执行。
+新增纯 Go 测试覆盖鉴权/固定 token、跨源拒绝、路由分派、危险方法拒绝、请求大小与 JSON 校验、内置脚本、并发/取消、日志/回执读取、非法 SDK 响应、日志软链接。Windows 无软链接权限时该项跳过，Linux CI 执行。
 
 GitHub 模拟器增加真实 HTTP 冒烟：读取 App 日志内 token，以请求头鉴权测试设备状态、自检、worker 诊断、截图、节点和内置脚本，结果写入 `Documents/debugapi-smoke.json`。单元测试和模拟器成功不能替代真机局域网连通性、Bonjour 发现及动作效果验证。
 
@@ -74,3 +74,7 @@ GitHub 模拟器增加真实 HTTP 冒烟：读取 App 日志内 token，以请�
 - 已读取本轮 `debugapi-smoke.json`：未授权请求 HTTP 401；health、status、api、capabilities、worker、selftest、worker diagnostics、screenshot、ui-tree 和内置脚本共 10 项实际 HTTP 检查通过；日志读取也已执行。
 - 本机 Windows 的新测试通过；日志软链接用例因系统权限跳过，由 Linux CI 补验。静态检查、vet、Python 和 plist 语法检查通过。
 - 本轮模拟器验证不包含真机局域网连接、Bonjour 自动发现或所有动作的界面效果；真机需要安装新包后单独验收。
+
+## 固定鉴权与防息屏补充
+
+按用户要求，局域网调试 token 固定为 `1234567`。`Authorization: Bearer 1234567` 和 `?token=1234567` 均可；错误或缺少 token 仍然拒绝。宿主在主线程设置 `idleTimerDisabled=YES`，前台运行时防止自动息屏；这不阻止手动锁屏，也不提供后台常驻。全量自检不再执行 `device.keep_awake=false`，该项归为跳过有副作用，避免覆盖宿主保活设置。上述改动需安装新包生效，前一节 CI 结果对应此前的功能提交。
