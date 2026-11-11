@@ -2,6 +2,8 @@
 
 这个仓库只放 **iOS 能力 SDK 的源码** 和 **它的编译验证工作流**，不含服务端、控制台、安卓任何内容。
 
+最新截图/AX 根因、修复和 SDK 原生 JPEG 验收记录：[截图与节点树失败定位](docs/ios-capture-ax-diagnostics.md)。模拟器结果与真机验收边界分别记录。
+
 - 主仓库（Gitee）：`agent-cgo` 的 `v2/sdk/ios/`
 - 本仓库作用：让 GitHub 的 macOS 跑器用**真正的 iPhoneOS SDK** 编译一遍，验证 `go build`（cgo）与原生 Objective-C/ObjC++ 文件都能过
 

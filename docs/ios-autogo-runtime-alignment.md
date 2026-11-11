@@ -96,3 +96,15 @@
 本轮验证了正常进程完成和 JS 通道。父进程意外退出看护、进程硬期限已经实现并通过 Apple 编译，但没有单独注入杀宿主或不可中断原生阻塞来验收。SDK 安装后的真实手机重启加载、回滚，以及截图/视频/AX/识别等真机功能仍需真机验收。
 
 最终代码同步到主仓库 `v2/sdk/ios` 及 `v2/ios` 构建镜像；SDK 源码比较未发现内容差异（忽略换行）。iOS 构建仓库验证分支为 `codex/ios-reference-runtime-20261111`。未将主仓库其他 Android、WDA 或本地内核的未提交改动混入验证分支。
+
+## 2026-11-11 截图与 AX 专项定位
+
+最新专项说明见 [截图与节点树失败定位](ios-capture-ax-diagnostics.md)。保持 AutoGo 的 CARenderServerRenderDisplay / IOSurface 和 AXRuntime / AXUIElement，不以外部 simctl 截图、XCUITest 或 UIKit 自身视图树替代 SDK 结果。
+
+[95cdb4e 构建验证](https://github.com/TuCoke/iosBuild/actions/runs/42981319101) 四项检查通过。AX 原始异常为 `We're calling into AX runtime off the main thread!`；共享采集器统一经现有主线程边界执行后，界面进程取得 81 个真实节点，独立进程取得 82 个。CI 检查节点中存在界面上的“能力探测”按钮及有效坐标，未使用固定节点数量作为通过条件。
+
+截图误判已定位并修复：真机样本以 0 继续读取，iOS 18.5 模拟器的同名外层函数却把有效内部应答转换成非零布尔值。此前把模拟器返回的 1 当成错误，导致在读取图像前退出。现在只在 iOS SDK 内按构建目标解释返回值，截图路线、对外 API 与 Agent 调用方式不变。
+
+[9a1900d 最终验证](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 四项全部通过：宿主生成 JPEG 235×512 / 36782 字节，独立任务生成 235×512 / 38120 字节，已人工查看确认真实界面与方向正常。AX 为 79 / 80 个实际节点，真实按钮断言通过。脚本 PID 7949、258ms 完成，capture.json 返回 23318 字节，captureSucceeded=true、result.ok=true；effectVerified 仍未验证，不改成成功。
+
+最终探针计数为调用成功 40、环境失败 4、不支持 2、跳过有副作用 6、仅参数拒绝 18、未运行 0。没有据此宣称所有 SDK 功能或真实 iPhone 已通过。专项验证分支为 `codex/ios-capture-ax-diagnostics-20261111`，完整调用点、对照实验和更正记录见专项说明。

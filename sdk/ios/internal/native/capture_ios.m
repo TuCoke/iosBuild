@@ -156,6 +156,8 @@ ag_ios_result AGCapture(NSDictionary *args) {
     ag_ios_result result = AGData(encoded); result.width = w; result.height = h; return result;
 }
 
+#if TARGET_OS_SIMULATOR
+// 内部 ABI 只在模拟器中核实过，不将诊断用的内部调用带到未核实的真机环境。
 static NSDictionary *AGRenderFailureDetail(CFStringRef name,IOSurfaceRef candidate) {
     // 实测外层函数把内部非零结果统一转换成 1。以下 ABI 来自该外层实际调用点：
     // 原三个参数 + 五个寄存器参数 + 三个栈参数；额外参数均为零，不改变渲染路线。
@@ -193,6 +195,7 @@ static NSDictionary *AGRenderFailureDetail(CFStringRef name,IOSurfaceRef candida
     }
     return report;
 }
+#endif
 
 // 仅供诊断：沿用样本的同一渲染接口，比较四项原始属性与现有显式行宽属性。
 // 使用独立 surface，不替换生产采集资源，也不采用其他截图通道。
@@ -226,7 +229,9 @@ NSDictionary *AGCaptureProbe(NSArray *displayNames,int width,int height) {
             }
             uint32_t (*format)(IOSurfaceRef)=(uint32_t(*)(IOSurfaceRef))AGSymbol("IOSurfaceGetPixelFormat");
             if(format)item[@"actualPixelFormat"]=@(format(candidate));
+#if TARGET_OS_SIMULATOR
             if(!rendered)item[@"internalDetail"]=AGRenderFailureDetail((CFStringRef)name,candidate);
+#endif
             CFRelease(candidate);
         }
         [attempts addObject:item];

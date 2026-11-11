@@ -1,5 +1,7 @@
 # iOS SDK：按 AutoGo 技术栈与调用逻辑对齐
 
+> 运行链路与剩余完整性差距见 [后续对齐记录](ios-autogo-runtime-alignment.md)。SQLite、宿主控制和工作进程已继续修正；完整 OpenCV/ImGui、全局悬浮宿主和原生 JS UI 桥仍未对齐。
+
 更新：2026-11-11。本轮覆盖用户图片中的全部分组，不改云控 Agent、MCP 或服务端路由。
 
 本文描述新源码状态，取代上一轮核查中相关“仍未修复”的条目。对齐依据是提供样本的函数调用、寄存器/栈参数、ObjC 方法和内存释放路径；不是从函数名称猜测 C 原型。新源码已于 2026-11-11 通过 GitHub Apple 工具链编译、完整打包和模拟器启动流程；真实 iOS 设备仍未验收。不能继承参考程序的测试结论，也不宣称与闭源程序逐字节等价。
@@ -38,7 +40,7 @@ SHA256：`b4e157737a9bba0de49fd98ad5d9b5e30519118cacbd63df46e807b0e6f5af48`。
 - 按键：BridgePressKey 是 page + usage 两个参数，样本按下后等待 100000 微秒再抬起；任务切换是两次 Home，中间约 20 ms。
 - NativeSize：两个 double 输出指针，不是字符串缓冲区。GetDisplayInfo 的简版旋转返回角度；底层 Display.Rotation 使用 0–3。
 - Unicode：`rangeOfComposedCharacterSequenceAtIndex:` 分段，不能简单拆 rune；回调为 UTF-8 指针和字节长度，六参数 ABI 已核实。
-- 截图：样本 `captureScreenRaw` 检查 CARenderServerRenderDisplay 的整数返回值，0 才继续；此前 void 声明及“没有返回值”的注释已纠正。
+- 截图：真机样本 `captureScreenRaw` 检查 CARenderServerRenderDisplay 的整数返回值，0 才继续；此前 void 声明及“没有返回值”的注释已纠正。不能把该约定直接套到模拟器：iOS 18.5 模拟器的同名函数返回布尔结果，非零为成功，已在 SDK 按构建目标适配。
 - 视频：H.264 参数为 resolution/bitrate/fps 三参数；RawFrameStart 无参。H.264 回调为 data + int length，原始帧回调为 data/width/height/stride。
 - AX traits：button/clickable=1、selected=8、disabled=0x100、adjustable=0x1000、header=0x10000、textEntry/editable=0x40000、statusBar=0x800000、password=0x1000000、toggle=0x2000000。Switch-like 还检查 bit 53 和 role/class 字符串。掩码及输出槽位来自 `0x1010bde7c` 起的实际数据流。
 - 强杀：FBSSystemService 的 terminateApplication 首个参数是 bundleID 对象，样本 reason=5；不是 pid。
@@ -141,3 +143,10 @@ Windows/Go 1.25.1、GOWORK=off：运行相关 Go 测试、SDK Go 构建和静态
 模拟器应用日志确认：动态 SDK 已加载，内置解释器脚本执行返回，目标块点击计数 `0 → 1`。这是一台 GitHub iPhone 16 Pro / iOS 18.5 模拟器的结果，不是实体 iPhone 的验收。
 
 **尚未通过的运行项：** SDK 内部截图返回 `屏幕渲染失败: 1`，`capture.json` 和截图按钮均记录失败；因此不能因 Actions 为 success 就认定 SDK 截图或视频已生效。CI 的 `sim.png` 是外部 `simctl` 截图，与 SDK 的 CARenderServer 截图是两个入口。真实设备截图、视频、AX、识别及安装能力仍需分别验收。
+
+
+## 2026-11-11 截图与 AX 后续验收
+
+[9a1900d 构建记录](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 四项全部通过。此前 SDK 截图把模拟器的成功布尔返回误当成真机错误码，现已修正：宿主和独立任务均实际生成 235×512 JPEG，人工查看图像内容和方向正常；AX 分别取得 79 / 80 个真实节点。脚本内 capture.json 也已通过。前文较早构建记录中的“截图尚未通过”已被本次专项验收更新。
+
+完整调用点、对照实验和更正记录见 [截图与节点树失败定位](ios-capture-ax-diagnostics.md)。真机保持样本返回约定，仍未做实体 iPhone 验收，不能将本轮模拟器结果推广到全部真机能力。
