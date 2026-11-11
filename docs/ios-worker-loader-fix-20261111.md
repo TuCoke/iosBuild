@@ -54,3 +54,16 @@ v2/sdk/ios/
 - 本轮模拟器产物：独立诊断 worker PID `6384`，耗时 `1413 ms`，截图成功，AX 采集 `80` 个节点；宿主 AX 为 `79` 个节点。内置脚本独立进程 PID `5928`，解释执行完成且截图成功；JavaScriptCore 返回 `3`。点击提交不代表已验证界面效果，脚本回执的 `effectVerified` 仍为 false。
 - Actions 已产生 `AgovHost-signed` 安装包产物（含 IPA 和 DEB）；产物名称不代表具备普通设备安装所需证书。模拟器通过不等于真机 worker 已恢复，需安装新包验证。
 - 真机需使用包含本次修复的 SDK/安装包重新验收，重点查看 worker 完整回执。
+
+## 真机复验后补充（22:23 截图）
+
+用户再次提供同类 worker 加载失败。上一轮模拟器成功仅验证该模拟器布局，不能证明真机恢复。
+
+检查上一轮实际 IPA 的 Mach-O：任务执行体有 `@executable_path` 搜索路径，SDK 自身没有 LC_RPATH；宿主能加载并不代表独立进程具备相同的搜索链。模拟器原先把 ImGui 放在 App 根目录，真机放在 Runtime，存在验证布局差异。截图的 dyld 错误被界面截断，尚不能排除系统签名或其他后续原因。
+
+本轮只调整两个文件：
+
+- `ios-sdk.yml`：设备/模拟器 SDK 链接时均加入 `@loader_path/Runtime`、`@loader_path`、`@executable_path`，并在签名前用 otool 断言 SDK 内含搜索路径。模拟器 ImGui 改放 Runtime，断言 App 根目录不存在副本，避免根目录库掩盖路径错误。
+- `AGRootViewController.m`：worker 诊断失败展示完整回执及已保存的 JSON 文件名，保留 dyld 尝试路径和签名错误。
+
+本地 `go run ./cmd/precheck` 和 diff 检查通过。本轮 Apple CI 和真机复验尚未完成；不得沿用前一轮四项成功来代表这次改动已验证。新安装包需重新生成，旧包不会自动得到链接配置修正。

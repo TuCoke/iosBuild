@@ -395,7 +395,11 @@
         NSDictionary *envelope=data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL] : nil;
         NSDictionary *report=[envelope isKindOfClass:NSDictionary.class] ? envelope[@"data"] : nil;
         if([entry[0] isEqualToString:@"worker"] && [report isKindOfClass:NSDictionary.class])report=report[@"result"];
-        if(![report isKindOfClass:NSDictionary.class]){[self append:[NSString stringWithFormat:@"原生诊断(%@)失败：%@",entry[0],[self shorten:raw to:300]]];continue;}
+        if(![report isKindOfClass:NSDictionary.class]){
+            // 失败回执不含图片；保留完整 dyld 原因，避免截断掉 attempted paths 或签名错误。
+            [self append:[NSString stringWithFormat:@"原生诊断(%@)失败（完整结果=%@）：%@",entry[0],filename,raw]];
+            continue;
+        }
         NSDictionary *capture=report[@"capture"],*ax=report[@"ax"];
         [self append:[NSString stringWithFormat:@"原生诊断(%@)：截图=%@；AX=%@；完整结果=%@",entry[0],[capture[@"ok"] boolValue] ? @"成功" : @"失败",[ax[@"ok"] boolValue] ? [NSString stringWithFormat:@"%@ 节点",ax[@"nodeCount"]] : @"失败",filename]];
         if([capture[@"ok"] boolValue]){
