@@ -383,45 +383,54 @@ jobs:
           nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "agov_ios_(invoke|free)" || true
 
 
-      - name: 准备 frpc（优先用包内预置的 arm64 二进制）
+      - name: 从锁定的官方源码构建 frpc（禁止使用预置成品）
         env:
           SDK: ${{ steps.sdk.outputs.path }}
           CC_IOS: ${{ steps.sdk.outputs.cc }}
+          FRP_COMMIT: 63a21198138e2ca57031eb8c9c2c4f7255586554
         run: |
           set -euo pipefail
-          PREBUILT="host/ios/Frameworks/frpc-ios"
-          if [ -f "${PREBUILT}" ] && [ "$(stat -f%z "${PREBUILT}")" -gt 1000000 ]; then
-            echo "::group::使用仓库内预置的 frpc"
-            file "${PREBUILT}"
-            ls -lh "${PREBUILT}"
-            shasum -a 256 "${PREBUILT}"
-            echo "::endgroup::"
-            exit 0
-          fi
-          echo "::group::没有预置 frpc，从源码编（frp v0.67.0）"
-          # frp 的 go.mod 带 replace，不能 go install，只能拉源码在模块内构建；
-          # GOOS=ios 强制要 cgo，CC / CGO_CFLAGS / CGO_LDFLAGS 都要指向 iphoneos SDK。
-          git clone --depth 1 --branch v0.67.0 https://github.com/fatedier/frp "${RUNNER_TEMP}/frp"
-          cd "${RUNNER_TEMP}/frp"
-          # frp 的 cmd/frpc 用 //go:embed 嵌 web/frpc/dist（前端产物，需要 npm 构建）。
-          # 我们只要客户端二进制，放个占位文件满足 embed 即可。
+          SOURCE="${RUNNER_TEMP}/agov-frp-source"
+          git clone --depth 1 --branch v0.67.0 https://github.com/fatedier/frp "${SOURCE}"
+          cd "${SOURCE}"
+          [ "$(git rev-parse HEAD)" = "${FRP_COMMIT}" ] || { echo "::error::frp 源码版本不符合锁定值"; exit 1; }
+          # 只嵌入占位页面，不启用 frpc Web 管理面板。
           mkdir -p web/frpc/dist
-          [ -f web/frpc/dist/index.html ] || echo '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
-          export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
-          # CXX 必须显式指向 iOS/simulator 的 clang++：cgo 编 .mm（ag_rec / imgui_overlay）靠它，
-          # 缺省会退回 g++，.mm 直接被跳过 → 链接期报 _AGRecognition 未定义。
-          export CXX="${CC_IOS}"
-          export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
-          # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
-          # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I ${PWD}/host/ios/Frameworks/opencv2.framework/Headers -I ${PWD}/host/ios/third_party/cimgui -I ${PWD}/host/ios/third_party/cimgui/imgui"
-          export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
+          printf '%s' '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
+          # 先编本机版，实际验证 -c 参数和 TOML，避免再次装入不兼容的定制客户端。
+          CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOHOSTARCH)" go build -trimpath -o "${RUNNER_TEMP}/frpc-verify" ./cmd/frpc
+          [ "$("${RUNNER_TEMP}/frpc-verify" --version)" = "0.67.0" ]
+          cat > "${RUNNER_TEMP}/frpc-check.toml" <<'TOML'
+          serverAddr = "127.0.0.1"
+          serverPort = 7000
+          auth.method = "token"
+          auth.token = "build-validation-only"
+          transport.tls.enable = true
+          log.to = "console"
+          log.level = "info"
+          log.disablePrintColor = true
+          [[proxies]]
+          name = "agov-build-check"
+          type = "tcp"
+          localIP = "127.0.0.1"
+          localPort = 18990
+          remotePort = 18990
+          TOML
+          "${RUNNER_TEMP}/frpc-verify" verify -c "${RUNNER_TEMP}/frpc-check.toml"
+          # 同一份已核验源码编译 iOS arm64，构建失败即终止，绝不回退到样本二进制。
+          export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}" CXX="${CC_IOS}"
+          export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
+          export CGO_CXXFLAGS="${CGO_CFLAGS}"
+          export CGO_LDFLAGS="${CGO_CFLAGS}"
           go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
+          go version -m "${RUNNER_TEMP}/frpc-ios" | tee "${RUNNER_TEMP}/frpc-build-info.txt"
+          grep -F 'github.com/fatedier/frp/cmd/frpc' "${RUNNER_TEMP}/frpc-build-info.txt"
           file "${RUNNER_TEMP}/frpc-ios"
           mkdir -p "$GITHUB_WORKSPACE/host/ios/Frameworks"
-          cp "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/${PREBUILT}"
-          chmod +x "$GITHUB_WORKSPACE/${PREBUILT}"
-          echo "::endgroup::"
+          install -m 0755 "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
+          cp LICENSE "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-LICENSE.txt"
+          printf 'source=https://github.com/fatedier/frp\nversion=v0.67.0\ncommit=%s\n' "${FRP_COMMIT}" > "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-source.txt"
+          shasum -a 256 "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios" >> "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-source.txt"
 
       - name: 生成 Xcode 工程
         working-directory: host/ios
@@ -486,9 +495,10 @@ jobs:
           set -euo pipefail
           APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
           [ -d "${APP}" ] || { echo "::error::没有 app 产物"; exit 1; }
-          # frpc-ios：隧道客户端（预置二进制优先，源码编出来也放同一路径）
+          # frpc-ios：仅允许本次构建从锁定官方源码编出的产物
           if [ -f host/ios/Frameworks/frpc-ios ]; then
             cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"; chmod +x "${APP}/frpc-ios"
+            cp host/ios/Frameworks/frpc-LICENSE.txt host/ios/Frameworks/frpc-source.txt "${APP}/"
           fi
           # libagovios.dylib：SDK/解释器（壳运行时 dlopen）
           if [ -f host/ios/Frameworks/libagovios.dylib ]; then

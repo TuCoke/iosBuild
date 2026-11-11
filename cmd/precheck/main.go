@@ -308,6 +308,15 @@ func checkWorkflowOrder() {
 	if !strings.Contains(src, "exported_symbol") {
 		fail("dylib 链接缺少 -Wl,-exported_symbol")
 	}
+	// frpc 必须可追溯到源码，不能再按文件大小信任第三方预编译成品。
+	if strings.Contains(src, "stat -f%z") || strings.Contains(src, "优先用包内预置") {
+		fail("frpc 构建仍允许跳过源码校验并使用预置二进制")
+	}
+	for _, required := range []string{"FRP_COMMIT: 63a21198138e2ca57031eb8c9c2c4f7255586554", "frpc-verify\" verify -c", "frpc-build-info.txt"} {
+		if !strings.Contains(src, required) {
+			fail("frpc 构建缺少来源或命令行校验: %s", required)
+		}
+	}
 	ok("workflow 顺序与关键路径检查完成")
 }
 
