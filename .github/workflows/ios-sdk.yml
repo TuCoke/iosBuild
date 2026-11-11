@@ -1,4 +1,5 @@
 name: ios-sdk
+run-name: "iOS | ${{ github.ref_name }} | ${{ github.sha }}"
 
 # 只负责 iOS：能力 SDK 编译验证 + 宿主 App 出未签名 ipa。
 # 不构建服务端、控制台或安卓任何内容。
