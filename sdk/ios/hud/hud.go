@@ -9,6 +9,8 @@ package hud
 
 import (
 	"autogov1/v2/sdk/ios/internal/bridge"
+	"strconv"
+	"sync/atomic"
 )
 
 // TextItem 是一行文本：颜色 + 内容。
@@ -19,18 +21,20 @@ type TextItem struct {
 
 // HUD 是悬浮窗对象。
 type HUD struct {
-	id      string
-	items   []TextItem
-	x1, y1  int
-	x2, y2  int
-	bgColor string
+	id       string
+	items    []TextItem
+	x1, y1   int
+	x2, y2   int
+	bgColor  string
 	textSize int
-	visible bool
+	visible  bool
 }
 
 // New 创建一个 HUD（原生窗口在 Show 时才建）。
+var nextID atomic.Uint64
+
 func New() *HUD {
-	return &HUD{textSize: 14, bgColor: "#00000000"}
+	return &HUD{id: strconv.FormatUint(nextID.Add(1), 10), textSize: 14, bgColor: "#00000000"}
 }
 
 // SetText 设置文本行。

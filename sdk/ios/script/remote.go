@@ -1,12 +1,4 @@
-// 热更新入口：从远端拉脚本、校验、缓存、执行。
-//
-// 这里的关键不是"下载"，而是"下载失败时不能把线上跑挂"：
-//
-//	拉取失败  → 用本地最后一份能跑的（cache/<name>.go）
-//	哈希不符  → 同样回退，并把原因报上去（可能是 CDN 半包，也可能是被改过）
-//	本地也没有 → 才真的失败
-//
-// 只有这样才能做到"脚本随时可改"，而不是"改一次能不能跑看运气"。
+// 远端脚本是本项目的更新扩展；仅成功执行的版本才能替换本地缓存。
 package script
 
 import (
@@ -14,94 +6,157 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"autogov1/v2/sdk/ios/files"
-	"autogov1/v2/sdk/ios/https"
 )
 
-// RemoteOptions 控制一次远端脚本执行。
 type RemoteOptions struct {
-	// URL 是脚本地址（http/https 均可，内网 IP 也行）。
-	URL string
-	// SHA256 是期望的脚本哈希（十六进制，可空：空则跳过校验）。
-	SHA256 string
-	// CacheName 是本地缓存文件名（例如 "daily.go"）。
+	URL       string
+	SHA256    string
 	CacheName string
-	// Timeout 是下载超时。
-	Timeout time.Duration
+	Timeout   time.Duration
 }
 
-// cacheDir 是脚本缓存目录（在 App 沙盒里）。
 const cacheDir = "Scripts"
+const maxRemoteBytes = 4 << 20
 
-func (r *Runner) cachePath(name string) string {
+// cacheFilename 不接受路径，调用者无法通过缓存名覆盖工程或 SDK。
+func cacheFilename(name string) (string, error) {
 	if name == "" {
 		name = "default"
 	}
-	return files.Path(filepath.Join(cacheDir, name+".go"))
+	if name == "." || name == ".." || strings.ContainsAny(name, "/\\:\x00") {
+		return "", fmt.Errorf("缓存名必须是单个文件名")
+	}
+	name = strings.TrimSuffix(name, ".go")
+	if name == "" {
+		return "", fmt.Errorf("缓存名不能为空")
+	}
+	return files.Path(filepath.Join(cacheDir, name+".go")), nil
 }
+func (r *Runner) cachePath(name string) string { p, _ := cacheFilename(name); return p }
 
-// RunRemote 拉取并执行脚本；失败时回退到本地缓存。
-//
-// 返回的 Result 里 Logs 会带上"用了哪个版本、为什么回退"，
-// 排查线上问题时这行日志比什么都重要。
 func (r *Runner) RunRemote(ctx context.Context, opts RemoteOptions) (Result, error) {
-	if opts.Timeout <= 0 {
-		opts.Timeout = 20 * time.Second
+	if ctx == nil {
+		return Result{}, fmt.Errorf("脚本 context 不能为空")
+	}
+	filename, err := cacheFilename(opts.CacheName)
+	if err != nil {
+		return Result{}, err
 	}
 	if opts.URL == "" {
 		return r.RunCache(ctx, opts.CacheName)
 	}
-
-	downloadCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
-	status, body := https.Get(opts.URL, int(opts.Timeout/time.Millisecond))
-	_ = downloadCtx // 下载由 https 包内的 client 超时控制；这里保留 ctx 供后续加钩子
-	if status != 200 || len(body) == 0 {
-		res, err := r.RunCache(ctx, opts.CacheName)
-		res.Logs = append([]string{fmt.Sprintf("脚本拉取失败(HTTP %d)，回退本地缓存", status)}, res.Logs...)
-		return res, err
-	}
-
-	if opts.SHA256 != "" {
-		sum := sha256.Sum256(body)
-		if got := hex.EncodeToString(sum[:]); got != opts.SHA256 {
-			res, err := r.RunCache(ctx, opts.CacheName)
-			res.Logs = append([]string{fmt.Sprintf("脚本哈希不符(期望 %s，实际 %s)，回退本地缓存", opts.SHA256[:8], got[:8])}, res.Logs...)
-			return res, err
+	expected := strings.ToLower(opts.SHA256)
+	if expected != "" {
+		digest, e := hex.DecodeString(expected)
+		if e != nil || len(digest) != sha256.Size {
+			return Result{}, fmt.Errorf("SHA256 必须为 64 位十六进制字符串")
 		}
 	}
-
-	// 先落盘再执行：这样即使本次执行崩了，下次也有可回退的版本。
-	// files.Write 不返回错误（读不到就给零值那套约定），落盘失败不影响本次执行，
-	// 只是下次没有可回退的版本 —— 那属于"下次再说"的问题，不在这里吞掉本次结果。
-	files.Write(r.cachePath(opts.CacheName), string(body))
-
+	if opts.Timeout <= 0 {
+		opts.Timeout = 20 * time.Second
+	}
+	downloadCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, opts.URL, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	fallback := func(reason string) (Result, error) {
+		if e := ctx.Err(); e != nil {
+			return Result{}, e
+		}
+		res, e := r.RunCache(ctx, opts.CacheName)
+		res.Logs = append([]string{reason + "，回退本地缓存"}, res.Logs...)
+		return res, e
+	}
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fallback("脚本下载失败: " + err.Error())
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fallback(fmt.Sprintf("脚本下载失败(HTTP %d)", response.StatusCode))
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxRemoteBytes+1))
+	if err != nil {
+		return fallback("脚本下载中断: " + err.Error())
+	}
+	if len(body) == 0 || len(body) > maxRemoteBytes {
+		return fallback("脚本为空或超过 4 MiB")
+	}
+	sum := sha256.Sum256(body)
+	actual := hex.EncodeToString(sum[:])
+	if expected != "" && expected != actual {
+		return fallback("脚本哈希不符")
+	}
+	// 新脚本已经执行过时不能再自动重跑旧脚本，否则会重复触发设备操作。
 	res, err := r.Run(ctx, string(body))
-	res.Logs = append([]string{fmt.Sprintf("脚本来自远端(%d 字节)", len(body))}, res.Logs...)
-	return res, err
+	res.Logs = append([]string{fmt.Sprintf("脚本来自远端(%d 字节，SHA256=%s)", len(body), actual)}, res.Logs...)
+	if err != nil {
+		return res, err
+	}
+	if err = atomicCache(filename, body); err != nil {
+		res.Logs = append(res.Logs, "脚本已执行，但缓存保存失败: "+err.Error())
+	}
+	return res, nil
 }
 
-// RunCache 执行本地缓存的脚本（没有就报错）。
-func (r *Runner) RunCache(ctx context.Context, cacheName string) (Result, error) {
-	path := r.cachePath(cacheName)
-	source := files.Read(path)
-	if source == "" {
-		return Result{}, fmt.Errorf("没有可用的脚本：远端拉取失败，本地也没有缓存 %s", path)
+func atomicCache(filename string, body []byte) error {
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return err
 	}
-	res, err := r.Run(ctx, source)
+	temp, err := os.CreateTemp(filepath.Dir(filename), ".script-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	if _, err = temp.Write(body); err != nil {
+		temp.Close()
+		return err
+	}
+	if err = temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temp.Name(), filename)
+}
+func (r *Runner) RunCache(ctx context.Context, name string) (Result, error) {
+	filename, err := cacheFilename(name)
+	if err != nil {
+		return Result{}, err
+	}
+	body, err := readLimitedFile(filename, maxRemoteBytes)
+	if err != nil {
+		return Result{}, fmt.Errorf("读取缓存脚本失败: %w", err)
+	}
+	res, err := r.Run(ctx, string(body))
 	res.Logs = append([]string{"脚本来自本地缓存"}, res.Logs...)
 	return res, err
 }
-
-// CacheSource 把一段脚本写进缓存（供"先审后发"的场景预置）。
-func CacheSource(cacheName, source string) {
-	files.Write(filepath.Join(cacheDir, cacheName+".go"), source)
+func CacheSource(name, source string) {
+	if filename, err := cacheFilename(name); err == nil {
+		_ = atomicCache(filename, []byte(source))
+	}
 }
-
-// CachedSource 读回缓存内容（不存在返回空串）。
-func CachedSource(cacheName string) string {
-	return files.Read(filepath.Join(cacheDir, cacheName+".go"))
+func CachedSource(name string) string {
+	filename, err := cacheFilename(name)
+	if err != nil {
+		return ""
+	}
+	body, err := readLimitedFile(filename, maxRemoteBytes)
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }

@@ -52,6 +52,27 @@ static int AGFindPID(NSString *name) {
     return found;
 }
 
+// 由本进程创建的子进程只由统一的 waitpid 回收，避免僵尸进程以及多个等待者争抢状态。
+static NSMutableDictionary *AGChildren(void) {
+    static NSMutableDictionary *children;static dispatch_once_t once;
+    dispatch_once(&once,^{children=[NSMutableDictionary new];});return children;
+}
+static void AGWatchChild(pid_t child) {
+    NSMutableDictionary *record=[NSMutableDictionary dictionaryWithDictionary:@{@"finished":@NO,@"code":@0}];
+    @synchronized(AGChildren()) {
+        if(AGChildren().count>=256){for(NSNumber *key in [AGChildren() allKeys]){if([AGChildren()[key][@"finished"] boolValue])[AGChildren() removeObjectForKey:key];}}
+        AGChildren()[@(child)]=record;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0),^{
+        int status=0;pid_t waited;do{waited=waitpid(child,&status,0);}while(waited<0&&errno==EINTR);
+        int code=waited<0 ? -1 : (WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? -WTERMSIG(status) : -1));
+        @synchronized(AGChildren()){record[@"code"]=@(code);record[@"finished"]=@YES;}
+    });
+}
+static BOOL AGChildFinished(pid_t child) {
+    @synchronized(AGChildren()){NSDictionary *record=AGChildren()[@(child)];return record && [record[@"finished"] boolValue];}
+}
+
 ag_ios_result AGSystem(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"system.pid"]) {
         return AGJSON(@{@"pid":@(AGFindPID(args[@"name"]))});
@@ -111,6 +132,26 @@ static void AGRunOnMainAndWait(dispatch_block_t block) {
 #endif
 }
 
+// 弹窗结果由按钮回调完成，不能把“已展示”当作“用户已确认”。
+@interface AGAlertWait : NSObject {
+@public NSCondition *condition;
+    BOOL completed,presented;
+    NSInteger index;
+    NSString *text;
+    UIAlertController *alert;
+}
+@end
+@implementation AGAlertWait
+- (id)init {if((self=[super init])){condition=[NSCondition new];index=-1;text=[@"" copy];}return self;}
+- (void)dealloc {[condition release];[text release];[alert release];[super dealloc];}
+@end
+static void AGCompleteAlert(AGAlertWait *state,NSInteger index,NSString *text) {
+    [state->condition lock];
+    if(!state->completed){state->completed=YES;state->index=index;[state->text release];state->text=[(text ?: @"") copy];[state->condition broadcast];}
+    [state->condition unlock];
+    [state->alert release];state->alert=nil;
+}
+
 ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"utils.toast"]) {
         NSString *message = args[@"message"] ?: @"";
@@ -144,39 +185,32 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
     }
 
     if ([op isEqualToString:@"utils.alert"] || [op isEqualToString:@"utils.input_alert"]) {
-        BOOL wantsInput = [op isEqualToString:@"utils.input_alert"];
-        NSArray *buttons = args[@"buttons"];
-        NSString *btn1 = [buttons isKindOfClass:[NSArray class]] && buttons.count > 0 ? buttons[0] : @"确定";
-        NSString *btn2 = [buttons isKindOfClass:[NSArray class]] && buttons.count > 1 ? buttons[1] : nil;
-        __block NSInteger index = -1;
-        __block NSString *text = @"";
-        __block BOOL confirmed = NO;
-        AGRunOnMainAndWait(^{
-            UIViewController *root = UIApplication.sharedApplication.keyWindow.rootViewController;
-            if (!root) return;
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:args[@"title"] ?: @""
-                                                                          message:args[@"content"] ?: @""
-                                                                   preferredStyle:UIAlertControllerStyleAlert];
-            if (wantsInput) {
-                [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-                    field.placeholder = args[@"placeholder"] ?: @"";
-                    field.text = args[@"default"] ?: @"";
-                }];
-            }
-            [alert addAction:[UIAlertAction actionWithTitle:btn1 style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-                index = 0; confirmed = YES;
-                if (wantsInput) text = alert.textFields.firstObject.text ?: @"";
-            }]];
-            if (btn2.length) {
-                [alert addAction:[UIAlertAction actionWithTitle:btn2 style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
-                    index = 1; confirmed = NO;
-                    if (wantsInput) text = alert.textFields.firstObject.text ?: @"";
-                }]];
-            }
+        if([NSThread isMainThread])return AGError(2,@"同步弹窗必须从脚本工作线程调用");
+        BOOL wantsInput=[op isEqualToString:@"utils.input_alert"];
+        AGAlertWait *state=[AGAlertWait new];
+        dispatch_async(dispatch_get_main_queue(),^{
+            [state->condition lock];BOOL expired=state->completed;[state->condition unlock];if(expired)return;
+            UIViewController *root=UIApplication.sharedApplication.keyWindow.rootViewController;
+            while(root.presentedViewController)root=root.presentedViewController;
+            if(!root){AGCompleteAlert(state,-1,@"");return;}
+            UIAlertController *alert=[UIAlertController alertControllerWithTitle:args[@"title"] ?: @"" message:args[@"content"] ?: @"" preferredStyle:UIAlertControllerStyleAlert];
+            state->alert=[alert retain];
+            if(wantsInput)[alert addTextFieldWithConfigurationHandler:^(UITextField *field){field.placeholder=args[@"placeholder"] ?: @"";field.text=args[@"default"] ?: @"";}];
+            NSArray *buttons=[args[@"buttons"] isKindOfClass:NSArray.class] ? args[@"buttons"] : @[];
+            NSString *first=buttons.count>0 && [buttons[0] length] ? buttons[0] : @"确定";
+            [alert addAction:[UIAlertAction actionWithTitle:first style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){AGCompleteAlert(state,0,wantsInput ? alert.textFields.firstObject.text : @"");}]];
+            if(buttons.count>1 && [buttons[1] length])[alert addAction:[UIAlertAction actionWithTitle:buttons[1] style:UIAlertActionStyleCancel handler:^(UIAlertAction *action){AGCompleteAlert(state,1,wantsInput ? alert.textFields.firstObject.text : @"");}]];
             [root presentViewController:alert animated:YES completion:nil];
+            [state->condition lock];state->presented=YES;[state->condition unlock];
         });
-        if (wantsInput) return AGJSON(@{@"text":text ?: @"",@"confirm":@(confirmed),@"index":@(index)});
-        return AGJSON(@{@"index":@(index)});
+        NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:300];
+        [state->condition lock];while(!state->completed && [state->condition waitUntilDate:deadline]){}
+        BOOL timedOut=!state->completed;state->completed=YES;
+        NSInteger index=state->index;NSString *text=[state->text copy];BOOL presented=state->presented;
+        [state->condition unlock];
+        if(timedOut)dispatch_async(dispatch_get_main_queue(),^{[state->alert dismissViewControllerAnimated:YES completion:nil];[state->alert release];state->alert=nil;});
+        ag_ios_result result=timedOut ? AGError(6,@"等待弹窗确认超时") : (!presented ? AGError(3,@"没有可用弹窗宿主") : (wantsInput ? AGJSON(@{@"text":text,@"confirm":@(index==0),@"index":@(index)}) : AGJSON(@{@"index":@(index)})));
+        [text release];[state release];return result;
     }
 
     // ---- 后台进程（frpc 这类常驻进程）----
@@ -228,26 +262,40 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
         for (NSUInteger i = 0; i < argvList.count; i++) free(argv[i]);
         free(argv);
         if (rc != 0) return AGError(3,[NSString stringWithFormat:@"系统拒绝启动进程(rc=%d)，需要 platform-application / run-unsigned-code 权限", rc]);
+        AGWatchChild(child);
         return AGJSON(@{@"pid":@((int)child)});
+    }
+    if ([op isEqualToString:@"utils.wait"]) {
+        NSNumber *pid=args[@"pid"];
+        @synchronized(AGChildren()) {
+            NSDictionary *record=AGChildren()[pid];
+            if(!record)return AGError(2,@"只能等待本宿主创建的子进程");
+            return AGJSON(record);
+        }
     }
     if ([op isEqualToString:@"utils.kill"]) {
         int pid = [args[@"pid"] intValue];
         if (pid <= 0) return AGError(2,@"pid 无效");
+        if(AGChildFinished(pid))return AGJSON(@{@"ok":@YES,@"killed":@YES,@"forced":@NO});
         if (kill(pid, SIGTERM) != 0 && errno != ESRCH) {
             return AGError(3,[NSString stringWithFormat:@"发送终止信号失败(errno=%d)", errno]);
         }
         // 给 300ms 收尾时间；还活着就强杀。
         for (int i = 0; i < 30; i++) {
-            if (kill(pid, 0) != 0) return AGJSON(@{@"ok":@YES, @"killed":@YES, @"forced":@NO});
+            if (AGChildFinished(pid) || (kill(pid, 0) != 0 && errno==ESRCH)) return AGJSON(@{@"ok":@YES, @"killed":@YES, @"forced":@NO});
             usleep(10 * 1000);
         }
-        kill(pid, SIGKILL);
-        return AGJSON(@{@"ok":@YES, @"killed":@YES, @"forced":@YES});
+        if(kill(pid,SIGKILL)!=0 && errno!=ESRCH)return AGError(4,@"强制终止失败，需要核对子进程状态");
+        for(int i=0;i<100;i++){
+            if(AGChildFinished(pid)||(kill(pid,0)!=0&&errno==ESRCH))return AGJSON(@{@"ok":@YES,@"killed":@YES,@"forced":@YES});
+            usleep(10*1000);
+        }
+        return AGError(4,@"已发送终止信号，尚未确认子进程退出");
     }
     if ([op isEqualToString:@"utils.alive"]) {
         int pid = [args[@"pid"] intValue];
         if (pid <= 0) return AGJSON(@{@"alive":@NO});
-        BOOL alive = (kill(pid, 0) == 0) || (errno == EPERM);
+        BOOL alive = !AGChildFinished(pid) && ((kill(pid, 0) == 0) || (errno == EPERM));
         return AGJSON(@{@"alive":@(alive)});
     }
 
@@ -267,7 +315,8 @@ ag_ios_result AGUtils(NSString *op, NSDictionary *args) {
         free(argv);
         if (rc != 0) return AGError(3,@"系统拒绝启动进程（需要 platform-application 权限）");
         int status = 0;
-        waitpid(child, &status, 0);
+        pid_t waited;do{waited=waitpid(child,&status,0);}while(waited<0&&errno==EINTR);
+        if(waited<0)return AGError(3,@"等待子进程失败");
         int code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         return AGJSON(@{@"code":@(code)});
     }

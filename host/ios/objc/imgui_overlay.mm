@@ -92,7 +92,8 @@ static UIWindow *gOverlayWindow;
 @end
 
 static id<MTLCommandQueue> gCommandQueue;
-static CADisplayLink *gDisplayLink;
+static ImGuiContext *gOverlayContext;
+static CFTimeInterval gLastFrame;
 static NSMutableDictionary<NSNumber *, AGPanel *> *gHudPanels;      // id → 面板
 static NSMutableDictionary<NSNumber *, AGPanel *> *gConsolePanels;
 
@@ -157,16 +158,16 @@ static void AGImGuiEnsureReady(void) {
         gOverlayWindow.hidden = NO;
 
         IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
+        gOverlayContext=ImGui::CreateContext();
         ImGuiIO &io = ImGui::GetIO();
         io.IniFilename = NULL;   // 不写 imgui.ini 到沙盒
         io.LogFilename = NULL;
         ImGui_ImplMetal_Init(device);
 
-        // CADisplayLink 需要一个真实 target：用 block 冒充 selector 会崩
-        gDisplayLink = [CADisplayLink displayLinkWithTarget:[AGImGuiOverlayDriver shared]
-                                                   selector:@selector(tick)];
-        [gDisplayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+        // MTKView 自己驱动绘制，不再额外挂第二个 CADisplayLink。
+        gOverlayView.paused=YES;
+        gOverlayView.preferredFramesPerSecond=30;
+
     });
 }
 
@@ -179,6 +180,11 @@ void AGImGuiRenderFrame(MTKView *view) {
     if (rpd == nil) {
         return;
     }
+    ImGui::SetCurrentContext(gOverlayContext);
+    ImGuiIO &io=ImGui::GetIO();
+    io.DisplaySize=ImVec2(view.bounds.size.width,view.bounds.size.height);
+    io.DisplayFramebufferScale=ImVec2(view.drawableSize.width/MAX(1.0,view.bounds.size.width),view.drawableSize.height/MAX(1.0,view.bounds.size.height));
+    CFTimeInterval now=CACurrentMediaTime();io.DeltaTime=gLastFrame>0 ? MAX(0.001,now-gLastFrame) : 1.0f/30.0f;gLastFrame=now;
     ImGui_ImplMetal_NewFrame(rpd);
     ImGui::NewFrame();
 
@@ -232,9 +238,7 @@ void AGImGuiRenderFrame(MTKView *view) {
 
     ImGui::Render();
     id<MTLCommandBuffer> cb = [gCommandQueue commandBuffer];
-    [cb addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-        ImGui_ImplMetal_NewFrame(rpd); // 释放上一帧资源
-    }];
+    // 后端帧状态只能在绘制线程更新，不能在 GPU 完成回调里再次 NewFrame。
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rpd];
     ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
     [enc endEncoding];
@@ -244,7 +248,16 @@ void AGImGuiRenderFrame(MTKView *view) {
 
 // ---- 对外：与 overlay_ios.m 同一套 op ----
 
+static void AGRefreshOverlayRendering(void) {
+    BOOL active=NO;
+    for(AGPanel *panel in gHudPanels.allValues)if(panel.visible){active=YES;break;}
+    if(!active)for(AGPanel *panel in gConsolePanels.allValues)if(panel.visible){active=YES;break;}
+    gOverlayView.rendering=active;gOverlayView.paused=!active;gOverlayWindow.hidden=!active;
+    if(!active)gLastFrame=0;
+}
+
 static ag_ios_result AGOverlayResult(NSDictionary *payload) {
+    AGRefreshOverlayRendering();
     return AGJSON(payload ?: @{});
 }
 

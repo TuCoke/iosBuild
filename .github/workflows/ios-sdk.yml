@@ -327,7 +327,7 @@ jobs:
             -Wl,-all_load host/ios/Frameworks/libagovios.a \
             host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
-            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework Foundation -framework UIKit -framework JavaScriptCore -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
             -framework QuartzCore \
@@ -731,7 +731,7 @@ jobs:
             -Wl,-all_load host/ios/GoLib/libagovios.a \
             host/ios/Frameworks/libagovnative.a \
             ${IMGUI_LIB} \
-            -framework Foundation -framework UIKit -framework CoreFoundation \
+            -framework Foundation -framework UIKit -framework JavaScriptCore -framework CoreFoundation \
             -framework CoreGraphics -framework ImageIO -framework VideoToolbox \
             -framework CoreMedia -framework CoreVideo -framework Security \
             -framework QuartzCore \

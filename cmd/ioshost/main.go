@@ -2,7 +2,7 @@
 
 // ioshost 是给 iOS 宿主 App 用的 C ABI 入口。
 //
-// SDK 本身是纯 Go 库（sdk/ios/...），直接被 Xcode 链接需要一个 c-archive：
+// SDK 包含 Go 与原生桥（sdk/ios/...），直接被 Xcode 链接需要一个 c-archive：
 //
 //	GOOS=ios GOARCH=arm64 CGO_ENABLED=1 \
 //	  go build -buildmode=c-archive -o host/ios/GoLib/libagovios.a ./cmd/ioshost
@@ -39,15 +39,17 @@ import (
 	"time"
 	"unsafe"
 
+	"autogov1/v2/sdk/ios/apkctl"
 	"autogov1/v2/sdk/ios/app"
 	"autogov1/v2/sdk/ios/capture"
 	"autogov1/v2/sdk/ios/device"
-	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/script/worker"
 	"autogov1/v2/sdk/ios/selftest"
 	"autogov1/v2/sdk/ios/tunnel"
+	"autogov1/v2/sdk/ios/update"
 )
 
 type reply struct {
@@ -157,6 +159,7 @@ func startLocalAPI(port int) error {
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
+
 // agov_ios_invoke 是壳唯一的调用入口：method + payloadJson → JSON 结果。
 //
 // 注意：//export 必须【紧邻】函数声明，cgo 才会生成导出符号。
@@ -206,36 +209,29 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		return okData(v)
 
 	case "sdk.status":
-		// 报告 SDK 来源：静态（编进主程序）还是动态（dylib，可热更）。
-		dylib := files.Path("Plugins/libagovios.dylib")
-		return okData(map[string]any{
-			"pluginsDir":  files.Path("Plugins"),
-			"dylibPath":   dylib,
-			"dylibExists": files.Exists(dylib),
-			"dylibBytes":  len(files.ReadBytes(dylib)),
-		})
-
-	case "sdk.install":
-		// 热更入口：把下发的 dylib 落盘到沙盒 Plugins。
-		// 已加载过动态库时 iOS 不允许卸载，需要重启进程才生效 —— 如实返回。
-		b64 := str(args, "base64")
-		if b64 == "" {
-			return fail(contextError("缺少 base64"))
-		}
-		raw, err := base64.StdEncoding.DecodeString(b64)
+		status, err := update.Status(ctx)
 		if err != nil {
 			return fail(err)
 		}
-		if len(raw) < 1024 {
-			return fail(contextError("dylib 太小，不像有效产物"))
+		return okData(status)
+	case "sdk.install":
+		raw, err := base64.StdEncoding.DecodeString(str(args, "base64"))
+		if err != nil {
+			return fail(err)
 		}
-		files.EnsureDir("Plugins")
-		path := files.Path("Plugins/libagovios.dylib")
-		files.WriteBytes(path, raw)
-		if !files.Exists(path) {
-			return fail(contextError("写入 dylib 失败: " + path))
+		result, err := update.Install(ctx, raw, str(args, "sha256"))
+		if err != nil {
+			return fail(err)
 		}
-		return okData(map[string]any{"path": path, "bytes": len(raw), "needRestart": true})
+		return okData(result)
+	case "apkctl.selftest":
+		control := apkctl.NewSession(ctx)
+		defer control.Close()
+		value := control.Eval("selftest", "1+2")
+		if value != "3" {
+			return fail(contextError("宿主 JavaScriptCore 通道未返回 3"))
+		}
+		return okData(map[string]any{"result": value, "engine": "JavaScriptCore", "transport": "tcp-binary"})
 
 	case "localapi.start":
 		port := int(num(args, "port", 18989))
@@ -282,8 +278,7 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		if builtin {
 			source = script.DemoSource
 		}
-		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
-		res, err := runner.Run(ctx, source)
+		res, err := worker.Run(ctx, source, str(args, "path"), args)
 		if err != nil {
 			// 失败也把脚本日志带回去：排错主要靠它。
 			return okData(map[string]any{"ok": false, "error": err.Error(), "logs": res.Logs})
@@ -296,6 +291,8 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 			"elapsedMs": res.Elapsed.Milliseconds(),
 		})
 
+	case "script.status":
+		return okData(worker.Status())
 	case "script.remote":
 		runner := script.New(script.Options{Params: args, Timeout: 45 * time.Second})
 		res, err := runner.RunRemote(ctx, script.RemoteOptions{
@@ -371,8 +368,8 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	}
 }
 
-// GoMain 与参考实现同名：dylib 被 dlopen 之后由宿主/自身初始化调用一次，
-// 用来确保原生能力就绪。参考实现里它是 void(void)，我们也保持一样。
+// GoMain 是本项目动态库初始化入口，由宿主加载后调用一次。
+// 样本的同名入口还会运行文件解释器；本项目将文件入口放在 Runtime/app。
 //
 //export GoMain
 func GoMain() {

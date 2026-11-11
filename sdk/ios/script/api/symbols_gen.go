@@ -22,6 +22,7 @@ import (
 	sdktunnel "autogov1/v2/sdk/ios/tunnel"
 	sdktypes "autogov1/v2/sdk/ios/types"
 	sdkuiacc "autogov1/v2/sdk/ios/uiacc"
+	sdkupdate "autogov1/v2/sdk/ios/update"
 	sdkutils "autogov1/v2/sdk/ios/utils"
 	sdkvideo "autogov1/v2/sdk/ios/video"
 	sdkyolo "autogov1/v2/sdk/ios/yolo"
@@ -36,7 +37,9 @@ var SDKPackages = interp.Exports{
 		"EventResume":    reflect.ValueOf(sdkapkctl.EventResume),
 		"EventStop":      reflect.ValueOf(sdkapkctl.EventStop),
 		"LifecycleEvent": reflect.ValueOf((*sdkapkctl.LifecycleEvent)(nil)),
+		"NewSession":     reflect.ValueOf(sdkapkctl.NewSession),
 		"RegEvent":       reflect.ValueOf(sdkapkctl.RegEvent),
+		"Session":        reflect.ValueOf((*sdkapkctl.Session)(nil)),
 		"SetCallback":    reflect.ValueOf(sdkapkctl.SetCallback),
 	},
 	"autogov1/v2/sdk/ios/app/app": {
@@ -91,9 +94,11 @@ var SDKPackages = interp.Exports{
 		"IsScreenUnlock":   reflect.ValueOf(sdkdevice.IsScreenUnlock),
 		"KeepScreenOn":     reflect.ValueOf(sdkdevice.KeepScreenOn),
 		"Lock":             reflect.ValueOf(sdkdevice.Lock),
+		"Paths":            reflect.ValueOf(sdkdevice.Paths),
 		"Power":            reflect.ValueOf(sdkdevice.Power),
 		"Press":            reflect.ValueOf(sdkdevice.Press),
 		"Reboot":           reflect.ValueOf(sdkdevice.Reboot),
+		"RuntimePaths":     reflect.ValueOf((*sdkdevice.RuntimePaths)(nil)),
 		"SelfTest":         reflect.ValueOf(sdkdevice.SelfTest),
 		"SelfTestCenter":   reflect.ValueOf(sdkdevice.SelfTestCenter),
 		"SelfTestResult":   reflect.ValueOf((*sdkdevice.SelfTestResult)(nil)),
@@ -308,6 +313,11 @@ var SDKPackages = interp.Exports{
 		"UiObject":           reflect.ValueOf((*sdkuiacc.UiObject)(nil)),
 		"Uiacc":              reflect.ValueOf((*sdkuiacc.Uiacc)(nil)),
 		"Wait":               reflect.ValueOf(sdkuiacc.Wait),
+	},
+	"autogov1/v2/sdk/ios/update/update": {
+		"Install":  reflect.ValueOf(sdkupdate.Install),
+		"Status":   reflect.ValueOf(sdkupdate.Status),
+		"Validate": reflect.ValueOf(sdkupdate.Validate),
 	},
 	"autogov1/v2/sdk/ios/utils/utils": {
 		"Alert":      reflect.ValueOf(sdkutils.Alert),

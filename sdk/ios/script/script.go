@@ -15,6 +15,7 @@ import (
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 
+	"autogov1/v2/sdk/ios/apkctl"
 	"autogov1/v2/sdk/ios/ppocr"
 	"autogov1/v2/sdk/ios/script/api"
 	"autogov1/v2/sdk/ios/script/embedfs"
@@ -86,6 +87,19 @@ func (r *Runner) execute(ctx context.Context, filesystem fs.FS, entry, source st
 	for key, values := range api.SDKPackages {
 		sdkSymbols[key] = values
 	}
+
+	control := apkctl.NewSession(runCtx)
+	defer control.Close()
+	const controlKey = "autogov1/v2/sdk/ios/apkctl/apkctl"
+	controlSymbols := make(map[string]reflect.Value, len(api.SDKPackages[controlKey]))
+	for name, value := range api.SDKPackages[controlKey] {
+		controlSymbols[name] = value
+	}
+	controlSymbols["Eval"] = reflect.ValueOf(control.Eval)
+	controlSymbols["SetCallback"] = reflect.ValueOf(control.SetCallback)
+	controlSymbols["RegEvent"] = reflect.ValueOf(control.RegEvent)
+	sdkSymbols[controlKey] = controlSymbols
+
 	const uiKey = "autogov1/v2/sdk/ios/uiacc/uiacc"
 	uiSymbols := make(map[string]reflect.Value, len(api.SDKPackages[uiKey]))
 	for name, value := range api.SDKPackages[uiKey] {

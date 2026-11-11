@@ -1,5 +1,7 @@
 # iOS 设备能力 SDK
 
+> 2026-11-11 运行链路补充：见独立镜像 `docs/ios-autogo-runtime-alignment.md`（主仓库 `v2/docs/references/memory/ios-autogo-runtime-alignment.md`）。已重做 SQLite、宿主 TCP/JavaScriptCore 与文件/ZIP 工作进程；完整 OpenCV/ImGui 绑定和全局悬浮宿主仍有明确差距。
+
 > 2026-11-11 已继续按样本校正输入、方向、视频回调、AX、应用管理与识别 ABI。当前结论见主仓库 `v2/docs/references/memory/ios-autogo-sdk-alignment.md`；本轮原生源码尚待 Apple 编译与真机验收。
 
 > 2026-11-11 状态核查：见主仓库 `v2/docs/references/memory/ios-autogo-stack-audit.md`。下面早期接口与构建记录应按核查中的当前状态理解。

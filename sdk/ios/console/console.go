@@ -6,26 +6,30 @@ package console
 
 import (
 	"fmt"
+	"strconv"
+	"sync/atomic"
 
 	"autogov1/v2/sdk/ios/internal/bridge"
 )
 
 // Console 是设备端控制台窗口。
 type Console struct {
-	id       string
-	width    int
-	height   int
-	x, y     int
-	bgColor  string
+	id        string
+	width     int
+	height    int
+	x, y      int
+	bgColor   string
 	textColor string
-	textSize int
-	visible  bool
-	lines    []string
+	textSize  int
+	visible   bool
+	lines     []string
 }
 
 // New 创建设备端控制台。
+var nextID atomic.Uint64
+
 func New() *Console {
-	return &Console{textSize: 13, textColor: "#FFFFFF", bgColor: "#CC000000"}
+	return &Console{id: strconv.FormatUint(nextID.Add(1), 10), textSize: 13, textColor: "#FFFFFF", bgColor: "#CC000000"}
 }
 
 // SetWindowSize 设置窗口尺寸（像素）。

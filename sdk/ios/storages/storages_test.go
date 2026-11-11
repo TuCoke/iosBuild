@@ -1,6 +1,9 @@
 package storages
 
 import (
+	"database/sql"
+	"os"
+	"strings"
 	"testing"
 
 	"autogov1/v2/sdk/ios/files"
@@ -8,7 +11,9 @@ import (
 
 func newRoot(t *testing.T) {
 	t.Helper()
+	closeDatabase()
 	files.SetRoot(t.TempDir())
+	t.Cleanup(closeDatabase)
 }
 
 func TestPutGetContains(t *testing.T) {
@@ -72,5 +77,41 @@ func TestPersistsAcrossReload(t *testing.T) {
 	data := load("t")
 	if data["k"] != "v" {
 		t.Fatalf("落盘后 load = %v", data)
+	}
+}
+
+// 第二个数据库连接能读到提交结果，且文件头确为 SQLite，不能以 JSON 冒充落库。
+func TestSQLiteFileAndDefaultTable(t *testing.T) {
+	newRoot(t)
+	Put("", "k", "原始值")
+	raw, err := os.ReadFile(files.Path("storages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(raw), "SQLite format 3\x00") {
+		t.Fatal("不是 SQLite 数据库")
+	}
+	external, err := sql.Open(sqliteDriver, files.Path("storages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer external.Close()
+	var value string
+	if err = external.QueryRow("SELECT value FROM storages WHERE key = ?", "k").Scan(&value); err != nil || value != "原始值" {
+		t.Fatalf("提交结果对其他连接不可见: %q %v", value, err)
+	}
+	Clear("")
+	var count int
+	if err = external.QueryRow("SELECT COUNT(*) FROM storages").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("Clear 删除了表或没有清空: %d %v", count, err)
+	}
+}
+func TestDatabaseReopensAndQuotesTable(t *testing.T) {
+	newRoot(t)
+	name := `odd"; DROP TABLE storages;--`
+	Put(name, "k", "v")
+	closeDatabase()
+	if Get(name, "k") != "v" {
+		t.Fatal("关闭重连丢失数据或表名未正确引用")
 	}
 }

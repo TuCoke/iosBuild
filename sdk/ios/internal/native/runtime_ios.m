@@ -101,6 +101,12 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
         NSDictionary *args = [value isKindOfClass:[NSDictionary class]] ? value : @{};
         AGLoadFrameworks();
         @try {
+            if ([op isEqualToString:@"runtime.paths"]) {
+                Dl_info image={0};dladdr((const void *)&ag_ios_call,&image);
+                NSString *loaded=image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @"";
+                NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject ?: @"";
+                return AGJSON(@{@"documents":documents,@"bundle":NSBundle.mainBundle.bundlePath ?: @"",@"loadedImage":loaded ?: @"",@"executable":NSBundle.mainBundle.executablePath ?: @""});
+            }
             if ([op isEqualToString:@"runtime.capabilities"]) {
                 return AGOnMain(^{
                     id workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
@@ -130,10 +136,12 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
             if ([op hasPrefix:@"system."]) return AGSystem(op,args);
             if ([op hasPrefix:@"utils."]) return AGUtils(op,args);
             if ([op hasPrefix:@"uiacc."]) return AGUIAcc(op,args);
-            // 悬浮层：与参考实现一致走 imgui + Metal；没有 Metal 设备时退回 UIKit
+            // C ABI 与 Go API 统一走主线程的 ImGui/Metal，不用不同渲染器掩盖环境问题。
             if ([op hasPrefix:@"hud."] || [op hasPrefix:@"console."]) {
-                if (AGImGuiOverlayAvailable()) return AGImGuiOverlay(op,args);
-                return AGOverlay(op,args);
+                return AGOnMain(^{
+                    if (AGImGuiOverlayAvailable()) return AGImGuiOverlay(op,args);
+                    return AGError(3,@"ImGui/Metal 悬浮宿主未就绪");
+                });
             }
             if ([op hasPrefix:@"ppocr."] || [op hasPrefix:@"yolo."] || [op hasPrefix:@"dotocr."]) {
                 // 识别栈：按参考实现的 C ABI 调用它的 libppocr/libyolo/libdotocr

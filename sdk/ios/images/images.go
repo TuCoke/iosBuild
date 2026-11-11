@@ -524,4 +524,4 @@ func writeFile(p string, data []byte) bool {
 	return files.Exists(p)
 }
 
-func lowerExt(p string) string { return strings.ToLower(files.GetExtension(p)) }
+func lowerExt(p string) string { return "." + strings.ToLower(files.GetExtension(p)) }

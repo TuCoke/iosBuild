@@ -1,128 +1,95 @@
-// Runtime/app —— 任务执行体（与参考实现同名同路径）。
-//
-// 【为什么是这个形状】
-// 参考实现的壳用 posix_spawn 拉起 Runtime/app，然后通过
-//
-//	GET http://127.0.0.1:8989/status
-//	GET http://127.0.0.1:8989/task?cmd=…
-//
-// 跟它通信（这两个 URL 是从它壳的二进制里读出来的）。
-// 我们照抄这个形状：同样的路径、同样的端口、同样的两个接口。
-//
-// 【为什么放在独立进程】
-// 解释器可检查 context，但原生阻塞不能强制抢占；进程隔离供宿主超时终止兜底。
-// 放到 Runtime/app 里，宿主超时可以直接 kill 掉再拉一个，App 本体不受影响。
-// HTTP 与解释器入口可在其他系统编译检查；设备能力仍由 iOS+cgo 实现，其他系统返回不支持。
+// Runtime/app 执行一个 Go 文件或 ZIP 工程后退出。
+// 参考样本的实际 GoMain 入口会切到执行目录，再选择 runGoFile/runZip；
+// 不能仅凭宿主出现过 8989 URL，就把这个执行体误认成常驻 HTTP 源码服务。
 package main
 
 import (
-	"encoding/base64"
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
-	"net"
-	"net/http"
+	"io"
 	"os"
-	"sync"
+	"path/filepath"
 	"time"
 
+	"autogov1/v2/sdk/ios/files"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/script/worker"
 )
 
-const listenAddr = "127.0.0.1:8989"
-
-var (
-	mu      sync.Mutex
-	busy    bool
-	started = time.Now()
-	lastErr string
-	runs    int
-)
-
-// reply 是 /task 的统一响应体（与宿主 sdk/ios/task 约定一致）。
-type reply struct {
-	OK        bool           `json:"ok"`
-	Error     string         `json:"error,omitempty"`
-	Logs      []string       `json:"logs,omitempty"`
-	Result    map[string]any `json:"result,omitempty"`
-	ElapsedMs int64          `json:"elapsedMs"`
-}
-
-func main() { runWithMainLoop(serve) }
-
-func serve() {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true,"pid":%d,"busy":%t,"runs":%d,"uptimeSec":%d,"addr":%q,"lastError":%q}`,
-			os.Getpid(), busy, runs, int(time.Since(started).Seconds()), listenAddr, lastErr)
-	})
-
-	// /task?cmd=<base64(Go 源码)>
-	//
-	// 用 base64 而不是直接放源码：源码里有 & # 换行，URL 编码容易出错；
-	// base64 是二进制的安全通道，解错也能立刻报出来。
-	mux.HandleFunc("/task", func(w http.ResponseWriter, r *http.Request) {
-		raw := r.URL.Query().Get("cmd")
-		if raw == "" {
-			writeReply(w, reply{Error: "缺少 cmd 参数"})
-			return
-		}
-		source, err := base64.StdEncoding.DecodeString(raw)
-		if err != nil {
-			writeReply(w, reply{Error: "cmd 不是合法 base64: " + err.Error()})
-			return
-		}
-
-		mu.Lock()
-		if busy {
-			mu.Unlock()
-			writeReply(w, reply{Error: "任务执行体正忙（同一时刻只跑一个任务）"})
-			return
-		}
-		busy = true
-		mu.Unlock()
-
-		startedAt := time.Now()
-		runner := script.New(script.Options{Timeout: 120 * time.Second})
-		res, err := runner.Run(r.Context(), string(source))
-		out := reply{Logs: res.Logs, ElapsedMs: time.Since(startedAt).Milliseconds()}
-		if err != nil {
-			out.Error = err.Error()
-		} else {
-			out.OK = true
-		}
-		if v, ok := res.Value.(map[string]any); ok {
-			out.Result = v
-		}
-
-		mu.Lock()
-		busy = false
-		runs++
-		if out.Error != "" {
-			lastErr = out.Error
-		}
-		mu.Unlock()
-
-		writeReply(w, out)
-	})
-
-	ln, err := net.Listen("tcp", listenAddr)
+func main() { runWithMainLoop(func() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }) }
+func run(args []string, stdout, stderr io.Writer) int {
+	options := flag.NewFlagSet("Runtime/app", flag.ContinueOnError)
+	options.SetOutput(stderr)
+	resultPath := options.String("result", "", "宿主结果文件")
+	paramsPath := options.String("params", "", "宿主参数 JSON 文件")
+	timeout := options.Duration("timeout", 120*time.Second, "脚本执行期限")
+	if err := options.Parse(args); err != nil {
+		return 2
+	}
+	if options.NArg() != 1 {
+		fmt.Fprintln(stderr, "用法: Runtime/app [--result 文件] [--params 文件] [--timeout 2m] 脚本.go|工程.zip")
+		return 2
+	}
+	filename, err := filepath.Abs(options.Arg(0))
 	if err != nil {
-		// 端口被占多半是已有实例在跑 —— 直接退出，让宿主复用那个。
-		fmt.Fprintf(os.Stderr, "监听 %s 失败: %v\n", listenAddr, err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
-	server := &http.Server{Handler: mux}
-	if err := server.Serve(ln); err != nil {
-		fmt.Fprintf(os.Stderr, "服务退出: %v\n", err)
-		os.Exit(1)
+	if *resultPath != "" {
+		*resultPath, err = filepath.Abs(*resultPath)
+		if err != nil {
+			return 2
+		}
 	}
-}
-
-func writeReply(w http.ResponseWriter, r reply) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(r)
+	var params map[string]any
+	if *paramsPath != "" {
+		raw, e := os.ReadFile(*paramsPath)
+		if e != nil {
+			fmt.Fprintln(stderr, e)
+			return 2
+		}
+		if len(raw) > 4<<20 {
+			fmt.Fprintln(stderr, "参数超过 4 MiB")
+			return 2
+		}
+		if e = json.Unmarshal(raw, &params); e != nil {
+			fmt.Fprintln(stderr, e)
+			return 2
+		}
+	}
+	// 工作进程独占 cwd；主宿主/并发 Go SDK 调用不会被修改。
+	if executable, e := os.Executable(); e == nil {
+		root := filepath.Dir(executable)
+		if e = os.Chdir(root); e != nil {
+			fmt.Fprintln(stderr, e)
+			return 2
+		}
+		files.SetRoot(root)
+	}
+	res, err := script.New(script.Options{Params: params, Timeout: *timeout}).RunFile(context.Background(), filename)
+	reply := worker.Reply{OK: err == nil, Logs: res.Logs, Value: res.Value, ElapsedMS: res.Elapsed.Milliseconds()}
+	code := 0
+	if err != nil {
+		reply.Error = err.Error()
+		code = 1
+	}
+	body, e := json.Marshal(reply)
+	if e != nil {
+		fmt.Fprintln(stderr, e)
+		return 2
+	}
+	if *resultPath != "" {
+		temp := *resultPath + ".tmp"
+		if e = os.WriteFile(temp, body, 0600); e == nil {
+			e = os.Rename(temp, *resultPath)
+		}
+		if e != nil {
+			fmt.Fprintln(stderr, e)
+			return 2
+		}
+	}
+	fmt.Fprintln(stdout, string(body))
+	return code
 }

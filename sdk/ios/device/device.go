@@ -66,3 +66,17 @@ func SetBrightness(ctx context.Context, value float64) error {
 	}
 	return native.Call(ctx, "device.brightness", map[string]any{"value": value}, nil)
 }
+
+// RuntimePaths 由原生宿主解析。更新目录不依赖脚本工作目录，loadedImage 来自 dladdr。
+type RuntimePaths struct {
+	Documents   string `json:"documents"`
+	Bundle      string `json:"bundle"`
+	LoadedImage string `json:"loadedImage"`
+	Executable  string `json:"executable"`
+}
+
+func Paths(ctx context.Context) (RuntimePaths, error) {
+	var paths RuntimePaths
+	err := native.Call(ctx, "runtime.paths", nil, &paths)
+	return paths, err
+}

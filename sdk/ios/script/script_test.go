@@ -32,8 +32,8 @@ func TestRunDemo(t *testing.T) {
 	if !ok {
 		t.Fatalf("SetResult 的值类型不对: %T", res.Value)
 	}
-	if okFlag, _ := result["ok"].(bool); !okFlag {
-		t.Fatalf("脚本结果 ok 不为 true: %#v", result)
+	if okFlag, _ := result["interpreterCompleted"].(bool); !okFlag {
+		t.Fatalf("解释器未完整执行: %#v", result)
 	}
 	if res.Elapsed <= 0 {
 		t.Fatal("耗时没有记录")

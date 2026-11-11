@@ -83,6 +83,8 @@ ag_ios_result AGSelfTest(NSString *op, NSDictionary *args) {
     id captureJSON = captureData.length ? [NSJSONSerialization JSONObjectWithData:captureData options:0 error:NULL] : @{};
     if ([touchJSON isKindOfClass:[NSDictionary class]]) result[@"touch"] = touchJSON;
     if ([captureJSON isKindOfClass:[NSDictionary class]]) result[@"capture"] = captureJSON;
-    result[@"injected"] = @((BOOL)([[touchJSON objectForKey:@"ok"] boolValue] && [[captureJSON objectForKey:@"ok"] boolValue]));
+    result[@"injected"] = @([[touchJSON objectForKey:@"ok"] boolValue]);
+    result[@"captureSucceeded"] = @([[captureJSON objectForKey:@"ok"] boolValue]);
+    result[@"effectVerified"] = @NO;
     return AGJSON(result);
 }

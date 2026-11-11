@@ -310,6 +310,7 @@
         @[@"注入点击(目标块)", @"motion.tap", [self injectPayload]],
         @[@"注入上滑", @"motion.swipe", @"{\"x1\":0.5,\"y1\":0.75,\"x2\":0.5,\"y2\":0.35,\"durationMs\":300}"],
         @[@"SDK 状态", @"sdk.status", @"{}"],
+        @[@"宿主 JS 通道", @"apkctl.selftest", @"{}"],
     ];
     for (NSArray<NSString *> *p in probes) {
         NSString *label = p[0], *method = p[1], *payload = p[2];

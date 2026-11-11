@@ -22,7 +22,7 @@ static id AGBridgeCallJSON(NSString *op, NSDictionary *args) {
     if ([op hasPrefix:@"device."])      r = AGDevice(op, args);
     else if ([op hasPrefix:@"app."])    r = AGApplication(op, args);
     else if ([op hasPrefix:@"motion."] || [op hasPrefix:@"ime."] || [op hasPrefix:@"input."]) r = AGInput(op, args);
-    else if ([op hasPrefix:@"hud."] || [op hasPrefix:@"console."]) r = AGOverlay(op, args);
+    else if ([op hasPrefix:@"hud."] || [op hasPrefix:@"console."]) r = AGOnMain(^{ return AGImGuiOverlayAvailable() ? AGImGuiOverlay(op,args) : AGError(3,@"ImGui/Metal 悬浮宿主未就绪"); });
     else if ([op hasPrefix:@"utils."])  r = AGUtils(op, args);
     else if ([op hasPrefix:@"uiacc."])  r = AGUIAcc(op, args);
     else return nil;

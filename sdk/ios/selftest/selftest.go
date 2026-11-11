@@ -14,9 +14,10 @@
 package selftest
 
 import (
+	"autogov1/v2/sdk/ios/types"
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"autogov1/v2/sdk/ios/internal/native"
@@ -58,8 +59,8 @@ func probeList() []opProbe {
 		{"device.clipset", map[string]any{"text": ""}, false},
 		{"device.button", map[string]any{"button": "__probe__"}, false},
 		{"device.brightness", map[string]any{"value": -1}, false}, // 越界 → 参数错误
-		{"device.reboot", nil, true},                             // 危险，不调
-		{"device.lock", nil, true},                               // 危险，不调
+		{"device.reboot", nil, true},                              // 危险，不调
+		{"device.lock", nil, true},                                // 危险，不调
 		{"device.vpn_set", map[string]any{}, true},
 		{"device.wifi_set", map[string]any{}, true},
 		{"device.keep_awake", map[string]any{"on": false}, false},
@@ -73,13 +74,13 @@ func probeList() []opProbe {
 		{"app.bundle_path", map[string]any{"bundleId": "__probe__"}, false},
 		{"app.data_path", map[string]any{"bundleId": "__probe__"}, false},
 		{"app.bundle_dir", nil, false},
-		{"app.launch", map[string]any{"bundleId": ""}, false},     // 缺参 → 参数错误
-		{"app.stop", map[string]any{"bundleId": ""}, false},       // 缺参
-		{"app.open_url", map[string]any{"url": ""}, false},        // 缺参
+		{"app.launch", map[string]any{"bundleId": ""}, false}, // 缺参 → 参数错误
+		{"app.stop", map[string]any{"bundleId": ""}, false},   // 缺参
+		{"app.open_url", map[string]any{"url": ""}, false},    // 缺参
 		{"app.icon", map[string]any{"bundleId": "__probe__"}, false},
-		{"app.install", map[string]any{"path": ""}, false},        // 缺参，不会真装
-		{"app.uninstall", map[string]any{"bundleId": ""}, false},  // 缺参
-		{"app.clear", map[string]any{"bundleId": ""}, false},      // 缺参
+		{"app.install", map[string]any{"path": ""}, false},       // 缺参，不会真装
+		{"app.uninstall", map[string]any{"bundleId": ""}, false}, // 缺参
+		{"app.clear", map[string]any{"bundleId": ""}, false},     // 缺参
 		// 输入
 		{"motion.frame", map[string]any{"contacts": []any{}}, false},
 		{"motion.configure", map[string]any{"senderId": 0}, false},
@@ -107,8 +108,8 @@ func probeList() []opProbe {
 		{"utils.input_alert", map[string]any{"title": "", "content": "", "placeholder": ""}, true},
 		{"utils.alive", map[string]any{"pid": 1}, false},
 		{"utils.kill", map[string]any{"pid": -1}, false},
-		{"utils.spawn", map[string]any{"path": ""}, false},  // 缺参
-		{"utils.exec", map[string]any{"path": ""}, false},   // 缺参
+		{"utils.spawn", map[string]any{"path": ""}, false}, // 缺参
+		{"utils.exec", map[string]any{"path": ""}, false},  // 缺参
 		// 控件树
 		{"uiacc.snapshot", map[string]any{"limit": 10}, false},
 		// 识别栈（未装库时应报"识别栈未安装"，属于 env）
@@ -119,8 +120,6 @@ func probeList() []opProbe {
 		{"video.start", map[string]any{"fps": 1}, false},
 		{"video.stop", nil, false},
 		// 外壳通道
-		{"apkctl.poll", nil, false},
-		{"apkctl.reg_event", map[string]any{"event": "__probe__"}, false},
 	}
 }
 
@@ -147,14 +146,14 @@ func All(ctx context.Context) map[string]any {
 		case err == nil:
 			items = append(items, item{Op: p.op, Status: "ok"})
 			counts["ok"]++
-		case strings.Contains(err.Error(), "尚未提供此原生能力"):
+		case errors.Is(err, types.ErrUnsupported):
 			items = append(items, item{Op: p.op, Status: "missing", Detail: err.Error()})
 			counts["missing"]++
 		default:
 			// 已实现，但这次调用的参数/环境不满足（越界、缺参、无权限、未装库…）
 			detail := err.Error()
-			if len(detail) > 120 {
-				detail = detail[:120]
+			if text := []rune(detail); len(text) > 120 {
+				detail = string(text[:120])
 			}
 			items = append(items, item{Op: p.op, Status: "env", Detail: detail})
 			counts["env"]++
