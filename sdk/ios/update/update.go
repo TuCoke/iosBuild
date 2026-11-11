@@ -71,6 +71,20 @@ func Validate(raw []byte, expected string) (string, error) {
 	if file.Cpu != macho.CpuArm64 || file.Type != macho.TypeDylib {
 		return "", fmt.Errorf("SDK 必须为 arm64 Mach-O 动态库")
 	}
+	if file.Symtab == nil {
+		return "", fmt.Errorf("SDK 缺少导出符号表")
+	}
+	required := map[string]bool{"_agov_ios_invoke": false, "_agov_ios_free": false, "_GoMain": false}
+	for _, symbol := range file.Symtab.Syms {
+		if _, ok := required[symbol.Name]; ok && symbol.Type&1 != 0 && symbol.Type&0x0e == 0x0e && symbol.Sect != 0 {
+			required[symbol.Name] = true
+		}
+	}
+	for name, present := range required {
+		if !present {
+			return "", fmt.Errorf("SDK 缺少导出入口 %s", name)
+		}
+	}
 	sum := sha256.Sum256(raw)
 	actual := hex.EncodeToString(sum[:])
 	if expected != "" && !strings.EqualFold(expected, actual) {
@@ -100,38 +114,42 @@ func Install(ctx context.Context, raw []byte, expected string) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
+	platform, err := Platform(raw)
+	if err != nil {
+		return nil, err
+	}
+	if platform != paths.Platform {
+		return nil, fmt.Errorf("SDK 平台 %s 与宿主 %s 不符", platform, paths.Platform)
+	}
 	installMu.Lock()
 	defer installMu.Unlock()
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err = os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
-		return nil, err
-	}
-	temp, err := os.CreateTemp(filepath.Dir(filename), ".sdk-*")
+	dir := filepath.Dir(filename)
+	state, err := readState(dir)
 	if err != nil {
 		return nil, err
 	}
-	defer os.Remove(temp.Name())
-	if _, err = temp.Write(raw); err != nil {
-		temp.Close()
-		return nil, err
+	if state.Attempt != "" {
+		return nil, fmt.Errorf("SDK 正在启动确认，请稍后安装")
 	}
-	if err = temp.Sync(); err != nil {
-		temp.Close()
-		return nil, err
-	}
-	if err = temp.Close(); err != nil {
-		return nil, err
+	filename = versionPath(dir, digest)
+	if current := fileStatus(filename); current["sha256"] != digest {
+		if err = atomicWrite(filename, raw, 0700); err != nil {
+			return nil, err
+		}
 	}
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err = os.Rename(temp.Name(), filename); err != nil {
+	state.Pending, state.LastError = digest, ""
+	if err = writeState(dir, state); err != nil {
 		return nil, err
 	}
-	return map[string]any{"path": filename, "bytes": len(raw), "sha256": digest, "loadedPath": paths.LoadedImage, "needRestart": true}, nil
+	return map[string]any{"path": filename, "bytes": len(raw), "sha256": digest, "platform": platform, "loadedPath": paths.LoadedImage, "needRestart": true}, nil
 }
+
 func fileStatus(filename string) map[string]any {
 	out := map[string]any{"path": filename, "exists": false}
 	file, err := os.Open(filename)
@@ -165,10 +183,19 @@ func Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	state, err := readState(filepath.Dir(filename))
+	if err != nil {
+		return nil, err
+	}
+	if state.Pending != "" {
+		filename = versionPath(filepath.Dir(filename), state.Pending)
+	} else if state.Current != "" {
+		filename = versionPath(filepath.Dir(filename), state.Current)
+	}
 	installed := fileStatus(filename)
 	loaded := snapshotCopy()
 	pending := installed["exists"] == true && installed["sha256"] != loaded["sha256"]
-	return map[string]any{"loaded": loaded, "loadedFileNow": fileStatus(paths.LoadedImage), "candidate": installed, "runningBuild": runningBuild(), "pluginsDir": filepath.Dir(filename), "pendingRestart": pending, "restartRequiredForInstall": true}, nil
+	return map[string]any{"release": state, "loaded": loaded, "loadedFileNow": fileStatus(paths.LoadedImage), "candidate": installed, "runningBuild": runningBuild(), "pluginsDir": filepath.Dir(filename), "pendingRestart": pending, "restartRequiredForInstall": true}, nil
 }
 
 // ActiveLibrary 返回当前进程实际使用的 SDK 文件。更新替换了同名文件时要求先重启，

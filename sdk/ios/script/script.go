@@ -16,6 +16,8 @@ import (
 	"github.com/traefik/yaegi/stdlib"
 
 	"autogov1/v2/sdk/ios/apkctl"
+	"autogov1/v2/sdk/ios/imgui"
+	"autogov1/v2/sdk/ios/opencv"
 	"autogov1/v2/sdk/ios/ppocr"
 	"autogov1/v2/sdk/ios/script/api"
 	"autogov1/v2/sdk/ios/script/embedfs"
@@ -128,6 +130,51 @@ func (r *Runner) execute(ctx context.Context, filesystem fs.FS, entry, source st
 		values["New"] = constructor
 		sdkSymbols[key] = values
 	}
+
+	// 新增能力只接入任务绑定表，不改变 Agent/MCP 调度和设备协议。
+	matScope, err := opencv.NewScope(runCtx)
+	if err != nil {
+		return result, err
+	}
+	defer matScope.Close()
+	const cvKey = "autogov1/v2/sdk/ios/opencv/opencv"
+	cvSymbols := make(map[string]reflect.Value, len(sdkSymbols[cvKey]))
+	for name, value := range sdkSymbols[cvKey] {
+		cvSymbols[name] = value
+	}
+	cvSymbols["NewScope"] = reflect.ValueOf(func(ctx context.Context) (*opencv.Scope, error) {
+		if ctx == nil {
+			return nil, fmt.Errorf("OpenCV context 不能为空")
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		scope, err := opencv.NewScope(runCtx)
+		if err == nil {
+			stop := context.AfterFunc(ctx, scope.Close)
+			context.AfterFunc(runCtx, func() { stop() })
+		}
+		return scope, err
+	})
+	cvSymbols["Decode"] = reflect.ValueOf(matScope.Decode)
+	cvSymbols["FromImage"] = reflect.ValueOf(matScope.FromImage)
+	sdkSymbols[cvKey] = cvSymbols
+	const imguiKey = "autogov1/v2/sdk/ios/imgui/imgui"
+	imguiSymbols := make(map[string]reflect.Value, len(sdkSymbols[imguiKey]))
+	for name, value := range sdkSymbols[imguiKey] {
+		imguiSymbols[name] = value
+	}
+	imguiSymbols["Run"] = reflect.ValueOf(func(ctx context.Context, draw func()) error {
+		if ctx == nil {
+			return fmt.Errorf("ImGui context 不能为空")
+		}
+		frameCtx, cancel := context.WithCancel(runCtx)
+		defer cancel()
+		stop := context.AfterFunc(ctx, cancel)
+		defer stop()
+		return imgui.Run(frameCtx, draw)
+	})
+	sdkSymbols[imguiKey] = imguiSymbols
 
 	if err = i.Use(sdkSymbols); err != nil {
 		return result, err

@@ -1,4 +1,5 @@
 #import "AGAppCtlServer.h"
+#import "AGJSBridge.h"
 #import <JavaScriptCore/JavaScriptCore.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -34,18 +35,35 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
 @property(nonatomic,assign) BOOL closed;
 @property(nonatomic,strong) dispatch_queue_t jsQueue;
 @property(nonatomic,strong) NSMutableDictionary<NSString *,JSContext *> *contexts;
+@property(nonatomic,strong) NSMutableDictionary<NSString *,AGJSBridge *> *bridges;
+@property(nonatomic,strong) NSMutableDictionary<NSNumber *,NSArray<JSValue *> *> *responses;
+@property(nonatomic,assign) uint32_t nextEvent;
+@property(nonatomic,strong) dispatch_semaphore_t evalSlots;
 - (void)run;
 - (BOOL)sendStatus:(uint32_t)status messageID:(uint32_t)messageID payload:(NSData *)payload;
 - (void)close;
 @end
 @implementation AGAppCtlConnection
-- (instancetype)init {if((self=[super init])){_fd=-1;_jsQueue=dispatch_queue_create("cc.agov.apkctl.javascript",DISPATCH_QUEUE_SERIAL);_contexts=[NSMutableDictionary dictionary];}return self;}
+- (instancetype)init {if((self=[super init])){_fd=-1;_jsQueue=dispatch_queue_create("cc.agov.apkctl.javascript",DISPATCH_QUEUE_SERIAL);_contexts=[NSMutableDictionary dictionary];_bridges=[NSMutableDictionary dictionary];_responses=[NSMutableDictionary dictionary];_nextEvent=1;_evalSlots=dispatch_semaphore_create(32);}return self;}
 - (BOOL)sendStatus:(uint32_t)status messageID:(uint32_t)messageID payload:(NSData *)payload {
     if(payload.length>AGControlMaxFrame-4)return NO;
     uint32_t header[]={htonl(messageID),htonl((uint32_t)payload.length+4),htonl(status)};
     @synchronized(self){if(self.closed)return NO;
       BOOL ok=AGWriteAll(self.fd,header,sizeof(header)) && AGWriteAll(self.fd,payload.bytes,payload.length);
       if(!ok)[self close];return ok;}
+}
+// 所有 Promise 回调均在所属 JS 串行队列上完成，不在 socket 读线程操作 JSContext。
+- (void)complete:(uint32_t)messageID error:(NSString *)error {
+    NSArray<JSValue *> *pending=self.responses[@(messageID)];if(!pending)return;[self.responses removeObjectForKey:@(messageID)];
+    JSValue *callback=pending[error?1:0];JSContext *context=callback.context;
+    typedef void(*SetLimit)(JSContextGroupRef,double,bool(*)(JSContextRef,void *),void *);typedef void(*ClearLimit)(JSContextGroupRef);
+    SetLimit set=(SetLimit)dlsym(RTLD_DEFAULT,"JSContextGroupSetExecutionTimeLimit");ClearLimit clear=(ClearLimit)dlsym(RTLD_DEFAULT,"JSContextGroupClearExecutionTimeLimit");
+    if(!set || !clear)return;
+    BOOL terminated=NO;JSContextGroupRef group=JSContextGetGroup(context.JSGlobalContextRef);set(group,5,AGTerminateScript,&terminated);
+    @try {[callback callWithArguments:@[error?:@{@"ok":@YES}]];}
+    @catch(NSException *failure){context.exception=[JSValue valueWithNewErrorFromMessage:failure.reason inContext:context];}
+    @finally {clear(group);}
+    if(terminated || context.exception)NSLog(@"[agov] JS 消息应答回调失败: %@",context.exception?:@"执行超时");
 }
 - (void)close { @synchronized(self){if(self.closed)return;self.closed=YES;shutdown(self.fd,SHUT_RDWR);close(self.fd);self.fd=-1;} }
 - (void)run {
@@ -55,21 +73,40 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
         if(messageID==0 || length<4 || length>AGControlMaxFrame)break;
         NSMutableData *body=[NSMutableData dataWithLength:length];if(!AGReadAll(self.fd,body.mutableBytes,length))break;
         uint32_t status;memcpy(&status,body.bytes,4);status=ntohl(status);
+        if(status==0 || status==3){
+            NSUInteger offset=4;NSString *error=status==3?AGTakeControlString(body,&offset):nil;
+            if(offset!=body.length || (status==3 && !error))break;
+            dispatch_async(self.jsQueue,^{[self complete:messageID error:error];});continue;
+        }
         if(status!=1){[self sendStatus:3 messageID:messageID payload:AGControlString(@"未知宿主控制命令")];continue;}
         NSUInteger offset=4;NSString *contextID=AGTakeControlString(body,&offset);NSString *source=AGTakeControlString(body,&offset);
-        if(!contextID || !source || offset!=body.length){[self sendStatus:3 messageID:messageID payload:AGControlString(@"控制帧字符串无效")];continue;}
+        if(!contextID || !source || contextID.length>128 || offset!=body.length){[self sendStatus:3 messageID:messageID payload:AGControlString(@"控制帧字符串无效")];continue;}
         // 每个连接独立保存 JS 上下文；断开后释放，下一次脚本不会继承旧全局变量。
-        dispatch_async(self.jsQueue,^{@autoreleasepool {
+        if(dispatch_semaphore_wait(self.evalSlots,DISPATCH_TIME_NOW)!=0){[self sendStatus:3 messageID:messageID payload:AGControlString(@"JS 等待队列已满")];continue;}
+        dispatch_async(self.jsQueue,^{@try {@autoreleasepool {
             @synchronized(self){if(self.closed)return;}
             JSContext *context=self.contexts[contextID];
             if(!context){
+                if(self.contexts.count>=32){[self sendStatus:3 messageID:messageID payload:AGControlString(@"JS 上下文数量超过限制")];return;}
                 context=[[JSContext alloc] init];self.contexts[contextID]=context;
+                AGJSBridge *bridge=[[AGJSBridge alloc] initWithContext:context queue:self.jsQueue];self.bridges[contextID]=bridge;[bridge install];
                 __weak AGAppCtlConnection *weakSelf=self;
                 context[@"sendToScript"]=^(NSString *message){
                     AGAppCtlConnection *connection=weakSelf;
                     NSMutableData *payload=[NSMutableData dataWithData:AGControlString(contextID)];[payload appendData:AGControlString(message)];
                     [connection sendStatus:5 messageID:1 payload:payload];
                 };
+                context[@"__agRequest"]=^(NSString *message,JSValue *resolve,JSValue *reject){
+                    AGAppCtlConnection *connection=weakSelf;if(!connection || connection.closed){[reject callWithArguments:@[@"宿主控制连接已关闭"]];return;}
+                    if(connection.responses.count>=128){[reject callWithArguments:@[@"等待应答的消息过多"]];return;}
+                    uint32_t eventID;do{eventID=connection.nextEvent++;}while(eventID==0 || connection.responses[@(eventID)]);
+                    connection.responses[@(eventID)]=@[resolve,reject];
+                    NSMutableData *payload=[NSMutableData dataWithData:AGControlString(contextID)];[payload appendData:AGControlString(message)];
+                    if(![connection sendStatus:6 messageID:eventID payload:payload]){[connection complete:eventID error:@"宿主消息发送失败"];return;}
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,15*NSEC_PER_SEC),connection.jsQueue,^{AGAppCtlConnection *live=weakSelf;[live complete:eventID error:@"脚本应答超时"];});
+                };
+                [context evaluateScript:@"globalThis.sendToScriptAsync = message => new Promise((resolve,reject) => __agRequest(String(message),resolve,reject));"];
+
             }
             context.exception=nil;
             typedef void (*SetLimit)(JSContextGroupRef,double,bool(*)(JSContextRef,void *),void *);
@@ -79,15 +116,16 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
             BOOL terminated=NO;JSContextGroupRef group=JSContextGetGroup(context.JSGlobalContextRef);
             if(!setLimit || !clearLimit){[self sendStatus:3 messageID:messageID payload:AGControlString(@"JavaScriptCore 执行限额入口不可用")];return;}
             setLimit(group,30,AGTerminateScript,&terminated);
-            JSValue *result=[context evaluateScript:source withSourceURL:[NSURL URLWithString:@"agov://apkctl/eval.js"]];
-            clearLimit(group);
+            JSValue *result=nil;
+            @try {result=[context evaluateScript:source withSourceURL:[NSURL URLWithString:@"agov://apkctl/eval.js"]];}
+            @finally {clearLimit(group);}
             NSString *error=terminated ? @"JavaScriptCore 执行超时" : (context.exception ? [context.exception toString] : nil);
             NSString *text=(!result || result.isUndefined || result.isNull) ? @"" : [result toString];
             [self sendStatus:error ? 3 : 0 messageID:messageID payload:AGControlString(error ?: text)];
-        }});
+        }} @catch(NSException *failure) {[self sendStatus:3 messageID:messageID payload:AGControlString(failure.reason?:@"JS 原生桥异常")];} @finally {dispatch_semaphore_signal(self.evalSlots);}});
     }}
     [self close];
-    dispatch_async(self.jsQueue,^{[self.contexts removeAllObjects];});
+    dispatch_async(self.jsQueue,^{for(AGJSBridge *bridge in self.bridges.allValues)[bridge close];[self.responses removeAllObjects];[self.bridges removeAllObjects];[self.contexts removeAllObjects];});
 }
 @end
 

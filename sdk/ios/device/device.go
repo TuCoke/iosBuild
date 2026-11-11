@@ -69,6 +69,7 @@ func SetBrightness(ctx context.Context, value float64) error {
 
 // RuntimePaths 由原生宿主解析。更新目录不依赖脚本工作目录，loadedImage 来自 dladdr。
 type RuntimePaths struct {
+	Platform    string `json:"platform"`
 	Documents   string `json:"documents"`
 	Bundle      string `json:"bundle"`
 	LoadedImage string `json:"loadedImage"`

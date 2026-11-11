@@ -1,136 +1,99 @@
-# iOS SDK 对标 AutoGo：当前进度与未完成项
+# iOS SDK 与 AutoGo iOS 对标状态
 
-更新：2026-11-11。本文是当前状态入口；较早分析中的“完全对标”“全部可用”或“截图/AX 尚未实现”不能继续作为当前结论。
+更新时间：2026-11-11。主实现为 `v2/sdk/ios/`，`v2/ios/` 是独立 Apple 构建镜像。
 
-## 先看结论
+**本轮先实现功能，未编译、未运行测试、未触发 CI。** 下文“本轮已补代码”不能理解成已经通过模拟器或真机验收。使用方式、边界与更新流程见 [新增功能说明](ios-sdk-features.md)。
 
-核心设备能力、Go 脚本解释与独立执行进程已有实现；SDK 原生截图、AX 节点、宿主 JavaScriptCore 基础通道已在模拟器验证。**目前还没有完整达到 AutoGo iOS 的全部能力与运行行为。**
+## 样本与已有验证
 
-明确的代码缺项集中在完整 OpenCV Go 绑定、完整 ImGui Go 绑定、跨 App 全局悬浮宿主、JavaScriptCore 原生 UI 桥，以及依赖制品和更新恢复闭环。视频、输入、识别等已有代码的功能，仍有未完成的验收；不能把它们统一写成“没有实现”。
+参考核心为用户提供的 `AutoGo-ios/resources/libs/ios/libgoeval.dylib`，SHA256 为 `b4e157737a9bba0de49fd98ad5d9b5e30519118cacbd63df46e807b0e6f5af48`。它虽名为 dylib，Mach-O 实际是 MH_EXECUTE。闭源样本的符号、调用点和行为用于确认原理，不能从名字相同直接推导所有签名和结果完全一致。
 
-本轮只整理状态、修正文档及说明性注释，不新增设备功能，不修改云控 Agent、MCP 或服务器工作流。
+此前版本的证据继续有效，但只覆盖当时提交：
 
-主仓库实现快照：[891116e](https://gitee.com/Lovely_Rabbit/agent-cgo/commit/891116e9109d658ef584a130d1bc19f7582b205c)，已推送 `v2` 分支。该提交包含此前完成的 iOS 能力与独立宿主改动；后续文档提交只更新当前对标状态，不将所有缺项写成已完成。
-
-## 判定方式与证据
-
-| 标记 | 含义 |
-| --- | --- |
-| 已实现、已验证 | 已有对应代码，并且在表内所述范围实际验证 |
-| 已实现、待验收 | 有具体实现，但运行效果或真机授权尚未证明 |
-| 部分实现 | 基础可用，但仍缺明确功能、装配或生命周期环节 |
-| 未实现 | 当前源码没有提供对应的完整模块或实现 |
-| 待核对差异 | 两侧实现不同，不能在未核实行为前宣称完全一致 |
-
-参考核心是提供的 `AutoGo-ios/resources/libs/ios/libgoeval.dylib`，SHA256：`b4e157737a9bba0de49fd98ad5d9b5e30519118cacbd63df46e807b0e6f5af48`。依据包括其 Go 编译符号、ObjC 方法、调用参数、宿主程序和配套资源；没有在相同真机上把闭源程序与本项目逐项做黑盒对照。
-
-该文件虽然名为 dylib，实际类型是 `MH_EXECUTE`。我方是 `libagovios.dylib` 动态 SDK 加 `Runtime/app` 薄执行体；两侧不能作为同形制品直接互换，也不能继承对方的真机测试结论。
-
-当前验证依据：
-
-- [修复版 9a1900d](https://github.com/TuCoke/iosBuild/actions/runs/42987054926)：Go 检查、真实 iPhoneOS/CGo 编译、IPA/DEB 打包、模拟器功能验证四项通过。
-- [收尾版 70e5445](https://github.com/TuCoke/iosBuild/actions/runs/42988971066)：四项通过。首次模拟器启动因 FrontBoard 尚未注册应用失败，单独重跑通过，未放宽 SDK 断言。
-- 原生 JPEG 已逐张查看，画面与方向正常；不是用外部 `simctl` 截图替代 SDK 采集。
-- 验证设备是 GitHub 的 iPhone 16 Pro / iOS 18.5 / arm64 模拟器，**不是实体 iPhone**。本次文档更新未重复运行编译或设备测试。
+- [9a1900d 的 CI](https://github.com/TuCoke/iosBuild/actions/runs/42987054926) 与 [70e5445 的 CI](https://github.com/TuCoke/iosBuild/actions/runs/42988971066) 曾通过；第二次存在一次 FrontBoard 未注册失败，重跑通过，未放宽断言。
+- iPhone 16 Pro / iOS 18.5 / arm64 **模拟器**中，SDK 自身取得正常 JPEG，AX 宿主 79 / 工作进程 80 个节点，注入目标计数 0→1，脚本工作进程正常返回。
+- 原生 JPEG 逐张查看过；不是用 simctl 截图替代 SDK 采集。没有实体 iPhone 的完整验收。
+- 这些历史结果不覆盖本轮新写的 OpenCV、ImGui 控件、JS UI 桥、资源工具、预热和升级恢复代码。
 
 ## 完整能力对照
 
-下表的源码位置以主仓库为准，目录前缀统一为 `v2/sdk/ios/`；宿主例外单独写明。
+SDK 路径统一以前缀 `v2/sdk/ios/` 表示；宿主路径另标。
 
-| 能力 | AutoGo 样本的技术路线或结构 | 我们当前状态与实现位置 | 还缺什么或未验证什么 |
+| 能力 | 样本路线 | 我们已有/本轮实现 | 仍缺或未验证 |
 | --- | --- | --- | --- |
-| 点击、长按、滑动 | IOHID 父 digitizer 事件和手指子事件 | 已实现：`motion/`、`internal/native/touch_ios.m`；模拟器目标块点击计数实际 0→1 | 长按、轨迹、不同 App 的实际响应仍需真机验收 |
-| 多指、双指缩放 | 多个手指事件组合与时序 | 已实现：完整帧、增量触点、Gesture/Pinch、取消抬手 | 多指交接、边缘坐标、复杂手势没有完整真机验收；不能声称事件字节完全相同 |
-| 坐标与方向 | 屏幕自然尺寸、scale、FrontBoard 方向 | 已实现：`internal/native/display_ios.m`、`types/` | 横竖屏切换、iPad、显示缩放与多机型仍需验收 |
-| 中文与键盘 | Unicode 组合字符分段、HID 按键 | 已实现：`ime/`、`internal/native/touch_ios.m` | 中文组合、emoji、各 App 输入框和系统授权需真机验收 |
-| 截图 | CARenderServer → IOSurface → CGImage | 已实现、模拟器已验证：`capture/`、`internal/native/capture_ios.m` | 真机、受保护画面、方向切换仍待验收；私有函数返回约定不能跨目标照搬 |
-| H.264 视频 | VideoToolbox、SPS/PPS、Annex B、编码回调 | 已实现、已编译：`video/`、`internal/native/video_ios.m` | 尚缺真实连续编码、关键帧、调码率、播放与长时间负载验收；截图通过不等于视频通过 |
-| 原始帧与 C→Go 回调 | BGRA 帧和编码数据回调 | 已实现：`streambridge_ios.m`、`callbacks_ios.go`、`video/callbacks.go` | 尚缺连续帧、背压、停止/重启及长时间资源回收实测 |
-| AX 控件采集 | AXRuntime / AXUIElement 缓存、5039 快照、坐标补采 | 已实现、模拟器已验证：`internal/native/ax_runtime_ios.m`、`uiacc/` | 参考测试中宿主 79 / 独立进程 80 个真实节点；跨 App、系统弹窗及不同真机版本仍待验收 |
-| 节点查询与等待 | 节点属性筛选、刷新与生命周期 | 已实现：`uiacc/selector.go`、`uiacc/cache.go` | 有 Go 逻辑验证，未做与样本控件树逐字段、逐页面的黑盒等价对照 |
-| AX 环境初始化 | 完整键盘控制、坐标预热、必要的身份处理 | 部分实现：`ax_runtime_ios.m`、`uiacc/environment.go` | 样本中心预热后关闭设置；我方保持开启并提供显式恢复；预热顺序和 root/mobile 启动环境仍有差异 |
-| 应用管理 | SpringBoard / FrontBoard / LSApplicationWorkspace，安装 helper | 已实现：`app/`、`internal/native/app_ios.m`、`installer_ios.m` | 启动、前台识别、图标、安装/卸载/清数据尚未完整真机验收 |
-| 设备与系统 | 系统信息、亮度、剪贴板、锁屏、网络等 | 已实现：`device/`、`system/`、`internal/native/device_ios.m` | 多项依赖系统授权；自检受限不能直接认定源码缺失 |
-| 基础图像处理与找色 | Go imaging / Go 图像计算 | 已实现：`images/`；缩放、旋转、透明度灰度、阈值等有 Go 验证 | 找色尚未与闭源样本逐像素对照；不等于完整 OpenCV 接口 |
-| 完整 OpenCV Go 能力 | Mat、图像匹配及更多 OpenCV 公开绑定 | **未实现**：`opencv/` 当前只有说明文件 | 缺 Go 类型、资源释放、Mat/FindImage 等完整公开绑定；链接 OpenCV 原生库不能补上这一层 |
-| PPOCR / YOLO / 点阵 OCR | NCNN、OpenCV 与识别引擎 dylib | 已实现适配：`ppocr/`、`yolo/`、`dotocr/`，胶水在 `v2/ios/host/ios/objc/ag_rec.mm` | 缺实际模型识别验收；原生引擎仍依赖预编译库，未做到算法全部自建源码；资源交付见下文 |
-| 基础 HUD / Console | ImGui + Metal | 部分实现：`hud/`、`console/`、`imgui/` 及宿主 `imgui_overlay.mm` | 能提供基础面板；不等于跨 App 全局悬浮或完整脚本 UI |
-| 完整 ImGui Go 绑定 | 大量 cimgui 函数、控件与结构访问器 | **仅少量绑定**：`imgui/cimgui.go`，当前 12 个基础函数 | 缺 Button、输入框、表格等大量 Go 控件接口、结构封装、生成器与完整脚本绑定；原生 cimgui 编译成功不等于 Go API 完成 |
-| 全局悬浮窗 / 悬浮球 | agoverlayd / floatball 等独立宿主、全局窗口与触摸通道 | **未实现该完整宿主**；当前面板依附自身 UIWindowScene | 缺独立全局宿主、触摸 socket、跨 App 显示、进程看护和退出清理 |
-| JavaScriptCore 基础控制 | 宿主 JS 引擎、TCP 8990 与消息回调 | 已实现、基础链路已验证：`apkctl/`、宿主 `AGAppCtlServer.m`；实际 `1+2=3` | 基础 Eval/消息不是完整原生 UI 桥 |
-| JS 原生 UI 桥 | AGJSSelector / AGJSStruct / AGJSActionTarget 等 | **部分基础通道，完整 UI 桥未实现** | 缺对应原生对象/结构映射、UI 构建、动作回调及完整双向应答装配 |
-| Go 脚本解释 | 内嵌 app/yaegi、SDK 及其他包绑定 | 已实现：上游 Yaegi、`script/`、`script/api/`；支持 Go/工程/ZIP/import/embed | 样本自有 fork 的差异、core 和全部第三方绑定没有完整核实；不能保证任意 AutoGo 脚本原样运行 |
-| 独立脚本进程 | 独立任务执行体及进程管理 | 已实现、正常执行已验证：`script/worker/`、宿主 `RuntimeMain.m` | 已有超时、父进程看护和 waitpid 代码；杀宿主、阻塞原生调用等故障注入未完整验收 |
-| 文件、Plist、存储、HTTP | 文件 API、属性列表、SQLite、HTTP | 已实现：`files/`、`storages/`、`https/`，已有相关 Go 验证 | Plist 使用公开 howett.net/plist；并未证明与样本内部 fork 所有边界完全一致 |
-| SDK 更新 | 安装候选版本、启动加载及进程生命周期 | 基础已实现：`update/`、宿主 `AGSDKLoader.m` | 当前为安装后重启生效；完整平台校验、依赖/资源清单、版本健康检查与自动回滚闭环仍缺；真实更新尚未验收 |
-| 穿透 | frpc 客户端及生命周期 | 已实现：`tunnel/`，有包内二进制定位及源码构建回退 | 真实配置、外网连通和长期保活尚未验收；缺参数时启动失败不算“没有实现” |
+| 点击、长按、滑动 | IOHID 父 digitizer 与手指子事件 | 既有 `motion/`、`internal/native/touch_ios.m`；模拟器点击曾生效 | 真机、不同 App、长轨迹与边界验收 |
+| 多指、双指缩放 | 多个触点及轨迹时序 | 既有完整帧/增量触点、Gesture/Pinch、取消抬手 | 多指交接与复杂手势实测 |
+| 坐标与方向 | 尺寸、scale、FrontBoard 方向 | 既有 `display_ios.m`、`types/` | 横竖屏切换、iPad、多机型 |
+| 中文、键盘 | Unicode 与 HID 键盘事件 | 既有 `ime/` 和输入桥 | 中文组合、emoji、跨 App 输入验收 |
+| 截图 | CARenderServer → IOSurface → CGImage | 既有、模拟器已验证；区分设备返回 0 与模拟器布尔成功约定 | 真机、受保护画面、切换方向 |
+| H.264 视频 | VideoToolbox、SPS/PPS、Annex B、PTS | 既有 `video/`、`video_ios.m` | 连续编码、调参、背压、播放、长时间运行 |
+| 原始帧 / C→Go 回调 | BGRA 与编码回调 | 既有 streambridge/callbacks | 持续帧、停止重启与回收 |
+| AX 树与查询 | AXRuntime/AXUIElement、5039 缓存快照、网格补采 | 既有、模拟器已验证；Go/C ABI 共用主线程采集 | 真机跨 App、弹窗、逐字段等价对照 |
+| AX 环境初始化 | 辅助设置、中心预热、身份处理 | **本轮补显式 Warmup**，有界中心查询、设置恢复、保留预热状态 | 默认 Bootstrap 未切换；不修改并发 Go 进程身份，root/mobile 场景仍需验收 |
+| 应用管理 | SpringBoard、FrontBoard、LSApplicationWorkspace、helper | 既有 `app/`、installer | 安装、卸载、清数据与启动完整真机验收 |
+| 设备与系统 | 系统信息、亮度、剪贴板、锁屏等 | 既有 `device/`、`system/` | 各项授权与机型验收 |
+| 基础图像与找色 | Go imaging 与像素运算 | 既有 `images/`；有此前 Go 验证 | 与样本逐像素对照 |
+| OpenCV Mat 与匹配 | 原生 OpenCV 与 Go 绑定 | **本轮补代码**：Mat、Scope、编解码、裁剪、缩放、旋转、灰度、阈值、模糊、Canny、FindImage/All；原生 `host/ios/objc/ag_cv.mm` | 未编译/实测；未提供完整 OpenCV 所有类型/函数；模拟器运行库暂缺 |
+| PPOCR / YOLO / 点阵 OCR | NCNN/OpenCV 与识别引擎 dylib | 既有引擎适配；本轮补原生资源交付检查 | 实际模型效果、算法自建源码、模型发布清单仍缺 |
+| HUD / Console | ImGui + Metal | 既有基础面板；仍在自身 WindowScene | 不是跨 App 全局悬浮 |
+| ImGui Go 控件 | cimgui、控件、结构访问器 | **本轮补代码**：44 项生成接口、Checkbox/Slider/InputText、Run 帧回调、触摸与原生键盘代理、任务解绑与异常回收 | 未编译/实测；未覆盖所有结构、绘图对象和完整高级 API |
+| 全局悬浮宿主 / 悬浮球 | agoverlayd、floatball、全局窗口注册、触摸 socket | **仍未实现完整独立宿主**；本轮继续核对样本 `SBSAccessibilityWindowHostingController` 和 FrontBoard 场景链 | 全局窗口、CAContext 图层交付、触摸路由、独立宿主看护与退出清理 |
+| JavaScriptCore 控制 | 宿主 JS、TCP 8990、消息回调 | 基础链路此前已验证；**本轮补带 ID/超时的双向请求应答** | 新协议分支未运行验证 |
+| JS 原生 UI 桥 | 原生对象/结构、控件、动作目标 | **本轮补代码**：AGJSBridge/Selector/Struct/ActionTarget、固定原生控件、属性/层级、事件、SDK 能力调用、按上下文清理与限额 | 未编译/实测；不是任意 ObjC 类/selector 和样本全部私有 API 的完整兼容层 |
+| Go 脚本解释 | app/yaegi、SDK/第三方绑定 | 既有上游 Yaegi、工程/ZIP/import/embed；**本轮注册新增能力并绑定 Mat/UI 任务生命周期** | 样本 fork、core 路径及全部第三方签名差异仍未完整核实 |
+| 独立脚本进程 | native loader、任务工作进程与看护 | 既有 Runtime/app；已验证正常返回；有硬超时、父进程看护与 waitpid | 故障注入与阻塞原生调用验收 |
+| 文件 / Plist / SQLite / HTTP | 文件、属性列表、SQLite、HTTP | 既有相应包和此前验证 | 样本内部 fork 边界不保证完全一样 |
+| SDK 更新 | 候选安装、启动加载、健康和恢复 | **本轮补代码**：平台/入口验证、不可变版本目录、pending/attempt/current/previous、健康确认、下次启动回退、手动 rollback | 未编译/实测；依赖 ABI/模型兼容、版本清理、发布信任链和长期健康策略仍需补齐 |
+| 原生依赖交付 | 引擎库与模型制品 | **本轮补代码**：7 个库的来源/摘要/平台锁、HTTPS或离线获取、缺件阻止发布、包内清单与运行期检查 | 本轮未获取资源；预编译引擎不是自建源码；模型未纳入统一发布 |
+| 穿透 | frpc 与进程生命周期 | 既有客户端定位与源码构建回退 | 外网与长期保活验收 |
 
-特别区分：`device.wake` 与 `dotocr.set_dict` 已有原生分支。模拟器缺少系统入口或未加载识别库时返回 unsupported，不等于没有源码。9a1900d 的 70 项探针中，40 项为调用返回成功、4 项环境失败、2 项不支持、6 项跳过有副作用、18 项仅参数拒绝；这些数字不能换算成“70 项设备能力全部通过”。
+`device.wake`、`dotocr.set_dict` 已有分支；环境不支持不等于没有源码。历史 70 项探针中，40 项调用返回成功、4 项环境失败、2 项不支持、6 项跳过副作用、18 项仅参数拒绝，不等于 70 项功能全部通过。
 
-## 真正还需要写代码的地方
+## 本轮文件边界
 
-| 缺项 | 对用户有什么影响 | 后续实现位置 |
-| --- | --- | --- |
-| 完整 OpenCV Go 绑定 | 无法直接使用完整 Mat/图像匹配等 API | `v2/sdk/ios/opencv/`，同步构建镜像 |
-| 完整 ImGui Go 绑定和生成器 | 无法用 Go 脚本完整构建按钮、表单等 UI | `v2/sdk/ios/imgui/`，生成工具与 `script/api/` |
-| 全局悬浮宿主 | 切到其他 App 后，不能把当前 WindowScene 面板当作全局控制层 | `v2/ios/host/ios/` 的独立宿主、事件通道与生命周期 |
-| JS 原生 UI 桥 | JavaScriptCore 能执行 JS，但不能等价调用样本全部原生 UI 能力 | 宿主 `AGAppCtlServer.m` 及对应桥接类 |
-| 原生依赖的统一交付 | 主仓库干净检出与验证仓预置资源不一致，可能生成没有识别库的包 | 原生资源清单、获取/校验流程、构建脚本与缺件检查 |
-| 完整更新与恢复闭环 | 新版 SDK 可安装，不代表平台错误或启动后异常能自动恢复 | `update/`、`AGSDKLoader.m` 和宿主更新装配 |
+```text
+v2/sdk/ios/
+├── opencv/                  Mat、Scope、图像处理与匹配
+├── imgui/                   帧回调、控件及 C 包装声明
+├── resources/               包内原生依赖检查
+├── update/                  平台检查、版本状态和回退请求
+├── uiacc/environment.go     显式预热 API
+├── internal/native/         OpenCV 分派、AX 预热及宿主平台信息
+└── script/                  新能力导出与任务生命周期绑定
+v2/ios/
+├── host/ios/Sources/         JS 原生 UI 桥、控制应答和 SDK 启动恢复
+├── host/ios/objc/            OpenCV 胶水、ImGui 帧/触摸/输入代理
+├── host/ios/third_party/     生成控件的 C++ 实现
+├── host/ios/native-resources.lock.json
+├── tools/                   控件生成器与原生资源获取/校验工具
+├── .github/workflows/       发布前缺件校验及新原生源的构建装配
+└── sdk/ios/                 同一份能力源码的构建镜像
+```
 
-另外有两项需要核对后再决定具体实现，不能直接写成已经完成：
+本轮未改 Agent、MCP、云控调度、安卓协议及其已有未提交工作。
 
-1. **AX 初始化与身份顺序。** 已确认设置恢复和中心预热存在差异；root 子进程启动路径也不能仅凭 entitlements 判定实际生效。需要在已授权真机上核对行为后补齐，不在并发 Go 进程里随意切换整进程身份。
-2. **Yaegi fork 与脚本兼容层。** 样本有自有解释器路径，我方用上游 v0.16.3；还缺完整差异清单。样本 `core` 的部分能力已分散到我方 app/device/motion/ime/video/utils；缺同路径包装不等于这些设备能力都没有。若要求原样运行样本脚本，还需导入路径、类型、常量、签名和行为兼容。
+## 仍需继续实现的代码
 
-## 原生依赖交付的具体缺口
+1. **完整独立全局悬浮宿主**。自身窗口不能替代跨 App 能力。样本能确认 `agoverlayd` 的 `OverlayRegisterContextId`、`OverlayClientThread`、`OverlayApplyRegionsOnMain`、FrontBoard 场景初始化，以及 floatball 的 `CAContext remoteContextWithOptions:`；完整 ABI/协议尚不能只凭符号名照写。
+2. **OpenCV/ImGui 的其余完整绑定**。本轮是实际可调用的核心实现，不是全部名称覆盖；高级容器、复杂结构所有权和回调签名仍需逐项确认后扩充。
+3. **Yaegi fork / core / 第三方兼容层**。现有能力分布在 motion/device/app 等包，不应把缺同路径包装误报为缺所有设备能力；若要求样本脚本原样运行，仍需核对类型、签名、导入路径和行为。
+4. **模型与依赖兼容发布**。模型版本、签名清单、宿主/SDK/ImGui ABI 兼容、原生算法可重建源码没有完整闭环。新 ObjC 桥和 libimgui 必须与新宿主一起交付，不能声称只热更 Go SDK 就能升级它们。
+5. **更新后续策略**。当前是重启后加载及自动选择已确认版本，不是运行中卸载 Go 库；还缺长期健康观测、旧版本清理与完整发布信任链。
 
-已检查两侧 Git 跟踪文件：
+此外，真机输入、方向、跨 App AX、视频/背压、模型识别、全局 UI 与升级恢复仍需后续验收。这些是验证工作，不要靠新增空包或目录冒充完成。
 
-- GitHub `iosBuild` 验证仓库预置了 `host/ios/Runtime/libppocr.dylib`、`libyolo.dylib`、`libdotocr.dylib`、`libncnn.dylib` 和三个 OpenCV dylib，以及 `Frameworks/frpc-ios`。
-- 主仓库的 `v2/ios/host/ios/Runtime/` 没有这些文件；`Frameworks/` 当前只有说明文件。frpc 有从源码构建的回退，识别运行库没有同等的统一获取闭环。
-- 当前工作流逐个复制已经存在的 Runtime dylib，没有因识别库缺件而强制失败。因此 **IPA 打包通过不保证 OCR/YOLO/点阵识别在制品中可用**。
+## 已知差异
 
-后续需要明确库/模型版本、架构和系统平台、来源、摘要及包内路径；制作可重复获取的制品，并在要求启用识别的发布包中检查缺件。识别库没有全部可重建源码、模型效果未经验证，分别登记，不能用 Go 包目录存在替代完成状态。
+- 样本元数据最低 iOS 13；我方构建目标 iOS 15，未声称支持 13/14。
+- 当前 ImGui 为 1.92.5 / 19250；样本有 WIP / 19244 记录。
+- 我方保留独立拥有的帧、context 和结构化错误，不要求复制借用缓冲或并发进程内临时切换身份。
+- 新增模板匹配阈值定义、UI 协议和更新状态是本仓库明确约定，不冒称与样本二进制可互换。
 
-## 热更新已经有什么，还没有什么
+[历史函数名清单](ios-autogo-function-inventory.json) 是本轮之前的静态名称对照，只用于定位线索，不能计算完成百分比或替代签名/行为验证。
 
-已有：Mach-O/arm64/dylib 检查、可选 SHA256、临时文件写入和同步、原子替换、真实加载路径与加载时摘要、候选版本状态、重启生效；启动器在候选库加载失败时还会尝试包内库。
+## 参考记录
 
-缺少的完整闭环包括：
-
-- 校验 `LC_BUILD_VERSION` 等平台信息，防止仅凭 arm64 把模拟器库当成真机库。
-- SDK 与原生依赖/模型的版本清单、兼容关系和发布校验；摘要不等于系统签名授权。
-- 启动后健康检查、已知可用版本保存、异常后的选择/恢复和可观测升级结果。
-- 真机上执行“安装 → 重启 → 加载新版本 → 故障恢复”的完整验收。
-
-它不是在新线程中替换当前正在运行的 Go 动态库。独立线程/进程用于任务执行与看护；当前 SDK 更新需要重启宿主后生效。
-
-## 还存在的版本与行为差异
-
-| 项目 | 当前差异 | 判定 |
-| --- | --- | --- |
-| 最低系统版本 | 样本元数据最低 iOS 13；我方构建目标 iOS 15 | 不表示我们已经支持 13/14；需要实际构建、依赖与设备覆盖，不能只改版本字符串 |
-| ImGui 版本 | 样本记录有 1.92.5 WIP / 19244，当前 vendor 为 1.92.5 / 19250 | 属于版本差异，不能仅凭“1.92.5”宣称完全相同 |
-| 图像算法 | 多项算法已核实并有实现；找色仍复用公共实现 | 尚未与样本逐像素黑盒对照 |
-| 缓冲所有权 | 我方将帧复制为 Go 可持有的独立内存 | 有意的生命周期约定，不要求把它改成借用缓冲才算实现 |
-| 调用与结果协议 | 我方有 context、错误分类及自定义脚本参数/结果协议 | 不能宣称与样本二进制或宿主协议全部互换 |
-
-不使用函数数量计算“完成百分比”。现有 [函数名清单](ios-autogo-function-inventory.json) 只比较编译名称，不覆盖参数、类型、常量、行为、授权和稳定性。
-
-## 建议的后续顺序
-
-1. 先补发布依赖清单、缺件检查和更新恢复闭环，让同一份源码与制品可以复现。
-2. 按实际脚本需要补 OpenCV 图像匹配与类型/资源管理。
-3. 按是否需要手机端脚本 UI，补完整 ImGui、全局悬浮宿主和 JS 原生 UI 桥。
-4. 单独推进真机验收：输入/多指/Unicode、截图与方向、AX 跨 App、连续视频、识别、安装与更新恢复。
-
-这四类工作应分别记录。代码缺项靠实现补齐；真机效果靠实际验收确认；已知的接口组织差异不应盲目转化为新目录或整框架重构。
-
-## 相关记录
-
-- [原生能力、参数与 ABI 对齐](ios-autogo-sdk-alignment.md)
-- [脚本、存储、宿主与执行体对齐](ios-autogo-runtime-alignment.md)
-- [截图与 AX 失败定位及实测](ios-capture-ax-diagnostics.md)
-
-主实现位置为 `v2/sdk/ios/`；`v2/ios/sdk/ios/` 是独立 Apple 构建镜像。新增功能应保持同一实现来源和明确同步，不在 Agent、MCP 和 SDK 各写一份设备算法。
+- [原生能力与 ABI](ios-autogo-sdk-alignment.md)
+- [脚本与宿主对齐](ios-autogo-runtime-alignment.md)
+- [截图与 AX 的历史定位和实测](ios-capture-ax-diagnostics.md)
+- [本轮新增功能与使用方式](ios-sdk-features.md)

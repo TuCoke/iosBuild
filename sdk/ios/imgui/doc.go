@@ -1,10 +1,7 @@
-// Package imgui 提供 Dear ImGui / cimgui 的基础 Go 绑定。
-//
-// 当前已有 12 个基础函数，供 HUD/Console 的 ImGui + Metal 面板使用；
-// 不是完整生成绑定，不能把原生 cimgui 的全部导出符号当成 Go API 已覆盖。
-// Button、输入框、表格等完整控件、结构访问器与脚本绑定仍需生成和封装。
-//
-// 当前 vendor 为 1.92.5 / 19250；样本有 1.92.5 WIP / 19244 的版本记录，
-// 不宣称具体版本及全部接口完全相同。当前面板依附宿主 WindowScene，
-// 独立的跨 App 全局悬浮宿主仍未实现。当前状态见 docs/ios-autogo-status.md。
+// Package imgui 提供 Dear ImGui / cimgui 的 Go 脚本 UI 绑定。
+// Run 绑定宿主主线程的 Metal 帧，包含基础窗口、44 项生成控件/布局接口与可变值控件。
+// 控件、表格和弹窗应按 ImGui 约定配对；任务取消后释放回调，回调 panic 会返回错误。
+// 生成器仅覆盖已经审核的 ABI，不把全部 5,468 个编译名称当作已实现的 Go API。
+// 当前 vendor 为 1.92.5 / 19250；样本记录为 1.92.5 WIP / 19244。
+// 本实现依附宿主 WindowScene，独立跨 App 全局悬浮宿主仍需另行实现。
 package imgui

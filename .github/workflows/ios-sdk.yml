@@ -14,6 +14,8 @@ on:
       - 'go.sum'
       - 'cmd/ioshost/**'
       - 'host/ios/**'
+      - 'tools/native_resources.py'
+      - 'tools/imgui_bindings.py'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
@@ -26,6 +28,8 @@ on:
       - 'go.sum'
       - 'cmd/ioshost/**'
       - 'host/ios/**'
+      - 'tools/native_resources.py'
+      - 'tools/imgui_bindings.py'
   workflow_dispatch:
 
 permissions:
@@ -171,6 +175,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 获取并校验锁定的原生运行库（缺件即停止发布）
+        run: python3 tools/native_resources.py --fetch --groups opencv,recognition
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
@@ -243,6 +250,7 @@ jobs:
           # agIm* 包装层：实现调 ig*，供 Go 的 cgo 使用（Go 包里不能放 .cpp，否则非 cgo 构建报错）
           xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -I sdk/ios/imgui \
             "${CIMGUI}/ag_bridge.cpp" -o "${OBJ}/ag_bridge.o"
+          xcrun --sdk iphoneos clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_widgets_gen.cpp" -o "${OBJ}/ag_widgets_gen.o"
           # 独立 dylib：libagovios 用 @rpath 链接它（与参考实现的 libimgui.dylib 同形态）
           xcrun --sdk iphoneos clang++ -dynamiclib -arch arm64 -isysroot "${SDK_DIR}" \
             -mios-version-min=15.0 -install_name @rpath/libimgui.dylib \
@@ -277,9 +285,9 @@ jobs:
             -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui -I host/ios/third_party/cimgui/imgui/backends"
           OPENCV_INC=""
           if [ -d host/ios/Frameworks/opencv2.framework ]; then
-            OPENCV_INC="-I host/ios/Frameworks/opencv2.framework/Headers"
+            OPENCV_INC="-F host/ios/Frameworks -I host/ios/Frameworks/opencv2.framework/Headers"
           fi
-          for f in ag_rec imgui_overlay; do
+          for f in ag_rec ag_cv imgui_overlay; do
             xcrun --sdk iphoneos clang++ -c ${FLAGS} ${OPENCV_INC} "${NATIVE}/$f.mm" -o "${OBJ}/$f.o"
           done
           libtool -static -o host/ios/Frameworks/libagovnative.a "${OBJ}"/*.o
@@ -444,6 +452,7 @@ jobs:
           APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
           mkdir -p "${APP}/Runtime"
           copied=0
+          cp host/ios/native-resources.lock.json "${APP}/native-resources.lock.json"
           for f in host/ios/Runtime/*.dylib; do
             [ -e "$f" ] || continue
             cp "$f" "${APP}/Runtime/"
@@ -681,6 +690,7 @@ jobs:
           done
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} "${CIMGUI}/cimgui.cpp" -o "${OBJ}/cimgui.o"
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_bridge.cpp" -o "${OBJ}/ag_bridge.o"
+          xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -I sdk/ios/imgui "${CIMGUI}/ag_widgets_gen.cpp" -o "${OBJ}/ag_widgets_gen.o"
           xcrun --sdk iphonesimulator clang++ -c ${CXXFLAGS} -fobjc-arc "${IMGUI}/backends/imgui_impl_metal.mm" -o "${OBJ}/imgui_impl_metal.o"
           xcrun --sdk iphonesimulator clang++ -dynamiclib -arch "${XCARCH}" -isysroot "${SDK_DIR}" \
             -mios-simulator-version-min=15.0 -install_name @rpath/libimgui.dylib \
@@ -699,7 +709,7 @@ jobs:
           FLAGS="-O2 -std=c++17 -fobjc-arc -isysroot ${SDK_DIR} -mios-simulator-version-min=15.0 -arch ${XCARCH} \
             -I sdk/ios/internal/native \
             -I host/ios/third_party/cimgui -I host/ios/third_party/cimgui/imgui -I host/ios/third_party/cimgui/imgui/backends"
-          for f in ag_rec imgui_overlay; do
+          for f in ag_rec ag_cv imgui_overlay; do
             xcrun --sdk iphonesimulator clang++ -c ${FLAGS} "host/ios/objc/$f.mm" -o "${OBJ}/$f.o"
           done
           libtool -static -o host/ios/Frameworks/libagovnative.a "${OBJ}"/*.o

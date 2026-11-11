@@ -1,5 +1,5 @@
-// Package opencv 预留完整 OpenCV Go 绑定的命名空间，当前尚未提供 Mat/FindImage 等完整接口。
-// 不能将预编译识别引擎使用 OpenCV 等同于这些 Go 绑定已经实现。
-// 样本 images 的缩放/旋转走 Go imaging，灰度/阈值走 Go 计算；这些能力在兄弟 images 包实现。
-// 识别库的 RGBA C ABI 在宿主 ag_rec.mm 中接入，与完整 Go OpenCV API 是不同边界。
+// Package opencv 提供由原生 OpenCV 执行的 Mat、编解码、裁剪、缩放、旋转、灰度、阈值、模糊、边缘与模板匹配。
+// Mat 使用显式 Close 和令牌注册表管理；原生胶水在 host/ios/objc/ag_cv.mm。
+// 这是一组实际实现的图像能力，不声称已覆盖样本所有 OpenCV 类型和函数。
+// 未交付 OpenCV 运行库的制品明确返回不支持，不用空实现代替。
 package opencv

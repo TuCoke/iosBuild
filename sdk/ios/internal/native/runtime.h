@@ -54,6 +54,8 @@ ag_ios_result AGSystem(NSString *op, NSDictionary *args);
 ag_ios_result AGUtils(NSString *op, NSDictionary *args);
 int AXBootstrap(void);
 ag_ios_result AGAXEnvironment(BOOL restore);
+ag_ios_result AGAXWarmup(NSDictionary *args);
+ag_ios_result AGAXRestoreAfterWarmup(void);
 char *AXSweepNodesJSON(char *buf, size_t bufLen);
 NSArray *AGAXCollectNodes(NSUInteger limit, NSString **error);
 ag_ios_result AGUIAcc(NSString *op, NSDictionary *args);

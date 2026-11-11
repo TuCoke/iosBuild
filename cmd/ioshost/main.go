@@ -35,6 +35,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -45,7 +46,9 @@ import (
 	"autogov1/v2/sdk/ios/device"
 	"autogov1/v2/sdk/ios/ime"
 	"autogov1/v2/sdk/ios/motion"
+	"autogov1/v2/sdk/ios/resources"
 	"autogov1/v2/sdk/ios/script"
+	"autogov1/v2/sdk/ios/script/api"
 	"autogov1/v2/sdk/ios/script/worker"
 	"autogov1/v2/sdk/ios/selftest"
 	"autogov1/v2/sdk/ios/tunnel"
@@ -233,6 +236,23 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(v)
 
+	case "resources.status":
+		report, err := resources.Inspect(ctx, args["verifyHash"] == true)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(report)
+	case "sdk.health":
+		// 启动器仅探测运行时能否响应；不要求 AX、截图等受授权限制的能力可用。
+		return okData(map[string]any{"ready": true, "protocol": 1})
+	case "sdk.rollback":
+		executionControl.Lock()
+		defer executionControl.Unlock()
+		state, err := update.Rollback(ctx)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(map[string]any{"release": state, "needRestart": true})
 	case "sdk.status":
 		status, err := update.Status(ctx)
 		if err != nil {
@@ -408,6 +428,24 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		return okData(map[string]any{"typed": len(str(args, "text"))})
 
 	default:
+		// 复用现有脚本能力边界，避免每增加一个设备能力就再手写一个宿主分支。
+		// 此通道只承载 JSON，截图二进制仍使用 capture.screenshot/capture.json。
+		if name == "capture.image" {
+			return fail(contextError("二进制截图请使用 capture.screenshot 或 capture.json"))
+		}
+		for _, prefix := range []string{"app.", "device.", "motion.", "ime.", "capture.", "uiacc.", "system.", "utils.", "hud.", "console.", "ppocr.", "yolo.", "dotocr.", "opencv.", "video."} {
+			if strings.HasPrefix(name, prefix) {
+				session, err := api.NewSession(ctx, nil)
+				if err != nil {
+					return fail(err)
+				}
+				data, err := session.Call(name, args)
+				if err != nil {
+					return fail(err)
+				}
+				return okData(data)
+			}
+		}
 		return fail(contextError("未知方法: " + name))
 	}
 }

@@ -73,6 +73,20 @@ ag_ios_result AGAXEnvironment(BOOL restore){
     } @finally { [axEnvironmentLock unlock]; }
 }
 
+// 恢复用户原有设置，但保留已预热的引导状态；后续快照不再次翻转全局辅助设置。
+ag_ios_result AGAXRestoreAfterWarmup(void) {
+    AXLoadRuntime();[axEnvironmentLock lock];
+    @try {
+        if(!axPreviousKnown)return AGError(3,@"AX 初始设置未知，不能推测恢复值");
+        if(axSetEnabled)axSetEnabled(axPreviousEnabled);
+        else {
+            CFPreferencesSetValue(CFSTR("FullKeyboardAccessEnabled"),axPreviousEnabled?kCFBooleanTrue:kCFBooleanFalse,CFSTR("com.apple.Accessibility"),kCFPreferencesCurrentUser,kCFPreferencesAnyHost);
+            if(!CFPreferencesAppSynchronize(CFSTR("com.apple.Accessibility")))return AGError(3,@"AX 设置恢复失败");
+        }
+        axConfigured=NO;axPrepared=YES;axPreparationMode=@"warmup_restored";return AGJSON(@{});
+    } @finally {[axEnvironmentLock unlock];}
+}
+
 static NSDictionary *AGAXAttributes(id element, NSArray *attributes) {
     SEL enable = NSSelectorFromString(@"enableCache:");
     SEL update = NSSelectorFromString(@"updateCacheWithAttributes:");

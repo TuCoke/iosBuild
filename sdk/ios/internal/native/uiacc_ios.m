@@ -4,6 +4,7 @@
 
 // Go API 与 C ABI 复用采集与字段归一化，禁止维护两套不同的控件树。
 ag_ios_result AGUIAcc(NSString *op, NSDictionary *args) {
+    if([op isEqualToString:@"uiacc.warmup"])return AGAXWarmup(args);
     if([op isEqualToString:@"uiacc.prepare"])return AGAXEnvironment(NO);
     if([op isEqualToString:@"uiacc.restore"])return AGAXEnvironment(YES);
     if(![op isEqualToString:@"uiacc.snapshot"])return AGError(1,@"未知控件操作");
