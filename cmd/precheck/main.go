@@ -153,9 +153,12 @@ func checkSwiftMethods() {
 
 // ④ Go 侧调用的原生 op 必须在原生分派里
 func checkNativeOps() {
-	nativeDir := "sdk/ios/internal/native"
 	var dispatch strings.Builder
-	for _, f := range walk(nativeDir, ".m") {
+	// 原生实现分为 SDK 的 ObjC 与宿主静态库的 ObjC++，两侧都必须扫描。
+	files := walk("sdk/ios/internal/native", ".m")
+	files = append(files, walk("sdk/ios/internal/native", ".mm")...)
+	files = append(files, walk("host/ios/objc", ".mm")...)
+	for _, f := range files {
 		data, _ := os.ReadFile(f)
 		dispatch.Write(data)
 	}
@@ -163,6 +166,11 @@ func checkNativeOps() {
 	known := map[string]bool{}
 	for _, m := range caseRe.FindAllStringSubmatch(dispatchSrc, -1) {
 		known[m[1]] = true
+	}
+	// ObjC 使用 isEqualToString 分支，不能只把 Go switch 的 case 当作实现。
+	exactOp := regexp.MustCompile(`isEqualToString:\s*@"([a-z_]+\.[a-z_]+)"`)
+	for _, match := range exactOp.FindAllStringSubmatch(dispatchSrc, -1) {
+		known[match[1]] = true
 	}
 	// 原生里还有 hasPrefix 的批量分派，这里只做"精确 case"的检查
 	opsUsed := map[string]string{}
@@ -370,36 +378,31 @@ func checkObjCShell() {
 	}
 	ok("壳 ObjC 静态检查：%d 个文件（括号/selector/ARC/头文件）", len(files))
 }
+
 // ⑨ native 下的 .m/.mm 括号与括号类误用（这些文件本地编不了，只能静态挡）
 func checkNativeSources() {
-	dir := "sdk/ios/internal/native"
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
+	files := walk("sdk/ios/internal/native", ".m")
+	files = append(files, walk("sdk/ios/internal/native", ".mm")...)
+	files = append(files, walk("host/ios/objc", ".mm")...)
+	// 仅扫描自维护的包装层；第三方原始代码交由对应平台的编译器检查。
+	files = append(files, "host/ios/third_party/cimgui/ag_bridge.cpp", "host/ios/third_party/cimgui/ag_widgets_gen.cpp")
 	stripRe := regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*|"(?:[^"\\]|\\.)*"`)
-	n := 0
-	for _, e := range entries {
-		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".m") && !strings.HasSuffix(e.Name(), ".mm")) {
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			fail("无法读取原生源文件 %s: %v", file, err)
 			continue
 		}
-		raw, _ := os.ReadFile(filepath.Join(dir, e.Name()))
 		clean := stripRe.ReplaceAllString(string(raw), "")
-		n++
 		for _, pair := range [][2]string{{"{", "}"}, {"[", "]"}, {"(", ")"}} {
-			if d := strings.Count(clean, pair[0]) - strings.Count(clean, pair[1]); d != 0 {
-				fail("%s 括号不平衡：%s%s 差 %d", e.Name(), pair[0], pair[1], d)
-			}
-		}
-		// ARC 下结构体里不能放 ObjC 对象（踩过一次：AGPanel 的 NSMutableArray）
-		if strings.HasSuffix(e.Name(), ".mm") || strings.HasSuffix(e.Name(), ".m") {
-			for _, bad := range []string{"typedef struct {", "calloc(1, sizeof("} {
-				_ = bad
+			if difference := strings.Count(clean, pair[0]) - strings.Count(clean, pair[1]); difference != 0 {
+				fail("%s 括号不平衡: %s%s 差 %d", file, pair[0], pair[1], difference)
 			}
 		}
 	}
-	ok("native 源文件：%d 个（括号平衡）", n)
+	ok("native 源文件: %d 个（SDK、宿主 ObjC++ 与自维护 C++ 包装层）", len(files))
 }
+
 // ⑩ C 链接检查：会被 ObjC++（.mm）包含的头，声明必须包在 extern "C" 里。
 //
 // 踩过的坑：runtime.h / ag_rec.h / bridge.h 的声明没有 extern "C"，
@@ -410,7 +413,9 @@ func checkCLinkage() {
 		"sdk/ios/internal/native/runtime.h",
 		"sdk/ios/internal/native/bridge.h",
 		"sdk/ios/internal/native/ag_rec.h",
+		"sdk/ios/internal/native/ag_cv.h",
 		"sdk/ios/imgui/ag_bridge.h",
+		"sdk/ios/imgui/ag_widgets_gen.h",
 	}
 	bad := 0
 	for _, h := range headers {

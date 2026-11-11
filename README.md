@@ -1,6 +1,6 @@
 # iosBuild — iOS 设备能力 SDK（编译验证仓）
 
-> 本轮新增能力源码尚未编译、测试或触发 CI；历史通过记录不能替代本轮验证。功能和边界见 [新增能力说明](docs/ios-sdk-features.md)。
+> 本轮已完成本地纯 Go 编译和静态检查，GitHub 原生验证待完成；历史通过记录不能替代本轮验证。功能和边界见 [新增能力说明](docs/ios-sdk-features.md)。
 
 当前完整对标与缺项：[iOS SDK 状态总表](docs/ios-autogo-status.md)。
 
