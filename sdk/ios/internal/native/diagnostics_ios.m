@@ -26,9 +26,30 @@ static NSDictionary *AGDiagnosticSymbol(const char *name) {
     NSMutableDictionary *result=[NSMutableDictionary dictionaryWithDictionary:@{@"present":@(pointer!=NULL),@"image":image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @""}];
     // 只读取自己进程的函数入口，判断模拟器是否提供了直接失败的占位实现；不修改代码。
     if(pointer && strcmp(name,"CARenderServerRenderDisplay")==0){
-        uint8_t bytes[32]={0};vm_size_t received=0;
+        uint8_t bytes[256]={0};vm_size_t received=0;
         kern_return_t status=vm_read_overwrite(mach_task_self(),(vm_address_t)pointer,sizeof(bytes),(vm_address_t)bytes,&received);
-        if(status==KERN_SUCCESS){NSMutableString *hex=[NSMutableString string];for(vm_size_t i=0;i<received;i++)[hex appendFormat:@"%02x",bytes[i]];result[@"entryBytesHex"]=hex;}
+        if(status==KERN_SUCCESS){
+            NSMutableString *hex=[NSMutableString string];for(vm_size_t i=0;i<received;i++)[hex appendFormat:@"%02x",bytes[i]];result[@"entryBytesHex"]=hex;
+            result[@"entryAddressHex"]=[NSString stringWithFormat:@"%llx",(unsigned long long)(uintptr_t)pointer];
+#if defined(__arm64__)
+            // 有界读取入口直接调用的函数，定位同一渲染路线在哪一层返回失败；不执行这些地址。
+            NSMutableArray *branches=[NSMutableArray array];
+            for(vm_size_t i=0;i+4<=received && branches.count<4;i+=4){
+                uint32_t instruction=0;memcpy(&instruction,bytes+i,4);
+                if(instruction==0xd65f03c0)break;
+                if((instruction&0xfc000000)!=0x94000000 && (instruction&0xfc000000)!=0x14000000)continue;
+                int32_t immediate=(int32_t)(instruction<<6);
+                int64_t displacement=(int64_t)(immediate>>6)*4;
+                uintptr_t target=(uintptr_t)pointer+i+displacement;Dl_info callee={0};
+                if(!dladdr((void *)target,&callee) || callee.dli_fbase!=image.dli_fbase)continue;
+                uint8_t code[256]={0};vm_size_t count=0;
+                if(vm_read_overwrite(mach_task_self(),(vm_address_t)target,sizeof(code),(vm_address_t)code,&count)!=KERN_SUCCESS)continue;
+                NSMutableString *codeHex=[NSMutableString string];for(vm_size_t j=0;j<count;j++)[codeHex appendFormat:@"%02x",code[j]];
+                [branches addObject:@{@"addressHex":[NSString stringWithFormat:@"%llx",(unsigned long long)target],@"symbol":callee.dli_sname ? [NSString stringWithUTF8String:callee.dli_sname] : @"",@"bytesHex":codeHex}];
+            }
+            result[@"directBranches"]=branches;
+#endif
+        }
     }
     return result;
 }

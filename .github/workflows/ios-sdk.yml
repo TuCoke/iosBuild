@@ -597,9 +597,9 @@ jobs:
 
   # ── 3. 模拟器冒烟：启动 + 截图 ───────────────────────────────────────
   #
-  # 这一轮的用途只有一个：证明 App 能启动、界面正常、Go↔ObjC 桥接通。
-  # 模拟器里没有 IOHIDEvent / CARenderServer / Accessibility，
-  # 所以 capabilities 会全 false —— 那是预期结果，不是失败。
+  # 验证启动、桥接、独立脚本进程与 JavaScriptCore，并采集真实截图/AX 诊断。
+  # 模拟器可能有私有 API 符号，但符号存在不代表调用成功；结果以报告为准。
+  # simctl 截图只用于查看测试界面，不能计入 SDK 截图成功。
   ios-sim:
     name: 模拟器冒烟（启动 + 截图）
     needs: ios-sdk
@@ -844,6 +844,14 @@ jobs:
           for context in ['host','worker']:
               report=json.loads((root/f'native-diagnostics-{context}.json').read_text())
               print('原生诊断',context,'调用完成:',report.get('ok'), '；采集成功与否以完整 JSON 为准')
+              assert report.get('ok'), context+' 诊断调用失败: '+str(report.get('error'))
+              native=report.get('data',{})
+              if context=='worker': native=native.get('result',{})
+              ax=native.get('ax',{})
+              assert ax.get('ok'), context+' AX 采集失败: '+str(ax.get('error'))
+              nodes=ax.get('data',{}).get('nodes',[])
+              assert any(n.get('text')=='能力探测' and n.get('button') and n.get('right',0)>n.get('left',0) for n in nodes), context+' AX 没有识别到界面上的真实按钮'
+              print('AX 实际节点数:',len(nodes),'；能力探测按钮已识别')
           script=json.loads((root/'script-check.json').read_text())
           data=script.get('data',{})
           assert script.get('ok') and data.get('ok'), '工作进程执行失败: '+str(data.get('error',script.get('error')))

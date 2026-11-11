@@ -159,7 +159,7 @@ static void AGAXAppend(NSDictionary *node, NSMutableArray *nodes, NSMutableSet *
     if (![seen containsObject:key]) { [seen addObject:key]; [nodes addObject:node]; }
 }
 
-NSArray *AGAXCollectNodes(NSUInteger limit, NSString **error) {
+static NSArray *AGAXCollectNodesOnMain(NSUInteger limit, NSString **error) {
     if (AXBootstrap()!=0) { if(error)*error=@"AXUIElement 私有采集入口不可用"; return nil; }
     // 屏幕信息先经已有主线程边界读取；不能在持有 AX 锁时 dispatch_sync 等待主线程。
     ag_ios_result display=AGOnMain(^{
@@ -227,4 +227,21 @@ NSArray *AGAXCollectNodes(NSUInteger limit, NSString **error) {
             if(error)*error=[NSString stringWithFormat:@"AX 采集异常: %@; name=%@; pid=%d; euid=%d; thread=%@; stack=%@",exception.reason,exception.name,getpid(),geteuid(),NSThread.isMainThread ? @"main" : @"background",exception.callStackSymbols];return nil;
         }
     }
+}
+
+NSArray *AGAXCollectNodes(NSUInteger limit, NSString **error) {
+    // 真正的 AX 调用包含对应用进程的同步回调。界面宿主采集自身时，后台调用会触发
+    // AXRuntime Thread Error；统一在主线程边界执行，独立任务进程也保留同一采集实现。
+    // 跨线程只传拥有内存的 JSON，不捕获调用方的错误指针，避免超时后写入失效栈。
+    if(NSThread.isMainThread)return AGAXCollectNodesOnMain(limit,error);
+    ag_ios_result result=AGOnMain(^{
+        NSString *failure=nil;NSArray *nodes=AGAXCollectNodesOnMain(limit,&failure);
+        return nodes ? AGJSON(nodes) : AGError(3,failure ?: @"AX 采集失败");
+    });
+    NSData *data=result.data ? [NSData dataWithBytes:result.data length:result.length] : [NSData data];
+    free(result.data);
+    if(result.code){if(error)*error=[[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease] ?: @"AX 主线程采集失败";return nil;}
+    NSError *decodeError=nil;id nodes=[NSJSONSerialization JSONObjectWithData:data options:0 error:&decodeError];
+    if(![nodes isKindOfClass:NSArray.class]){if(error)*error=decodeError.localizedDescription ?: @"AX 采集结果不是节点数组";return nil;}
+    return nodes;
 }
