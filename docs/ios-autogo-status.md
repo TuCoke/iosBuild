@@ -97,3 +97,7 @@ v2/ios/
 - [脚本与宿主对齐](ios-autogo-runtime-alignment.md)
 - [截图与 AX 的历史定位和实测](ios-capture-ax-diagnostics.md)
 - [本轮新增功能与使用方式](ios-sdk-features.md)
+
+## 真机工作进程后续修复
+
+用户真机宿主截图、AX 与点击注入已成功；工作进程仍存在动态库加载失败。本次已补依赖准备、内容缓存与 App 根定位，完整证据见 [工作进程加载修复记录](ios-worker-loader-fix-20261111.md)，尚不宣称新的真机工作进程已通过。

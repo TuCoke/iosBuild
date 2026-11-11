@@ -108,7 +108,7 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
                 Dl_info image={0};dladdr((const void *)&ag_ios_call,&image);
                 NSString *loaded=image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @"";
                 NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject ?: @"";
-                return AGJSON(@{@"platform":(TARGET_OS_SIMULATOR ? @"ios-simulator" : @"ios"),@"documents":documents,@"bundle":NSBundle.mainBundle.bundlePath ?: @"",@"loadedImage":loaded ?: @"",@"executable":NSBundle.mainBundle.executablePath ?: @""});
+                return AGJSON(@{@"platform":(TARGET_OS_SIMULATOR ? @"ios-simulator" : @"ios"),@"documents":documents,@"bundle":AGApplicationBundlePath() ?: @"",@"loadedImage":loaded ?: @"",@"executable":NSBundle.mainBundle.executablePath ?: @""});
             }
             if ([op isEqualToString:@"runtime.capabilities"]) {
                 return AGOnMain(^{

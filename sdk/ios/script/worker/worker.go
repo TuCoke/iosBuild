@@ -119,19 +119,26 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 	if timeout <= 0 {
 		return script.Result{}, ctx.Err()
 	}
-	// 样本宿主在拉起 Runtime 文件前调用 chmod(0755)；安装器可能把资源权限还原为 0644。
-	binary := filepath.Join(paths.Bundle, "Runtime", "app")
-	if err = os.Chmod(binary, 0755); err != nil {
-		return script.Result{}, fmt.Errorf("准备工作进程执行权限失败: %w", err)
-	}
+	// 先确认当前实际加载的 SDK，再准备与其匹配的独立进程运行目录。
 	sdkLibrary, err := update.ActiveLibrary(ctx)
 	if err != nil {
+		return script.Result{}, err
+	}
+	binary, err := prepareWorkerBinary(ctx, paths, sdkLibrary)
+	if err != nil {
+		return script.Result{}, err
+	}
+	// 文件准备也消耗任务期限，不能给子进程传入准备之前的剩余时间。
+	if deadline, ok := ctx.Deadline(); ok {
+		timeout = time.Until(deadline)
+	}
+	if err := ctx.Err(); err != nil {
 		return script.Result{}, err
 	}
 	var launched struct {
 		PID int `json:"pid"`
 	}
-	err = native.Call(ctx, "utils.spawn", map[string]any{"path": binary, "args": []string{"--result", resultPath, "--params", paramsPath, "--sdk", sdkLibrary, "--timeout-ms", fmt.Sprint(timeout.Milliseconds()), filename}, "logPath": filepath.Join(dir, "worker.log")}, &launched)
+	err = native.Call(ctx, "utils.spawn", map[string]any{"path": binary, "args": []string{"--result", resultPath, "--params", paramsPath, "--sdk", sdkLibrary, "--bundle", paths.Bundle, "--timeout-ms", fmt.Sprint(timeout.Milliseconds()), filename}, "logPath": filepath.Join(dir, "worker.log")}, &launched)
 	if err != nil {
 		return script.Result{}, err
 	}

@@ -5,6 +5,7 @@
 #import <mach/mach.h>
 #import <TargetConditionals.h>
 #include <pthread.h>
+#include <unistd.h>   // getuid/geteuid：截图失败时把运行身份带进错误信息
 
 // 【IOSurface 在 iOS 上不是公开头文件】
 //
@@ -92,7 +93,22 @@ CGImageRef AGCopyScreenImage(int width, int height, NSString **error) {
         if (!surface) { *error = @"IOSurface 分配失败"; return NULL; }
         // 使用构建目标对应的返回约定，不能把模拟器的成功布尔值当成真机错误码。
         int status=render(0,CFSTR("LCD"),surface,0,0);
-        if(!AGRenderSucceeded(status)){*error=[NSString stringWithFormat:@"屏幕渲染失败: %d",status];return NULL;}
+        if(!AGRenderSucceeded(status)){
+            // 真机失败时把排查要用的信息一次带出来（不改判定语义）：
+            //   ① 换成 TVOut 再试一次，排除"显示名选错"
+            //   ② 报 uid/euid —— AutoGo 有 persona 99 + uid 0 的启动路径，我们跑在 501
+            //   ③ 两个返回值都带上，便于和 native-diagnostics 的八组结果对照
+            int alt = render(0, CFSTR("TVOut"), surface, 0, 0);
+            if (AGRenderSucceeded(alt)) {
+                status = alt;
+            } else {
+                uid_t uid = getuid(), euid = geteuid();
+                *error = [NSString stringWithFormat:
+                          @"屏幕渲染失败: LCD=%d, TVOut=%d（uid=%d euid=%d）",
+                          status, alt, (int)uid, (int)euid];
+                return NULL;
+            }
+        }
         typedef CGImageRef (*CreateSurfaceImage)(IOSurfaceRef);
         CreateSurfaceImage createImage=(CreateSurfaceImage)AGSymbol("UICreateCGImageFromIOSurface");
         if(createImage){
