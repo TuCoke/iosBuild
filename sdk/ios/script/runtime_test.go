@@ -139,3 +139,15 @@ func TestSetResultReplacesPreviousObject(t *testing.T) {
 		t.Fatal("结果残留上次字段", got)
 	}
 }
+
+// 重复 main 不得在 Yaegi 中静默选择另一个任务入口。
+func TestProjectRejectsDuplicateMainBeforeExecution(t *testing.T) {
+	files := fstest.MapFS{
+		"main.go":  {Data: []byte(`package main;func main(){panic("不应执行")}`)},
+		"other.go": {Data: []byte(`package main;func main(){}`)},
+	}
+	_, err := New(Options{}).RunProject(context.Background(), files, "main.go")
+	if err == nil || !strings.Contains(err.Error(), "重复 main") {
+		t.Fatalf("重复入口没有被拒绝: %v", err)
+	}
+}

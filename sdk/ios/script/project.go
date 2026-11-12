@@ -5,6 +5,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -198,10 +201,28 @@ func (r *Runner) runProject(ctx context.Context, files map[string][]byte, entry 
 		return Result{}, fmt.Errorf("工程模块路径无效")
 	}
 	prepared := map[string]string{}
+	mainEntry := ""
 	for name, b := range files {
 		if strings.HasSuffix(name, ".go") {
 			if len(b) > 4<<20 {
 				return Result{}, fmt.Errorf("源码过大: %s", name)
+			}
+			// 包执行不能让后读入的 main 静默覆盖前一个入口；在任何 init/设备动作前拒绝。
+			if path.Dir(name) == path.Dir(entry) && !strings.HasSuffix(name, "_test.go") {
+				tree, parseErr := parser.ParseFile(token.NewFileSet(), name, b, 0)
+				if parseErr != nil {
+					return Result{}, parseErr
+				}
+				if tree.Name.Name == "main" {
+					for _, declaration := range tree.Decls {
+						if fn, ok := declaration.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "main" {
+							if mainEntry != "" {
+								return Result{}, fmt.Errorf("脚本包含重复 main 入口: %s 与 %s；不同任务请使用独立工程目录", mainEntry, name)
+							}
+							mainEntry = name
+						}
+					}
+				}
 			}
 			var err error
 			b, err = preprocessEmbed(name, b, files)
