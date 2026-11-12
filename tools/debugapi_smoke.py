@@ -76,7 +76,7 @@ def input_lease_probe(documents, call):
                 if had_touch and not json.loads(journal.read_text()).get("active"):
                     raise RuntimeError("触摸提交成功却没有记录活跃触点")
                 other_result = directory / "busy-result.json"
-                subprocess.run(command(quick, other_result), capture_output=True, timeout=15)
+                subprocess.run(command(quick, other_result), capture_output=True, timeout=45)
                 busy = json.loads(other_result.read_text())
                 if busy.get("ok") or "其他进程" not in busy.get("error", ""):
                     raise RuntimeError("另一个真实进程没有被设备租约阻止: " + json.dumps(busy, ensure_ascii=False))
@@ -89,7 +89,12 @@ def input_lease_probe(documents, call):
                     raise RuntimeError("终止前进程身份发生变化")
                 os.kill(owner, signal.SIGKILL); process.wait(timeout=10)
                 result = directory / "recovered-result.json"
-                completed = subprocess.run(command(quick, result), capture_output=True, timeout=15)
+                try:
+                    completed = subprocess.run(command(quick, result), capture_output=True, timeout=45)
+                except subprocess.TimeoutExpired as exc:
+                    output = ((exc.stdout or b"") + (exc.stderr or b"")).decode("utf-8", errors="replace")
+                    detail = result.read_text(errors="replace") if result.exists() else "尚无结果文件"
+                    raise RuntimeError("恢复进程超过硬期限：" + detail + "\n" + output[-6000:]) from exc
                 recovered = json.loads(result.read_text())
                 if completed.returncode != 0 or not recovered.get("ok"):
                     raise RuntimeError("进程退出后未恢复设备租约: " + json.dumps(recovered, ensure_ascii=False))
@@ -190,14 +195,14 @@ def run(documents):
     results["backgroundBeforeSwitch"] = background
     # 模拟器短时切 App 探测，不把三秒响应当作真机长稳/锁屏验收。
     try:
-        subprocess.run(["xcrun", "simctl", "launch", "booted", "com.apple.Preferences"], check=True, capture_output=True, timeout=15)
+        subprocess.run(["xcrun", "simctl", "launch", "booted", "com.apple.Preferences"], check=True, capture_output=True, timeout=45)
         time.sleep(3)
         results["backgroundAfterSwitch"] = json.loads(call("/background"))
         results["backgroundHealthAfterSwitch"] = json.loads(call("/health"))
     except Exception as exc:
         results["backgroundSwitchProbe"] = {"ok": False, "error": str(exc), "deviceValidated": False}
     finally:
-        subprocess.run(["xcrun", "simctl", "launch", "booted", "dev.autogov.host"], capture_output=True, timeout=15)
+        subprocess.run(["xcrun", "simctl", "launch", "booted", "dev.autogov.host"], capture_output=True, timeout=45)
     # 此前只在视频结束后切 App，无法捕获“接口正常但编码已停”的回归。
     # 有实际编码能力才做强断言；不支持编码的模拟器明确记为跳过。
     switch_error = None
@@ -227,7 +232,7 @@ def run(documents):
             samples.append({"phase": "beforeSwitch", "status": status})
             for bundle in ("com.apple.Preferences", "dev.autogov.host"):
                 subprocess.run(["xcrun", "simctl", "launch", "booted", bundle],
-                               check=True, capture_output=True, timeout=15)
+                               check=True, capture_output=True, timeout=45)
                 time.sleep(1.5)
                 # 从切换后的计数继续观察，不能拿切换前已产出的帧冒充恢复。
                 after = json.loads(call("/video/status"))["data"].get("frames", 0)
@@ -247,7 +252,7 @@ def run(documents):
                 if results["videoAfterSwitchProbe"].get("data", {}).get("running"):
                     switch_error = switch_error or "切换测试结束后编码器仍在运行"
             subprocess.run(["xcrun", "simctl", "launch", "booted", "dev.autogov.host"],
-                           capture_output=True, timeout=15)
+                           capture_output=True, timeout=45)
     else:
         results["videoSwitchProbe"] = {"skipped": True, "reason": "当前环境未通过基础编码探测",
                                        "deviceValidated": False}

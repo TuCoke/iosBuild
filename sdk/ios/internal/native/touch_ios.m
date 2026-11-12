@@ -103,10 +103,12 @@ ag_ios_result AGRecoverOrphanTouches(void){
     NSString *source=record[@"sender"];
     if(![source isKindOfClass:NSString.class] || source.length!=16 || [source rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"].invertedSet].location!=NSNotFound)return AGError(4,@"遗留事件来源无效");
     uint64_t previousSender=strtoull(source.UTF8String,NULL,16);
+    NSLog(@"[input-recovery] 开始恢复退出进程 %d 的触点",owner);
     [inputLock lock];
     @try{
         if(!AGInputAvailable(@"touch"))return AGError(4,@"无法释放遗留触点：HID 不可用");
         if(!client)client=createClient(kCFAllocatorDefault);if(!client)return AGError(4,@"无法释放遗留触点：客户端不可用");
+        NSLog(@"[input-recovery] HID 客户端已准备");
         uint64_t timestamp=mach_absolute_time();
         Event parent=createHand(kCFAllocatorDefault,timestamp,3,0,0,3,0,0,0,0,0,0,0,0,0);
         if(!parent)return AGError(4,@"无法创建遗留触点释放事件");
@@ -119,7 +121,9 @@ ag_ios_result AGRecoverOrphanTouches(void){
             if(!child){CFRelease(parent);return AGError(4,@"遗留触点释放事件创建失败");}
             setInteger(child,0xb0019,1);appendEvent(parent,child,0);CFRelease(child);
         }
+        NSLog(@"[input-recovery] 遗留触点释放事件已构造，准备提交");
         dispatchEvent(client,parent);CFRelease(parent);[contacts removeAllObjects];
+        NSLog(@"[input-recovery] 释放事件提交返回，准备保存状态");
         NSString *error=nil;if(!AGWriteTouchJournal(NO,&error))return AGError(4,error);
         NSLog(@"[input] 已提交退出进程 %d 的遗留触点释放；系统动作效果仍需核对",owner);
         return AGJSON(@{@"recovered":@YES});
