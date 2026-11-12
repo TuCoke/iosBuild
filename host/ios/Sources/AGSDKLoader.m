@@ -96,13 +96,15 @@
 }
 // 连续三次通过才确认候选，确认后仍观察。单次忙请求不再代表 SDK 失败。
 // 探测只读 ABI/映像/目录，不要求截图、AX 等可选授权能力可用。
+// 首次启动的解释器、签名映像校验会竞争 CPU/I/O；使用三十秒期限，不能按视频帧的时延误判损坏。
 - (void)finishHealthProbe:(NSUInteger)serial reply:(NSDictionary *)reply timedOut:(BOOL)timedOut {
     if(serial!=_healthProbeSerial)return;
     if(!_healthProbePending){if(!timedOut)_healthProbeBlocked=NO;return;}
     _healthProbePending=NO;_healthProbeBlocked=timedOut;
     NSDictionary *data=[reply[@"data"] isKindOfClass:NSDictionary.class]?reply[@"data"]:@{};
     BOOL ready=!timedOut && [reply[@"ok"] boolValue] && [data[@"ready"] boolValue] && [data[@"protocol"] integerValue]==2;
-    NSDictionary *report=timedOut?@{@"error":@"SDK 健康调用超过八秒，等待原调用结束，禁止堆积新探测"}:reply ?: @{};
+    NSDictionary *report=timedOut?@{@"error":@"SDK 健康调用超过三十秒，等待原调用结束，禁止堆积新探测"}:reply ?: @{};
+    if(!ready)NSLog(@"[sdk-health] 探测未通过 serial=%lu timedOut=%d report=%@",(unsigned long)serial,timedOut,report);
     NSDictionary *observation=@{@"digest":_healthDigest ?: @"",@"ready":@(ready),@"timedOut":@(timedOut),@"report":report};
     NSData *payload=[NSJSONSerialization dataWithJSONObject:observation options:0 error:NULL];
     NSString *body=[[NSString alloc] initWithData:payload encoding:NSUTF8StringEncoding];
@@ -144,7 +146,7 @@
             NSDictionary *reply=[decoded isKindOfClass:NSDictionary.class]?decoded:@{};
             dispatch_async(strong->_healthQueue,^{[strong finishHealthProbe:serial reply:reply timedOut:NO];});
         });
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,8*NSEC_PER_SEC),strong->_healthQueue,^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,30*NSEC_PER_SEC),strong->_healthQueue,^{
             if(strong->_healthProbeSerial==serial && strong->_healthProbePending)[strong finishHealthProbe:serial reply:nil timedOut:YES];
         });
     });

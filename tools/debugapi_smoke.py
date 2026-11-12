@@ -139,7 +139,7 @@ def run(documents):
     for path in ["/health", "/status", "/api", "/capabilities", "/worker", "/selftest", "/diagnostics/worker", "/screenshot", "/ui-tree", "/video/status", "/background"]:
         data = json.loads(call(path))
         if not data.get("ok"):
-            raise RuntimeError("调试调用失败: " + path)
+            raise RuntimeError("调试调用失败: " + path + " " + json.dumps(data, ensure_ascii=False))
         results[path] = {"ok": True}
     data = json.loads(call("/script/test", method="POST"))
     if not data.get("ok") or not data.get("data", {}).get("ok"):
