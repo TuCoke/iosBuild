@@ -95,6 +95,9 @@ def input_lease_probe(documents, call):
                     output = ((exc.stdout or b"") + (exc.stderr or b"")).decode("utf-8", errors="replace")
                     detail = result.read_text(errors="replace") if result.exists() else "尚无结果文件"
                     raise RuntimeError("恢复进程超过硬期限：" + detail + "\n" + output[-6000:]) from exc
+                if not result.exists():
+                    output = (completed.stdout + completed.stderr).decode("utf-8", errors="replace")
+                    raise RuntimeError("恢复进程退出但无结果，退出码=" + str(completed.returncode) + "\n" + output[-6000:])
                 recovered = json.loads(result.read_text())
                 if completed.returncode != 0 or not recovered.get("ok"):
                     raise RuntimeError("进程退出后未恢复设备租约: " + json.dumps(recovered, ensure_ascii=False))
