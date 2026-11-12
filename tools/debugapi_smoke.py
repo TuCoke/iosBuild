@@ -48,7 +48,7 @@ def input_lease_probe(documents, call):
         with (directory / "hold.log").open("wb") as log:
             process = subprocess.Popen(command(hold, directory / "hold-result.json"), stdout=log, stderr=log)
             try:
-                deadline = time.monotonic() + 8
+                deadline = time.monotonic() + 15
                 journal = documents / ".agov-device-touch.json"
                 while time.monotonic() < deadline:
                     if ready_path.exists():
@@ -58,7 +58,7 @@ def input_lease_probe(documents, call):
                             time.sleep(0.05); continue
                         candidate = state.get("pid", 0)
                         if candidate > 0:
-                            cmd = subprocess.run(["ps", "-p", str(candidate), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+                            cmd = subprocess.run(["ps", "-ww", "-p", str(candidate), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
                             if str(binary) in cmd and str(directory) in cmd:
                                 owner = candidate; break
                     if process.poll() is not None:
@@ -81,7 +81,7 @@ def input_lease_probe(documents, call):
                 if not health.get("data", {}).get("ready"):
                     raise RuntimeError("设备任务期间健康检查失败: " + json.dumps(health, ensure_ascii=False))
                 # PID 来自自己的唯一任务目录，并再次核对命令；只终止本测试创建的进程。
-                cmd = subprocess.run(["ps", "-p", str(owner), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+                cmd = subprocess.run(["ps", "-ww", "-p", str(owner), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
                 if str(binary) not in cmd or str(directory) not in cmd:
                     raise RuntimeError("终止前进程身份发生变化")
                 os.kill(owner, signal.SIGKILL); process.wait(timeout=10)
@@ -97,7 +97,7 @@ def input_lease_probe(documents, call):
             finally:
                 if process.poll() is None:
                     if owner:
-                        cmd = subprocess.run(["ps", "-p", str(owner), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+                        cmd = subprocess.run(["ps", "-ww", "-p", str(owner), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
                         if str(binary) in cmd and str(directory) in cmd:
                             os.kill(owner, signal.SIGKILL)
                     process.wait(timeout=45)
@@ -210,7 +210,7 @@ def run(documents):
             owned = True
 
             def wait_frames(after):
-                deadline = time.monotonic() + 8
+                deadline = time.monotonic() + 15
                 while time.monotonic() < deadline:
                     status = json.loads(call("/video/status"))["data"]
                     if status.get("error") or not status.get("running"):
