@@ -74,3 +74,12 @@ python3 tools/native_resources.py --groups opencv,recognition
 ```
 
 `precheck` 是源码/约定检查，不替代 Apple 编译器或运行时验收。GitHub 的 `ios-sdk.yml` 使用 macOS runner 完成原生构建和模拟器检查，产出 IPA/DEB、编译对象、日志和截图。包可用于后续匹配系统版本与授权环境的安装验收，打包成功不等于所有设备功能已验证。
+
+## 2026-11-12：独立 iOS Agent 接入
+
+新增独立 `agent/ios/{runtime,commands,app}`，不加载安卓 Agent 核心或安卓 SDK；宿主新增“Agent 设置”，通过云控 WebSocket 和独立 Agent 凭据接入。此前电脑 FRP 联调桥继续保留，不能同时给同一手机重复注册。
+
+- [接入边界、已实现命令、配置方式及待验收项](agent/ios/README.md)
+- 本轮主项目与构建镜像的 Go 协议/生命周期/隔离测试已通过；Apple/cgo、ObjC 界面和新 IPA 真机验收以本次 Actions 结果为准。
+- `python tools/check_agent_boundary.py` 校验镜像清单与传递依赖；从主项目同步需运行 `python tools/sync_agent_sources.py --source <主项目v2绝对路径>`。
+- 本轮没有合并至 main，继续使用 `codex/ios-sdk-features-20261111` 构建分支。

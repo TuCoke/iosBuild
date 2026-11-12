@@ -212,6 +212,17 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 		}
 		return okData(state)
 	}
+	// 停止必须能在原生动作持有宿主闸门时发出取消；状态查询也不能被长动作阻塞。
+	if name == "agent.status" {
+		return okData(iosAgent.Status())
+	}
+	if name == "agent.stop" {
+		if err := iosAgent.Stop(ctx); err != nil {
+			return fail(err)
+		}
+		backgroundRequest("release", "ios-agent", false)
+		return okData(iosAgent.Status())
+	}
 	if !hostCallMu.TryLock() {
 		return fail(contextError("宿主正在执行其他操作，请稍后重试"))
 	}
@@ -244,6 +255,19 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 
 func invokeSDKBody(ctx context.Context, name string, args map[string]any, duration time.Duration) *C.char {
 	switch name {
+	case "agent.start":
+		if err := startIOSAgent(args); err != nil {
+			return fail(err)
+		}
+		return okData(iosAgent.Status())
+	case "agent.status":
+		return okData(iosAgent.Status())
+	case "agent.stop":
+		if err := iosAgent.Stop(ctx); err != nil {
+			return fail(err)
+		}
+		backgroundRequest("release", "ios-agent", false)
+		return okData(iosAgent.Status())
 	case "background.status":
 		return okData(backgroundRequest("status", "", false))
 	case "background.enable":
@@ -308,6 +332,9 @@ func invokeSDKBody(ctx context.Context, name string, args map[string]any, durati
 	case "sdk.health":
 		return okData(update.Health(ctx))
 	case "sdk.rollback":
+		if err := agentBusyForUpdate(); err != nil {
+			return fail(err)
+		}
 		executionControl.Lock()
 		defer executionControl.Unlock()
 		state, err := update.Rollback(ctx)
@@ -322,6 +349,9 @@ func invokeSDKBody(ctx context.Context, name string, args map[string]any, durati
 		}
 		return okData(status)
 	case "sdk.install":
+		if err := agentBusyForUpdate(); err != nil {
+			return fail(err)
+		}
 		executionControl.Lock()
 		defer executionControl.Unlock()
 		raw, err := base64.StdEncoding.DecodeString(str(args, "base64"))

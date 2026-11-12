@@ -11,6 +11,7 @@
 #import "AGBridge.h"
 #import "AGWebConsoleViewController.h"
 #import "AGTunnelSettingsViewController.h"
+#import "AGAgentSettingsViewController.h"
 // 取 Wi-Fi 地址 + 触发本地网络授权用（getifaddrs / inet_ntop / sockaddr_in）
 #include <ifaddrs.h>
 #include <arpa/inet.h>
@@ -38,12 +39,19 @@
 
 @implementation AGRootViewController
 
+- (void)agentSettings {
+ AGAgentSettingsViewController *page=[[AGAgentSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+ [self presentViewController:[[UINavigationController alloc] initWithRootViewController:page] animated:YES completion:nil];
+}
+
 #pragma mark - 生命周期
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"AgovHost";
-    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"穿透设置" style:UIBarButtonItemStylePlain target:self action:@selector(tunnelSettings)];
+    self.navigationItem.rightBarButtonItems=@[
+      [[UIBarButtonItem alloc] initWithTitle:@"Agent 设置" style:UIBarButtonItemStylePlain target:self action:@selector(agentSettings)],
+      [[UIBarButtonItem alloc] initWithTitle:@"穿透设置" style:UIBarButtonItemStylePlain target:self action:@selector(tunnelSettings)]];
     // 调试宿主在前台时保持亮屏，避免等待远程请求期间自动息屏。
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.sdkQueue=dispatch_queue_create("agov.host.sdk.actions",DISPATCH_QUEUE_SERIAL);
@@ -91,6 +99,8 @@
         // 表现就是外部 SYN 被静默丢弃（真机实测：ping 通、:80 回 RST、:18990 超时）。
         [self triggerLocalNetworkAccess];
     });
+    // 启动自检完成后再连接，避免初始化中的点击/脚本与云端任务争用手机。
+    [AGAgentSettingsViewController startSavedIfEnabled];
     });
 }
 

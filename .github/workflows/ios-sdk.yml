@@ -6,6 +6,13 @@ run-name: "iOS | ${{ github.ref_name }} | ${{ github.sha }}"
 on:
   push:
     paths:
+      - 'agent/ios/**'
+      - 'agent/kernel/**'
+      - 'agent/transport/**'
+      - 'protocol/**'
+      - 'core/gesture/**'
+      - 'tools/check_agent_boundary.py'
+      - 'agent-source-manifest.json'
       - 'sdk/ios/**'
       - 'sdk/imaging/**'
       - 'cmd/runtimeapp/**'
@@ -24,6 +31,13 @@ on:
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
+      - 'agent/ios/**'
+      - 'agent/kernel/**'
+      - 'agent/transport/**'
+      - 'protocol/**'
+      - 'core/gesture/**'
+      - 'tools/check_agent_boundary.py'
+      - 'agent-source-manifest.json'
       - 'sdk/ios/**'
       - 'sdk/imaging/**'
       - 'cmd/runtimeapp/**'
@@ -152,6 +166,8 @@ jobs:
           set -euo pipefail
           go build ./sdk/ios/...
           go test ./sdk/ios/...
+          go test ./agent/ios/... ./agent/kernel ./agent/transport ./protocol
+          python3 tools/check_agent_boundary.py
 
       - name: GOOS=ios + cgo 编 Go 包
         env:
@@ -174,7 +190,7 @@ jobs:
           export CGO_LDFLAGS="-arch arm64 -isysroot ${SDK} \
             -framework Foundation -framework UIKit -framework CoreGraphics \
             -framework ImageIO -framework VideoToolbox -framework CoreVideo -framework CoreMedia"
-          go build ./sdk/ios/...
+          go build ./sdk/ios/... ./agent/ios/...
 
       - name: 上传 .o（仅当以上全部成功）
         uses: actions/upload-artifact@v4
