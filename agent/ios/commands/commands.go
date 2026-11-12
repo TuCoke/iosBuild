@@ -2,7 +2,6 @@ package commands
 
 import (
 	"autogov1/v2/protocol"
-	"autogov1/v2/sdk/ios/types"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -187,20 +186,26 @@ func (c *Driver) Execute(ctx context.Context, cmd protocol.Cmd) (any, error) {
 		return nil, err
 	}
 	if cmd.Cmd == "open_app" {
-		// 接口受理不等于已到目标页面；在有界时间内核对前台，不重复拉起。
-		deadline := time.NewTimer(3 * time.Second)
-		defer deadline.Stop()
+		// 启动只提交一次；在当前会话内轮询前台，核对失败不代表存在待重放的业务写入。
+		check, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		foreground := "未读取到"
+		var lastError error
 		for {
 			var fg string
-			if e := c.Invoke(ctx, "app.foreground", map[string]any{}, &fg); e == nil && fg == cmd.Pkg {
-				return map[string]any{"foreground": fg}, nil
+			lastError = c.Invoke(check, "app.foreground", map[string]any{}, &fg)
+			if lastError == nil {
+				foreground = fg
+				if fg == cmd.Pkg {
+					return map[string]any{"foreground": fg}, nil
+				}
 			}
+			timer := time.NewTimer(250 * time.Millisecond)
 			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-deadline.C:
-				return nil, fmt.Errorf("%w: 应用拉起已提交，前台未确认", types.ErrUnknown)
-			case <-time.After(150 * time.Millisecond):
+			case <-check.Done():
+				timer.Stop()
+				return nil, fmt.Errorf("应用启动未达标: 目标=%s，实际前台=%s，最后查询错误=%v", cmd.Pkg, foreground, lastError)
+			case <-timer.C:
 			}
 		}
 	}

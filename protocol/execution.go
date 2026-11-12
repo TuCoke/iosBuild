@@ -175,9 +175,10 @@ func WantsRegistrationAck(m AgentMsg) bool {
 }
 
 type RegistrationAck struct {
-	Type      string `json:"type"`
-	DeviceID  string `json:"deviceId"`
-	SessionID string `json:"sessionId"`
+	ServerTimeMS int64  `json:"serverTimeMs,omitempty"` // 服务端生成确认时的 Unix 毫秒；供手机用单调时钟核对命令期限。
+	Type         string `json:"type"`
+	DeviceID     string `json:"deviceId"`
+	SessionID    string `json:"sessionId"`
 }
 type KernelIdentity struct {
 	Version string `json:"version"`

@@ -66,7 +66,7 @@ func readReply(w *websocket.Conn, id string) (protocol.AgentMsg, error) {
 		}
 	}
 }
-func runFixture(t *testing.T, d *fakeDevice, dir string, script func(*websocket.Conn, protocol.AgentMsg) error) {
+func runFixture(t *testing.T, d *fakeDevice, dir string, script func(*websocket.Conn, protocol.AgentMsg) error, reconnects ...int) {
 	t.Helper()
 	done := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,27 +91,34 @@ func runFixture(t *testing.T, d *fakeDevice, dir string, script func(*websocket.
 			done <- fmt.Errorf("平台注册不完整")
 			return
 		}
-		if e = ws.WriteJSON(protocol.RegistrationAck{Type: "register_ack", DeviceID: reg.DeviceID, SessionID: reg.SessionID}); e != nil {
+		if e = ws.WriteJSON(protocol.RegistrationAck{Type: "register_ack", DeviceID: reg.DeviceID, SessionID: reg.SessionID, ServerTimeMS: time.Now().UnixMilli()}); e != nil {
 			done <- e
 			return
 		}
 		done <- script(ws, reg)
 	}))
 	defer server.Close()
-	session, e := NewSession(d, Config{Server: strings.Replace(server.URL, "http", "ws", 1) + "/agent", Token: "test-only-token", DataDir: dir})
-	if e != nil {
-		t.Fatal(e)
+	runs := 1
+	if len(reconnects) > 0 {
+		runs = reconnects[0]
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
-	defer cancel()
-	_ = session.Run(ctx)
-	select {
-	case e := <-done:
+	// 重连复用同一个服务端地址，不能通过新建随机端口冒充同一云控。
+	for attempt := 0; attempt < runs; attempt++ {
+		session, e := NewSession(d, Config{Server: strings.Replace(server.URL, "http", "ws", 1) + "/agent", Token: "test-only-token", DataDir: dir})
 		if e != nil {
 			t.Fatal(e)
 		}
-	case <-ctx.Done():
-		t.Fatal("协议测试没有完成")
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		_ = session.Run(ctx)
+		select {
+		case e := <-done:
+			if e != nil {
+				t.Fatal(e)
+			}
+		case <-ctx.Done():
+			t.Fatal("协议测试没有完成")
+		}
 	}
 }
 
@@ -119,36 +126,34 @@ func runFixture(t *testing.T, d *fakeDevice, dir string, script func(*websocket.
 func TestPersistentReceiptAndPlatformIsolation(t *testing.T) {
 	d := &fakeDevice{}
 	dir := t.TempDir()
-	for i := 0; i < 2; i++ {
-		runFixture(t, d, dir, func(w *websocket.Conn, reg protocol.AgentMsg) error {
-			cmd := protocol.Cmd{Type: "cmd", Cmd: "tap", ID: "stable-request", SessionID: reg.SessionID, Fence: 1, X: .5, Y: .5}
-			// 连接代次变化后重复请求使用同一业务参数；执行日志不把传输代次当作新的动作。
-			for j := 0; j < 2; j++ {
-				if e := w.WriteJSON(cmd); e != nil {
-					return e
-				}
-				m, e := readReply(w, cmd.ID)
-				if e != nil {
-					return e
-				}
-				if !m.OK || m.State != "returned" {
-					return fmt.Errorf("重复请求回执异常: %s %s", m.State, m.Msg)
-				}
-			}
-			current := protocol.Cmd{Type: "cmd", Cmd: "current_app", ID: "current", SessionID: reg.SessionID}
-			if e := w.WriteJSON(current); e != nil {
+	runFixture(t, d, dir, func(w *websocket.Conn, reg protocol.AgentMsg) error {
+		cmd := protocol.Cmd{Type: "cmd", Cmd: "tap", ID: "stable-request", SessionID: reg.SessionID, Fence: 1, X: .5, Y: .5}
+		// 连接代次变化后重复请求使用同一业务参数；执行日志不把传输代次当作新的动作。
+		for j := 0; j < 2; j++ {
+			if e := w.WriteJSON(cmd); e != nil {
 				return e
 			}
-			m, e := readReply(w, current.ID)
+			m, e := readReply(w, cmd.ID)
 			if e != nil {
 				return e
 			}
-			if m.Msg != "com.apple.Preferences" || len(m.Data) != 0 {
-				return fmt.Errorf("前台应用协议丢失: %s %s", m.Msg, m.Data)
+			if !m.OK || m.State != "returned" {
+				return fmt.Errorf("重复请求回执异常: %s %s", m.State, m.Msg)
 			}
-			return nil
-		})
-	}
+		}
+		current := protocol.Cmd{Type: "cmd", Cmd: "current_app", ID: "current", SessionID: reg.SessionID}
+		if e := w.WriteJSON(current); e != nil {
+			return e
+		}
+		m, e := readReply(w, current.ID)
+		if e != nil {
+			return e
+		}
+		if m.Msg != "com.apple.Preferences" || len(m.Data) != 0 {
+			return fmt.Errorf("前台应用协议丢失: %s %s", m.Msg, m.Data)
+		}
+		return nil
+	}, 2)
 	if d.calls.Load() != 1 {
 		t.Fatalf("重复投递实际点击了 %d 次", d.calls.Load())
 	}

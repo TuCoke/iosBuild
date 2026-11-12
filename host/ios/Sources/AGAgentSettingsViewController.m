@@ -36,7 +36,7 @@ static NSMutableDictionary *AGAgentTokenQuery(void){return [@{(__bridge id)kSecC
  self.navigationItem.leftBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"返回" style:UIBarButtonItemStylePlain target:self action:@selector(closePage)];
  self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"保存" style:UIBarButtonItemStyleDone target:self action:@selector(savePage)];
  NSError *error=nil;NSDictionary *config=[AGAgentSettingsViewController configurationWithError:&error];self.readable=config!=nil;
- self.serverField=[UITextField new];self.serverField.placeholder=@"wss://云控地址/agent";self.serverField.text=config[@"server"] ?: @"";self.serverField.keyboardType=UIKeyboardTypeURL;
+ self.serverField=[UITextField new];self.serverField.placeholder=@"wss://云控地址/agent";self.serverField.text=config[@"server"] ?: @"wss://frpc.api-y.cn/agent";self.serverField.keyboardType=UIKeyboardTypeURL;
  self.tokenField=[UITextField new];self.tokenField.placeholder=@"云控 Agent 卡密，不是 FRP token";self.tokenField.text=config[@"token"] ?: @"";self.tokenField.secureTextEntry=YES;
  for(UITextField *f in @[self.serverField,self.tokenField]){f.autocorrectionType=UITextAutocorrectionTypeNo;f.autocapitalizationType=UITextAutocapitalizationTypeNone;f.clearButtonMode=UITextFieldViewModeWhileEditing;f.font=[UIFont systemFontOfSize:14];}
  self.insecureSwitch=[UISwitch new];self.insecureSwitch.on=[config[@"allowInsecure"] boolValue];self.autoSwitch=[UISwitch new];self.autoSwitch.on=[config[@"autoConnect"] boolValue];

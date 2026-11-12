@@ -263,3 +263,26 @@ func (j *Journal) Prune(before time.Time) error {
 	}
 	return nil
 }
+
+// RejectBeforeStart 保留未执行的具体原因；不能把栅栏拒绝伪装成用户取消。
+// 只允许修改尚未开始的记录，运行中或已完成的结果绝不能被覆盖。
+func (j *Journal) RejectBeforeStart(id, reason string) (protocol.CommandReceipt, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	e, err := j.read(id)
+	if err != nil {
+		return protocol.CommandReceipt{}, err
+	}
+	if e.Receipt.State != "queued" {
+		return e.Receipt, nil
+	}
+	e.Receipt.State = "rejected"
+	e.Receipt.OK = false
+	e.Receipt.Msg = reason
+	e.Receipt.UpdatedAt = time.Now().UnixMilli()
+	if err = j.persist(e, false); err != nil {
+		return protocol.CommandReceipt{}, err
+	}
+	delete(j.active, id)
+	return e.Receipt, nil
+}

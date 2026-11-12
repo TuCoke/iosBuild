@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +27,7 @@ type Session struct {
 	mu          sync.Mutex
 	active      map[string]context.CancelFunc
 	cleanupErr  error
+	clock       serverClock
 	videoMu     sync.Mutex
 	videoCancel context.CancelFunc
 	videoDone   chan struct{}
@@ -42,7 +42,7 @@ func NewSession(phone Device, cfg Config) (*Session, error) {
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
-	j, err := kernel.Open(filepath.Join(cfg.DataDir, "journal"))
+	j, err := openCloudJournal(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +83,7 @@ func (s *Session) Run(ctx context.Context) error {
 	run, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := protocol.AgentMsg{Type: "register", DeviceID: id, Name: info.Name + "（iOS Agent）", Model: info.Model, Width: info.Display.Width, Height: info.Display.Height, Platform: "ios", OSVersion: info.OSVersion, SessionID: sid, Features: []string{protocol.ActionAcknowledgmentV1, protocol.CommandJournalV1, protocol.CommandFenceV1, protocol.RegistrationAckV1, "ios_native_agent_v1"}, Commands: protocol.NormalizeCommands(append(s.phone.Commands(), "command_cancel", "command_result", "screenshot", "snap", "video_start", "video_stop", "video_key", "video_cfg"))}
+	registeredAt := time.Now() // 保留单调时钟，后续不依赖手机墙上时间。
 	if e = conn.WriteJSON(reg); e != nil {
 		return e
 	}
@@ -92,8 +93,12 @@ func (s *Session) Run(ctx context.Context) error {
 	}
 	var ack protocol.RegistrationAck
 	if json.Unmarshal(b, &ack) != nil || ack.Type != "register_ack" || ack.DeviceID != id || ack.SessionID != sid {
-		return fmt.Errorf("本地服务端注册确认不匹配")
+		return fmt.Errorf("云控服务端注册确认不匹配")
 	}
+	if ack.ServerTimeMS <= 0 {
+		return fmt.Errorf("云控服务端未提供时间基准，请先部署支持 iOS 原生 Agent 的后端")
+	}
+	s.clock = serverClock{serverMS: ack.ServerTimeMS, anchor: registeredAt}
 	stopPing := conn.StartHeartbeat()
 	defer stopPing()
 	log.Printf("iOS Agent 已上线: %s，%s，%dx%d", id, info.OSVersion, info.Display.Width, info.Display.Height)
@@ -394,22 +399,26 @@ func (s *Session) Run(ctx context.Context) error {
 	}
 }
 func (s *Session) executeRecorded(ctx context.Context, c protocol.Cmd, send func(protocol.CommandReceipt)) {
-	if ctx.Err() != nil || (c.DeadlineAt > 0 && time.Now().UnixMilli() >= c.DeadlineAt) {
-		r, e := s.journal.Cancel(c.ID)
+	budget, valid := s.clock.budget(c.DeadlineAt)
+	if ctx.Err() != nil || !valid {
+		r, e := s.journal.RejectBeforeStart(c.ID, "命令已取消或执行期限已过，未开始执行")
 		if e == nil {
 			send(r)
 		}
 		return
 	}
 	if e := s.journal.AcceptFence(c.Fence, c.ID); e != nil {
-		r, _ := s.journal.Cancel(c.ID)
+		r, err := s.journal.RejectBeforeStart(c.ID, e.Error())
+		if err != nil {
+			r = protocol.CommandReceipt{ID: c.ID, State: "unknown", Msg: "栅栏拒绝结果无法持久化，需要核对"}
+		}
 		send(r)
 		return
 	}
 	task, cancel := context.WithTimeout(ctx, 125*time.Second)
 	if c.DeadlineAt > 0 {
 		var stop context.CancelFunc
-		task, stop = context.WithDeadline(task, time.UnixMilli(c.DeadlineAt))
+		task, stop = context.WithTimeout(task, budget)
 		defer stop()
 	}
 	defer cancel()

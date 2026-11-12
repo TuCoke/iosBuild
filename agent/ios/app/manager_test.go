@@ -53,7 +53,7 @@ func TestManagerStopDoesNotPretendCleanupFinished(t *testing.T) {
 		if ws.ReadJSON(&reg) != nil {
 			return
 		}
-		_ = ws.WriteJSON(protocol.RegistrationAck{Type: "register_ack", DeviceID: reg.DeviceID, SessionID: reg.SessionID})
+		_ = ws.WriteJSON(protocol.RegistrationAck{Type: "register_ack", DeviceID: reg.DeviceID, SessionID: reg.SessionID, ServerTimeMS: time.Now().UnixMilli()})
 		_ = ws.WriteJSON(protocol.Cmd{Type: "cmd", Cmd: "tap", ID: "blocked", SessionID: reg.SessionID, Fence: 1})
 		for {
 			if _, _, e = ws.ReadMessage(); e != nil {
