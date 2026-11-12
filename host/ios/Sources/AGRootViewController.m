@@ -77,6 +77,7 @@
     // 调试服务在启动自检结束后开放，避免接入时与初始化争用设备。
     NSString *debugRaw=[AGBridge invoke:@"debugapi.start" payload:@"{}"];
     [self append:[@"debugapi.start → " stringByAppendingString:debugRaw]];
+    [self append:[@"background.status → " stringByAppendingString:[AGBridge invoke:@"background.status" payload:@"{}"]]];
     NSDictionary *debugReply=[NSJSONSerialization JSONObjectWithData:[debugRaw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if([debugReply[@"ok"] boolValue])dispatch_async(dispatch_get_main_queue(),^{
         self.debugService=[[NSNetService alloc] initWithDomain:@"local." type:@"_agovhost._tcp." name:@"" port:18990];

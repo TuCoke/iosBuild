@@ -145,3 +145,7 @@ Invoke-WebRequest "$phone/video/stream?durationSeconds=5&maxSize=720&fps=15&bitr
 纯 Go 测试验证真实 HTTP 路由/鉴权、二进制内容输出、关键帧起步、启动互斥、参数、控制下发、限时退出、断开清理和清理失败重试。测试采集器是替身，不算真机编码通过。
 
 GitHub 模拟器增加 /video/status 检查并实际请求两秒 H.264；debugapi-smoke.json 的 videoCaptureProbe 记录样本字节数、SPS/PPS/IDR NAL 类型或真实失败原因，debug-video.h264 随模拟器产物上传。模拟器硬件能力失败单独登记，不冒充成功；最终仍需真机下载样本、解码和连续运行验收。
+
+## 后台运行补充
+
+本轮新增统一宿主后台运行需求管理，覆盖调试 HTTP、视频、worker、JS 控制连接及隧道。详见 [iOS 后台运行与脚本生命周期梳理](proposals/ios-background-runtime.md)。GET /background 查询需求、实际音频运行、前后台和错误；background.enable 控制策略。需安装新包，后台和长稳效果仍需真机验收。

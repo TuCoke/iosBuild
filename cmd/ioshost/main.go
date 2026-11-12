@@ -203,7 +203,30 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 // invokeSDK 复用 C ABI 的分派，不为 HTTP 再实现一套设备控制逻辑。
 // 调用者持有 hostCallMu；独立 worker 在自己的进程内具有独立的锁。
 func invokeSDK(ctx context.Context, name string, args map[string]any, duration time.Duration) *C.char {
+	after := backgroundBefore(name)
+	raw := invokeSDKBody(ctx, name, args, duration)
+	if after == nil {
+		return raw
+	}
+	var reply struct {
+		OK   bool           `json:"ok"`
+		Data map[string]any `json:"data"`
+	}
+	success := raw != nil && json.Unmarshal([]byte(C.GoString(raw)), &reply) == nil && reply.OK && reply.Data["ok"] != false
+	after(success)
+	return raw
+}
+
+func invokeSDKBody(ctx context.Context, name string, args map[string]any, duration time.Duration) *C.char {
 	switch name {
+	case "background.status":
+		return okData(backgroundRequest("status", "", false))
+	case "background.enable":
+		value, ok := args["enabled"].(bool)
+		if !ok {
+			return fail(contextError("enabled 必须为布尔值"))
+		}
+		return okData(backgroundRequest("enable", "", value))
 	case "capabilities":
 		v, err := device.Capabilities(ctx)
 		if err != nil {
@@ -303,9 +326,9 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 			if err != nil {
 				return fail(err)
 			}
-			server, err := debugapi.Start(debugapi.Config{Documents: paths.Documents, Invoke: func(callCtx context.Context, method string, parameters map[string]any) (json.RawMessage, error) {
+			server, err := debugapi.Start(debugapi.Config{Documents: paths.Documents, Video: debugapi.NewVideo(openBackgroundVideo), Invoke: func(callCtx context.Context, method string, parameters map[string]any) (json.RawMessage, error) {
 				// 运行状态只读自己的锁；其他动作执行中也必须能查询 worker PID。
-				if method != "script.status" {
+				if method != "script.status" && method != "background.status" {
 					if !hostCallMu.TryLock() {
 						return nil, contextError("宿主正在执行界面或脚本操作，请稍后重试")
 					}
@@ -345,6 +368,17 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 			return fail(err)
 		}
 		return okData(map[string]any{"port": port, "url": fmt.Sprintf("http://127.0.0.1:%d/status", port)})
+	case "localapi.stop":
+		localAPIMu.Lock()
+		defer localAPIMu.Unlock()
+		if localAPIServer != nil {
+			if err := localAPIServer.Shutdown(ctx); err != nil {
+				return fail(err)
+			}
+			localAPIServer = nil
+			localAPIPort = 0
+		}
+		return okData(map[string]any{"stopped": true})
 
 	case "tunnel.start":
 		cfg := tunnel.Config{
@@ -373,6 +407,9 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 
 	case "tunnel.status":
 		st := tunnel.Query(ctx)
+		if !st.Running && st.LastError == "" {
+			backgroundRequest("release", "tunnel", false)
+		}
 		return okData(map[string]any{"status": st, "logs": tunnel.Logs(30)})
 
 	case "tunnel.logs":

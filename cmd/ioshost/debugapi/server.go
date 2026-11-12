@@ -34,9 +34,10 @@ type Server struct {
 
 // 只允许已审查的调试能力，不暴露 shell、任意文件、卸载、重启、清数据或 SDK 安装。
 // tunnel.start/stop/logs 用于真机联调：入站连接被 iOS 限制，必须能远程拉起 frpc 验证穿透。
-var allowed = strings.Fields(`capabilities device.info device.display device.battery device.battery_status device.screen_on device.unlocked device.brightness_get device.memory device.ip device.wifi_mac device.vpn_status device.keep_awake device.brightness device.button device.lock device.wake device.clipget device.clipset app.foreground app.self app.list app.list_all app.info app.installed app.bundle_path app.data_path app.bundle_dir app.icon app.launch app.stop app.open_url motion.gesture motion.pinch motion.tap motion.longpress motion.swipe motion.frame motion.pointer motion.status motion.configure motion.key ime.text ime.segments ime.key capture.screenshot capture.json capture.release uiacc.snapshot uiacc.warmup uiacc.prepare uiacc.restore system.pid system.memory system.cpu utils.toast utils.alert utils.input_alert hud.show hud.visible hud.hide hud.destroy console.show console.print console.clear console.hide console.visible console.destroy ppocr.load ppocr.ocr ppocr.close yolo.load yolo.set_image yolo.detect yolo.detect_image yolo.close dotocr.set_dict dotocr.ocr dotocr.find opencv.decode opencv.rgba opencv.info opencv.encode opencv.match opencv.clone opencv.gray opencv.crop opencv.resize opencv.rotate opencv.threshold opencv.blur opencv.canny opencv.close resources.status sdk.status script.status tunnel.status tunnel.start tunnel.stop tunnel.logs apkctl.selftest video.start video.read video.status video.keyframe video.bitrate video.stop`)
+var allowed = strings.Fields(`background.status background.enable localapi.stop capabilities device.info device.display device.battery device.battery_status device.screen_on device.unlocked device.brightness_get device.memory device.ip device.wifi_mac device.vpn_status device.keep_awake device.brightness device.button device.lock device.wake device.clipget device.clipset app.foreground app.self app.list app.list_all app.info app.installed app.bundle_path app.data_path app.bundle_dir app.icon app.launch app.stop app.open_url motion.gesture motion.pinch motion.tap motion.longpress motion.swipe motion.frame motion.pointer motion.status motion.configure motion.key ime.text ime.segments ime.key capture.screenshot capture.json capture.release uiacc.snapshot uiacc.warmup uiacc.prepare uiacc.restore system.pid system.memory system.cpu utils.toast utils.alert utils.input_alert hud.show hud.visible hud.hide hud.destroy console.show console.print console.clear console.hide console.visible console.destroy ppocr.load ppocr.ocr ppocr.close yolo.load yolo.set_image yolo.detect yolo.detect_image yolo.close dotocr.set_dict dotocr.ocr dotocr.find opencv.decode opencv.rgba opencv.info opencv.encode opencv.match opencv.clone opencv.gray opencv.crop opencv.resize opencv.rotate opencv.threshold opencv.blur opencv.canny opencv.close resources.status sdk.status script.status tunnel.status tunnel.start tunnel.stop tunnel.logs apkctl.selftest video.start video.read video.status video.keyframe video.bitrate video.stop`)
 var routes = map[string]string{
-	"/status": "device.info", "/capabilities": "capabilities", "/selftest": "runtime.selftest.all",
+	"/background": "background.status",
+	"/status":     "device.info", "/capabilities": "capabilities", "/selftest": "runtime.selftest.all",
 	"/diagnostics": "runtime.diagnostics", "/diagnostics/worker": "runtime.diagnostics.worker",
 	"/screenshot": "capture.screenshot", "/ui-tree": "uiacc.snapshot", "/sdk": "sdk.status",
 	"/resources": "resources.status", "/worker": "script.status", "/tunnel": "tunnel.status",
@@ -212,7 +213,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 不把忙请求排成无限队列；取消请求不会提前释放尚未返回的原生调用。
-	if method != "script.status" {
+	if method != "script.status" && method != "background.status" {
 		select {
 		case s.gate <- struct{}{}:
 			defer func() { <-s.gate }()

@@ -1,6 +1,7 @@
 """模拟器真实 HTTP 冒烟；token 只放请求头，不打印，也不写测试报告。"""
 import json
 import re
+import subprocess
 import pathlib
 import sys
 import time
@@ -47,7 +48,7 @@ def run(documents):
     else:
         raise RuntimeError("未授权请求被错误放行")
     results = {"unauthenticatedStatus": 401}
-    for path in ["/health", "/status", "/api", "/capabilities", "/worker", "/selftest", "/diagnostics/worker", "/screenshot", "/ui-tree", "/video/status"]:
+    for path in ["/health", "/status", "/api", "/capabilities", "/worker", "/selftest", "/diagnostics/worker", "/screenshot", "/ui-tree", "/video/status", "/background"]:
         data = json.loads(call(path))
         if not data.get("ok"):
             raise RuntimeError("调试调用失败: " + path)
@@ -73,6 +74,22 @@ def run(documents):
     except Exception as exc:
         results["videoCaptureProbe"] = {"ok": False, "error": str(exc), "deviceValidated": False}
     results["videoAfterProbe"] = json.loads(call("/video/status"))
+    background = json.loads(call("/background"))["data"]
+    if not background.get("available") or not {"debug-api", "local-api"}.issubset(background.get("owners", [])):
+        raise RuntimeError("宿主后台管理器或服务运行需求未正确装配")
+    if {"script-worker", "debug-video"}.intersection(background.get("owners", [])):
+        raise RuntimeError("脚本/视频测试结束后仍有未清理的运行需求")
+    results["backgroundBeforeSwitch"] = background
+    # 模拟器短时切 App 探测，不把三秒响应当作真机长稳/锁屏验收。
+    try:
+        subprocess.run(["xcrun", "simctl", "launch", "booted", "com.apple.Preferences"], check=True, capture_output=True, timeout=15)
+        time.sleep(3)
+        results["backgroundAfterSwitch"] = json.loads(call("/background"))
+        results["backgroundHealthAfterSwitch"] = json.loads(call("/health"))
+    except Exception as exc:
+        results["backgroundSwitchProbe"] = {"ok": False, "error": str(exc), "deviceValidated": False}
+    finally:
+        subprocess.run(["xcrun", "simctl", "launch", "booted", "dev.autogov.host"], capture_output=True, timeout=15)
     report = documents / "debugapi-smoke.json"
     report.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print("调试 HTTP 鉴权与设备/脚本入口检查通过；视频实际探测结果见 videoCaptureProbe，未输出 token")

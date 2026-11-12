@@ -158,6 +158,7 @@ func checkNativeOps() {
 	files := walk("sdk/ios/internal/native", ".m")
 	files = append(files, walk("sdk/ios/internal/native", ".mm")...)
 	files = append(files, walk("host/ios/objc", ".mm")...)
+	files = append(files, walk("cmd/ioshost", ".m")...)
 	for _, f := range files {
 		data, _ := os.ReadFile(f)
 		dispatch.Write(data)
@@ -393,6 +394,7 @@ func checkNativeSources() {
 	files := walk("sdk/ios/internal/native", ".m")
 	files = append(files, walk("sdk/ios/internal/native", ".mm")...)
 	files = append(files, walk("host/ios/objc", ".mm")...)
+	files = append(files, walk("cmd/ioshost", ".m")...)
 	// 仅扫描自维护的包装层；第三方原始代码交由对应平台的编译器检查。
 	files = append(files, "host/ios/third_party/cimgui/ag_bridge.cpp", "host/ios/third_party/cimgui/ag_widgets_gen.cpp")
 	stripRe := regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*|"(?:[^"\\]|\\.)*"`)
