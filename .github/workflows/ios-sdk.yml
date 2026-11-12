@@ -6,6 +6,13 @@ run-name: "iOS | ${{ github.ref_name }} | ${{ github.sha }}"
 on:
   push:
     paths:
+      - 'agent/ios/**'
+      - 'agent/kernel/**'
+      - 'agent/transport/**'
+      - 'protocol/**'
+      - 'core/gesture/**'
+      - 'tools/check_agent_boundary.py'
+      - 'agent-source-manifest.json'
       - 'sdk/ios/**'
       - 'sdk/imaging/**'
       - 'cmd/runtimeapp/**'
@@ -18,9 +25,19 @@ on:
       - 'tools/native_resources.py'
       - 'tools/imgui_bindings.py'
       - 'tools/debugapi_smoke.py'
+      - 'tools/verify_frpc_source.py'
+      - 'third_party/frp/**'
+      - 'third_party/frp-source.lock.json'
       - '.github/workflows/ios-sdk.yml'
   pull_request:
     paths:
+      - 'agent/ios/**'
+      - 'agent/kernel/**'
+      - 'agent/transport/**'
+      - 'protocol/**'
+      - 'core/gesture/**'
+      - 'tools/check_agent_boundary.py'
+      - 'agent-source-manifest.json'
       - 'sdk/ios/**'
       - 'sdk/imaging/**'
       - 'cmd/runtimeapp/**'
@@ -33,6 +50,9 @@ on:
       - 'tools/native_resources.py'
       - 'tools/imgui_bindings.py'
       - 'tools/debugapi_smoke.py'
+      - 'tools/verify_frpc_source.py'
+      - 'third_party/frp/**'
+      - 'third_party/frp-source.lock.json'
   workflow_dispatch:
 
 permissions:
@@ -51,10 +71,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 校验仓库内 frp 源码（先失败，避免等待原生编译）
+        run: python3 tools/verify_frpc_source.py
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 静态自检（precheck）
         run: go run ./cmd/precheck
@@ -66,8 +91,12 @@ jobs:
         run: |
           set -euo pipefail
           go test ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen ./cmd/ioshost/debugapi -count=1 -v 2>&1 | tee test.log
+
           echo "---- 汇总 ----"
           grep -E "^(ok|FAIL|---)" test.log | tail -40
+
+      - name: 视频调试生命周期并发检查
+        run: go test -race ./cmd/ioshost/debugapi -count=1
 
       - name: 上传测试日志
         if: always()
@@ -92,7 +121,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 环境自检
         run: |
@@ -135,6 +166,8 @@ jobs:
           set -euo pipefail
           go build ./sdk/ios/...
           go test ./sdk/ios/...
+          go test ./agent/ios/... ./agent/kernel ./agent/transport ./protocol
+          python3 tools/check_agent_boundary.py
 
       - name: GOOS=ios + cgo 编 Go 包
         env:
@@ -157,7 +190,7 @@ jobs:
           export CGO_LDFLAGS="-arch arm64 -isysroot ${SDK} \
             -framework Foundation -framework UIKit -framework CoreGraphics \
             -framework ImageIO -framework VideoToolbox -framework CoreVideo -framework CoreMedia"
-          go build ./sdk/ios/...
+          go build ./sdk/ios/... ./agent/ios/...
 
       - name: 上传 .o（仅当以上全部成功）
         uses: actions/upload-artifact@v4
@@ -184,7 +217,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 静态自检（precheck）
         run: go run ./cmd/precheck
@@ -383,45 +418,55 @@ jobs:
           nm -gU host/ios/Frameworks/libagovios.dylib | grep -E "agov_ios_(invoke|free)" || true
 
 
-      - name: 准备 frpc（优先用包内预置的 arm64 二进制）
+      - name: 从仓库内锁定的官方源码构建 frpc
         env:
           SDK: ${{ steps.sdk.outputs.path }}
           CC_IOS: ${{ steps.sdk.outputs.cc }}
+          FRP_COMMIT: 5f575b84420a19350467290c5c2bf9f4c7b27e57
         run: |
           set -euo pipefail
-          PREBUILT="host/ios/Frameworks/frpc-ios"
-          if [ -f "${PREBUILT}" ] && [ "$(stat -f%z "${PREBUILT}")" -gt 1000000 ]; then
-            echo "::group::使用仓库内预置的 frpc"
-            file "${PREBUILT}"
-            ls -lh "${PREBUILT}"
-            shasum -a 256 "${PREBUILT}"
-            echo "::endgroup::"
-            exit 0
-          fi
-          echo "::group::没有预置 frpc，从源码编（frp v0.67.0）"
-          # frp 的 go.mod 带 replace，不能 go install，只能拉源码在模块内构建；
-          # GOOS=ios 强制要 cgo，CC / CGO_CFLAGS / CGO_LDFLAGS 都要指向 iphoneos SDK。
-          git clone --depth 1 --branch v0.67.0 https://github.com/fatedier/frp "${RUNNER_TEMP}/frp"
-          cd "${RUNNER_TEMP}/frp"
-          # frp 的 cmd/frpc 用 //go:embed 嵌 web/frpc/dist（前端产物，需要 npm 构建）。
-          # 我们只要客户端二进制，放个占位文件满足 embed 即可。
+          python3 tools/verify_frpc_source.py
+          SOURCE="$GITHUB_WORKSPACE/third_party/frp"
+          export GOWORK=off
+          cd "${SOURCE}"
+          # 只嵌入占位页面，不启用 frpc Web 管理面板。
           mkdir -p web/frpc/dist
-          [ -f web/frpc/dist/index.html ] || echo '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
-          export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}"
-          # CXX 必须显式指向 iOS/simulator 的 clang++：cgo 编 .mm（ag_rec / imgui_overlay）靠它，
-          # 缺省会退回 g++，.mm 直接被跳过 → 链接期报 _AGRecognition 未定义。
-          export CXX="${CC_IOS}"
-          export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fno-objc-arc"
-          # -fobjc-arc：native 下的 .mm 用 ARC 写法（不手工 retain/release）
-          # -F/-I：让 #import <opencv2/core.hpp> 能找到；找不到时 ag_rec.mm 自动降级为"识别栈不可用"
-          export CGO_CXXFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN} -fobjc-arc -I ${PWD}/host/ios/Frameworks/opencv2.framework/Headers -I ${PWD}/host/ios/third_party/cimgui -I ${PWD}/host/ios/third_party/cimgui/imgui"
-          export CGO_LDFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
-          go build -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
+          printf '%s' '<!doctype html><title>frpc</title>' > web/frpc/dist/index.html
+          # 先编本机版，实际验证 -c 参数和 TOML，避免再次装入不兼容的定制客户端。
+          CGO_ENABLED=0 GOOS=darwin GOARCH="$(go env GOHOSTARCH)" go build -mod=readonly -trimpath -o "${RUNNER_TEMP}/frpc-verify" ./cmd/frpc
+          [ "$("${RUNNER_TEMP}/frpc-verify" --version)" = "0.67.0" ]
+          cat > "${RUNNER_TEMP}/frpc-check.toml" <<'TOML'
+          serverAddr = "127.0.0.1"
+          serverPort = 7000
+          auth.method = "token"
+          auth.token = "build-validation-only"
+          transport.tls.enable = true
+          log.to = "console"
+          log.level = "info"
+          log.disablePrintColor = true
+          [[proxies]]
+          name = "agov-build-check"
+          type = "tcp"
+          localIP = "127.0.0.1"
+          localPort = 18990
+          remotePort = 18990
+          TOML
+          "${RUNNER_TEMP}/frpc-verify" verify -c "${RUNNER_TEMP}/frpc-check.toml"
+          # 同一份已核验源码编译 iOS arm64，构建失败即终止，绝不回退到样本二进制。
+          export CGO_ENABLED=1 GOOS=ios GOARCH=arm64 CC="${CC_IOS}" CXX="${CC_IOS}"
+          export CGO_CFLAGS="-isysroot ${SDK} -mios-version-min=${IOS_MIN}"
+          export CGO_CXXFLAGS="${CGO_CFLAGS}"
+          export CGO_LDFLAGS="${CGO_CFLAGS}"
+          go build -mod=readonly -trimpath -ldflags "-s -w" -o "${RUNNER_TEMP}/frpc-ios" ./cmd/frpc
+          go version -m "${RUNNER_TEMP}/frpc-ios" | tee "${RUNNER_TEMP}/frpc-build-info.txt"
+          grep -F 'github.com/fatedier/frp/cmd/frpc' "${RUNNER_TEMP}/frpc-build-info.txt"
+          cp "$GITHUB_WORKSPACE/third_party/frp-source.lock.json" "${RUNNER_TEMP}/frpc-source.lock.json"
           file "${RUNNER_TEMP}/frpc-ios"
           mkdir -p "$GITHUB_WORKSPACE/host/ios/Frameworks"
-          cp "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/${PREBUILT}"
-          chmod +x "$GITHUB_WORKSPACE/${PREBUILT}"
-          echo "::endgroup::"
+          install -m 0755 "${RUNNER_TEMP}/frpc-ios" "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios"
+          cp LICENSE "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-LICENSE.txt"
+          printf 'source=https://github.com/fatedier/frp\nversion=v0.67.0\ncommit=%s\n' "${FRP_COMMIT}" > "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-source.txt"
+          shasum -a 256 "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-ios" >> "$GITHUB_WORKSPACE/host/ios/Frameworks/frpc-source.txt"
 
       - name: 生成 Xcode 工程
         working-directory: host/ios
@@ -486,9 +531,10 @@ jobs:
           set -euo pipefail
           APP="host/ios/build/Build/Products/Release-iphoneos/AgovHost.app"
           [ -d "${APP}" ] || { echo "::error::没有 app 产物"; exit 1; }
-          # frpc-ios：隧道客户端（预置二进制优先，源码编出来也放同一路径）
+          # frpc-ios：仅允许本次构建从锁定官方源码编出的产物
           if [ -f host/ios/Frameworks/frpc-ios ]; then
             cp host/ios/Frameworks/frpc-ios "${APP}/frpc-ios"; chmod +x "${APP}/frpc-ios"
+            cp host/ios/Frameworks/frpc-LICENSE.txt host/ios/Frameworks/frpc-source.txt "${APP}/"
           fi
           # libagovios.dylib：SDK/解释器（壳运行时 dlopen）
           if [ -f host/ios/Frameworks/libagovios.dylib ]; then
@@ -512,8 +558,11 @@ jobs:
               data = plistlib.loads(path.read_bytes())
               data['AGDefaultFrpsToken'] = token
               path.write_bytes(plistlib.dumps(data, fmt=plistlib.FMT_BINARY))
-              print('默认穿透凭据已注入安装包；密钥不输出到日志')
+              assert plistlib.loads(path.read_bytes()).get('AGDefaultFrpsToken') == token, '预填密钥写入校验失败'
+              print('默认穿透凭据已注入并回读校验通过；密钥不输出到日志')
           else:
+              if os.environ.get('GITHUB_EVENT_NAME') != 'pull_request':
+                  raise RuntimeError('发布构建缺少 IOS_FRPS_TOKEN，拒绝生成缺少预填密钥的安装包')
               print('未配置 IOS_FRPS_TOKEN，安装后需在穿透设置手动填写')
           PY
 
@@ -533,6 +582,11 @@ jobs:
           ENT="host/ios/entitlements.plist"
           [ -d "${APP}" ] || { echo "::error::没有 app 产物"; exit 1; }
           [ -f "${ENT}" ] || { echo "::error::缺少 ${ENT}"; exit 1; }
+
+          # 在签名前统一发布权限：目录可遍历，执行体可执行，动态库可读。
+          find "${APP}" -type d -exec chmod 0755 {} +
+          chmod 0755 "${APP}/AgovHost" "${APP}/Runtime/app" "${APP}/frpc-ios"
+          find "${APP}" -type f -name '*.dylib' -exec chmod 0644 {} +
 
           # 为什么不用 ldid：实测 ldid.cpp 在解析我们这份 970 行 entitlements 时
           # 直接 _assert() 崩掉（errno=2 与 assert false 各一次）。
@@ -593,6 +647,27 @@ jobs:
           rm -rf out && mkdir -p out/Payload
           cp -R "${APP}" out/Payload/
           ( cd out && zip -qry AgovHost.ipa Payload )
+          # 安装器仍可能丢失执行位；此处先保证我们发布的 IPA 权限正确。
+          python3 - <<'PY'
+          import stat, zipfile
+          with zipfile.ZipFile("out/AgovHost.ipa") as archive:
+              root = "Payload/AgovHost.app/"
+              executables = {root + name for name in ("AgovHost", "frpc-ios", "Runtime/app")}
+              for name in executables:
+                  entry = archive.getinfo(name)
+                  mode = entry.external_attr >> 16
+                  if not stat.S_ISREG(mode) or mode & 0o500 != 0o500:
+                      raise SystemExit(f"IPA 执行文件缺少读取/执行权限: {name} {mode:o}")
+              for entry in archive.infolist():
+                  if not entry.filename.startswith(root):
+                      continue
+                  mode = entry.external_attr >> 16
+                  if entry.is_dir() and mode & 0o500 != 0o500:
+                      raise SystemExit(f"IPA 目录不可遍历: {entry.filename} {mode:o}")
+                  if entry.filename.endswith(".dylib") and not mode & 0o400:
+                      raise SystemExit(f"IPA 动态库不可读: {entry.filename} {mode:o}")
+              print("IPA 宿主、frpc、脚本执行体及动态库权限检查通过")
+          PY
           ls -lh out/AgovHost.ipa
           unzip -l out/AgovHost.ipa | head -12
 
@@ -649,7 +724,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.sum
+            third_party/frp/go.sum
 
       - name: 确定构建架构
         id: arch

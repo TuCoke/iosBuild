@@ -1,7 +1,10 @@
 package tunnel
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,5 +90,47 @@ func TestRenderWritesConsoleLogs(t *testing.T) {
 		if !strings.Contains(text, line) {
 			t.Fatalf("缺少日志配置 %s", line)
 		}
+	}
+}
+
+// 用完整 TOML 解析而非子串匹配，防止日志配置的引号或换行被重复转义。
+func TestRenderedConfigurationParsesAsTOML(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		python, err = exec.LookPath("python3")
+	}
+	if err != nil {
+		t.Skip("需要 Python 3.11+ 的 tomllib")
+	}
+	cfg := Config{Server: "example.com", ServerPort: 7000, Token: "unit-token-only", ProxyName: "parse-check", LocalPort: 18990, RemotePort: 18990}
+	payload, _ := json.Marshal(map[string]any{"text": Render(cfg), "token": cfg.Token})
+	script := `import sys,json
+try:
+ import tomllib
+except ImportError:
+ sys.exit(77)
+p=json.load(sys.stdin)
+d=tomllib.loads(p['text'])
+assert d['log']=={'to':'console','level':'info','disablePrintColor':True}
+assert d['auth']['token']==p['token']
+assert d['transport']['tls']['enable'] is True
+assert d['proxies'][0]['localPort']==18990
+assert d['proxies'][0]['remotePort']==18990
+assert d['proxies'][0]['localIP']=='127.0.0.1'
+`
+	cmd := exec.Command(python, "-c", script)
+	cmd.Stdin = bytes.NewReader(payload)
+	output, err := cmd.CombinedOutput()
+	if e, ok := err.(*exec.ExitError); ok && e.ExitCode() == 77 {
+		t.Skip("当前 Python 不支持 tomllib")
+	}
+	if err != nil {
+		t.Fatalf("完整 TOML 解析或结构校验失败：%v %s", err, output)
+	}
+}
+func TestStartupFailureIncludesPersistentDiagnostic(t *testing.T) {
+	status, err := Start(nil, Config{})
+	if err == nil || status.StartError != err.Error() {
+		t.Fatalf("启动失败未返回结构化原因：%+v %v", status, err)
 	}
 }

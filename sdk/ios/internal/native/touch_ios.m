@@ -3,6 +3,11 @@
 #import "runtime.h"
 #include <mach/mach_time.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <signal.h>
+#include <errno.h>
+#include <stdlib.h>
 
 // 私有入口只在运行时解析。函数声明参考公开的 WebKit IOKit SPI，未复制闭源实现。
 typedef CFTypeRef Event;
@@ -68,6 +73,63 @@ static ag_ios_result SendKey(uint32_t page,uint32_t usage) {
     CFRelease(down); CFRelease(up);
     return AGJSON(@{@"submitted":@YES});
 }
+// 只在首个按下和全部抬起时更新，不在每个 move 中写文件。
+// 记录事件来源与进程身份，进程崩溃后的下一持有者才能释放同一 SDK 的遗留触点。
+static NSString *AGTouchIdentity(void){static NSString *identity;static dispatch_once_t once;dispatch_once(&once,^{identity=[NSUUID.UUID.UUIDString copy];});return identity;}
+static NSString *AGTouchJournalPath(void){return [AGRuntimeDocumentsPath() stringByAppendingPathComponent:@".agov-device-touch.json"];}
+static BOOL AGWriteTouchJournal(BOOL active,NSString **error){
+    NSDictionary *record=active?@{@"active":@YES,@"pid":@(getpid()),@"identity":AGTouchIdentity(),@"sender":[NSString stringWithFormat:@"%016llx",(unsigned long long)(setSender?senderID:0)]}:@{@"active":@NO};
+    NSError *failure=nil;NSData *data=[NSJSONSerialization dataWithJSONObject:record options:0 error:&failure];
+    NSString *path=AGTouchJournalPath();
+    if(!data || ![data writeToFile:path options:NSDataWritingAtomic error:&failure] ||
+       ![NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:path error:&failure]){
+        if(error)*error=failure.localizedDescription ?: @"触点状态记录失败";return NO;
+    }
+    return YES;
+}
+ag_ios_result AGRecoverOrphanTouches(void){
+    InitInput();NSString *path=AGTouchJournalPath();
+    int fd=open(path.fileSystemRepresentation,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC);
+    if(fd<0)return errno==ENOENT?AGJSON(@{}):AGError(4,@"无法读取遗留触点状态，已阻止自动操作");
+    struct stat info;if(fstat(fd,&info)!=0 || !S_ISREG(info.st_mode) || info.st_size<2 || info.st_size>4096){close(fd);return AGError(4,@"遗留触点状态无效，需要核对");}
+    uint8_t bytes[4096];ssize_t size=read(fd,bytes,sizeof(bytes));close(fd);
+    id record=size>0?[NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:bytes length:size] options:0 error:NULL]:nil;
+    if(![record isKindOfClass:NSDictionary.class] || ![record[@"active"] isKindOfClass:NSNumber.class])return AGError(4,@"遗留触点记录损坏，需要核对");
+    if(![record[@"active"] boolValue])return AGJSON(@{});
+    if(![record[@"pid"] isKindOfClass:NSNumber.class])return AGError(4,@"遗留触点进程身份类型无效");
+    pid_t owner=[record[@"pid"] intValue];if(owner==getpid() && [record[@"identity"] isEqual:AGTouchIdentity()])return AGJSON(@{});
+    if(owner<=0)return AGError(4,@"遗留触点进程身份无效");
+    if(owner!=getpid() && (kill(owner,0)==0 || errno!=ESRCH))return AGError(5,@"其他进程仍有未释放触点，请先结束原操作");
+    NSString *source=record[@"sender"];
+    if(![source isKindOfClass:NSString.class] || source.length!=16 || [source rangeOfCharacterFromSet:[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"].invertedSet].location!=NSNotFound)return AGError(4,@"遗留事件来源无效");
+    uint64_t previousSender=strtoull(source.UTF8String,NULL,16);
+    NSLog(@"[input-recovery] 开始恢复退出进程 %d 的触点",owner);
+    [inputLock lock];
+    @try{
+        if(!AGInputAvailable(@"touch"))return AGError(4,@"无法释放遗留触点：HID 不可用");
+        if(!client)client=createClient(kCFAllocatorDefault);if(!client)return AGError(4,@"无法释放遗留触点：客户端不可用");
+        NSLog(@"[input-recovery] HID 客户端已准备");
+        uint64_t timestamp=mach_absolute_time();
+        Event parent=createHand(kCFAllocatorDefault,timestamp,3,0,0,3,0,0,0,0,0,0,0,0,0);
+        if(!parent)return AGError(4,@"无法创建遗留触点释放事件");
+        setInteger(parent,4,0);setInteger(parent,0xb0019,1);
+        if(previousSender && !setSender){CFRelease(parent);return AGError(4,@"无法恢复原触点事件来源");}
+        if(setSender)setSender(parent,previousSender);
+        for(uint32_t finger=0;finger<10;finger++){
+            // 仅改变 range/touch，不设置 position，避免用默认坐标移动原有触点。
+            Event child=createFinger(kCFAllocatorDefault,timestamp,finger,2,3,0,0,0,0,0,0,0,0);
+            if(!child){CFRelease(parent);return AGError(4,@"遗留触点释放事件创建失败");}
+            setInteger(child,0xb0019,1);appendEvent(parent,child,0);CFRelease(child);
+        }
+        NSLog(@"[input-recovery] 遗留触点释放事件已构造，准备提交");
+        dispatchEvent(client,parent);CFRelease(parent);[contacts removeAllObjects];
+        NSLog(@"[input-recovery] 释放事件提交返回，准备保存状态");
+        NSString *error=nil;if(!AGWriteTouchJournal(NO,&error))return AGError(4,error);
+        NSLog(@"[input] 已提交退出进程 %d 的遗留触点释放；系统动作效果仍需核对",owner);
+        return AGJSON(@{@"recovered":@YES});
+    }@finally{[inputLock unlock];}
+}
+
 static ag_ios_result SendFrameWithReleases(NSArray *points,NSDictionary *released) {
     if (!AGInputAvailable(@"touch")) return AGError(1,@"多指触摸接口不可用");
     if (![points isKindOfClass:[NSArray class]] || points.count > 10) return AGError(2,@"手指列表无效");
@@ -98,8 +160,11 @@ static ag_ios_result SendFrameWithReleases(NSArray *points,NSDictionary *release
         setInteger(child,0xb0019,1);
         appendEvent(parent,child,0); CFRelease(child);
     }
+    NSString *journalError=nil;
+    if(next.count && !contacts.count && !AGWriteTouchJournal(YES,&journalError)){CFRelease(parent);return AGError(3,journalError);}
     dispatchEvent(client,parent); CFRelease(parent);
     [contacts setDictionary:next];
+    if(!next.count && !AGWriteTouchJournal(NO,&journalError))return AGError(4,[@"触摸已提交，但状态保存失败：" stringByAppendingString:journalError]);
     return AGJSON(@{@"submitted":@YES});
 }
 static ag_ios_result SendFrame(NSArray *points){return SendFrameWithReleases(points,nil);}
@@ -159,7 +224,7 @@ static uint32_t AGKeyUsage(int code, uint32_t *page) {
     }
 }
 
-ag_ios_result AGInput(NSString *op, NSDictionary *args) {
+static ag_ios_result AGInputBody(NSString *op, NSDictionary *args) {
     InitInput();
     NSDictionary *display=nil;
     // UIKit/FrontBoard 查询放在输入锁外，不能持锁等待主线程。
@@ -226,4 +291,9 @@ ag_ios_result AGInput(NSString *op, NSDictionary *args) {
         }
         return AGError(1,@"未知输入操作");
     } @finally { [inputLock unlock]; }
+}
+
+ag_ios_result AGInput(NSString *op,NSDictionary *args){
+    if(AGInputWriteRequired(op))return AGWithInputLease(^{return AGInputBody(op,args);});
+    return AGInputBody(op,args);
 }

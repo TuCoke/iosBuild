@@ -16,13 +16,16 @@ import (
 // ReleaseState 与 ObjC 启动器共享。版本目录不可变，运行中的脚本始终加载原版本。
 // Attempt 只由启动器设置；未完成健康确认就退出时，下次启动回退到 Current。
 type ReleaseState struct {
-	Version   int    `json:"version"`
-	Current   string `json:"current,omitempty"`
-	Previous  string `json:"previous,omitempty"`
-	Pending   string `json:"pending,omitempty"`
-	Attempt   string `json:"attempt,omitempty"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
-	LastError string `json:"lastError,omitempty"`
+	Version      int             `json:"version"`
+	Current      string          `json:"current,omitempty"`
+	Previous     string          `json:"previous,omitempty"`
+	Pending      string          `json:"pending,omitempty"`
+	Attempt      string          `json:"attempt,omitempty"`
+	UpdatedAt    string          `json:"updatedAt,omitempty"`
+	LastError    string          `json:"lastError,omitempty"`
+	Rejected     string          `json:"rejected,omitempty"`
+	NeedsRestart bool            `json:"needsRestart,omitempty"`
+	Health       json.RawMessage `json:"health,omitempty"`
 }
 
 // Platform 检查 Mach-O 的目标平台。arm64 不能用于区分真机与模拟器。
@@ -80,7 +83,7 @@ func readState(dir string) (ReleaseState, error) {
 	if state.Version != 1 {
 		return state, fmt.Errorf("SDK 版本状态格式不支持")
 	}
-	for _, digest := range []string{state.Current, state.Previous, state.Pending, state.Attempt} {
+	for _, digest := range []string{state.Current, state.Previous, state.Pending, state.Attempt, state.Rejected} {
 		if digest != "" && !validDigest(digest) {
 			return state, fmt.Errorf("SDK 版本摘要无效")
 		}

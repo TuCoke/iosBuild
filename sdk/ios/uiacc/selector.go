@@ -324,6 +324,7 @@ func (u *Uiacc) Click(text string) bool {
 		u.mu.Unlock()
 		return false
 	}
+	foreground := foregroundForSnapshot(context.Background(), nodes)
 	u.mu.Lock()
 	u.lastErr = nil
 	if u.released {
@@ -335,7 +336,7 @@ func (u *Uiacc) Click(text string) bool {
 	for _, desc := range []bool{false, true} {
 		for i := range nodes {
 			if u.match(&nodes[i]) && ((!desc && nodes[i].Text == text) || (desc && nodes[i].Value == text)) {
-				selected = &UiObject{node: nodes[i]}
+				selected = &UiObject{node: nodes[i], captured: time.Now(), life: u.life, foreground: foreground}
 				break
 			}
 		}
@@ -425,6 +426,10 @@ func (u *Uiacc) FindContext(ctx context.Context) ([]*UiObject, error) {
 	if u == nil {
 		return nil, err
 	}
+	foreground := ""
+	if err == nil {
+		foreground = foregroundForSnapshot(ctx, nodes)
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.lastErr = err
@@ -438,7 +443,7 @@ func (u *Uiacc) FindContext(ctx context.Context) ([]*UiObject, error) {
 	out := make([]*UiObject, 0, 4)
 	for i := range nodes {
 		if u.match(&nodes[i]) {
-			out = append(out, &UiObject{node: nodes[i]})
+			out = append(out, &UiObject{node: nodes[i], captured: time.Now(), life: u.life, foreground: foreground})
 		}
 	}
 	return out, nil
@@ -446,7 +451,10 @@ func (u *Uiacc) FindContext(ctx context.Context) ([]*UiObject, error) {
 
 // UiObject 是查询瞬间的节点快照；后续页面变化不会更新它。
 type UiObject struct {
-	node axNode
+	node       axNode
+	captured   time.Time
+	life       context.Context
+	foreground string
 }
 
 // Click 请求点击控件中心，返回动作调用是否成功；业务结果仍需另行验证。
@@ -458,14 +466,24 @@ func (n *UiObject) Click() bool {
 
 // ClickContext 保留原生错误；返回成功表示动作调用完成，不能代替业务成功验证。
 func (n *UiObject) ClickContext(ctx context.Context) error {
-	if n == nil {
+	if n == nil || n.node.Right <= n.node.Left || n.node.Bottom <= n.node.Top {
 		return types.ErrInvalid
 	}
-	x, y := n.node.CenterX()
-	if n.node.Right <= n.node.Left || n.node.Bottom <= n.node.Top {
+	if ctx == nil {
 		return types.ErrInvalid
 	}
-	return motion.ClickContext(ctx, x, y, 0, 20)
+	merged, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if n.life != nil {
+		stop := context.AfterFunc(n.life, cancel)
+		defer stop()
+	}
+	current, err := validateClick(merged, n)
+	if err != nil {
+		return err
+	}
+	x, y := current.CenterX()
+	return motion.ClickContext(merged, x, y, 0, 20)
 }
 
 // CenterX / CenterY 在 Rect 之外给节点用（保持在 uiacc 内部，不污染公开 Rect）。

@@ -11,6 +11,7 @@
 #import "AGBridge.h"
 #import "AGWebConsoleViewController.h"
 #import "AGTunnelSettingsViewController.h"
+#import "AGAgentSettingsViewController.h"
 // 取 Wi-Fi 地址 + 触发本地网络授权用（getifaddrs / inet_ntop / sockaddr_in）
 #include <ifaddrs.h>
 #include <arpa/inet.h>
@@ -38,18 +39,26 @@
 
 @implementation AGRootViewController
 
+- (void)agentSettings {
+ AGAgentSettingsViewController *page=[[AGAgentSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+ [self presentViewController:[[UINavigationController alloc] initWithRootViewController:page] animated:YES completion:nil];
+}
+
 #pragma mark - 生命周期
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"AgovHost";
-    self.navigationItem.rightBarButtonItem=[[UIBarButtonItem alloc] initWithTitle:@"穿透设置" style:UIBarButtonItemStylePlain target:self action:@selector(tunnelSettings)];
+    self.navigationItem.rightBarButtonItems=@[
+      [[UIBarButtonItem alloc] initWithTitle:@"Agent 设置" style:UIBarButtonItemStylePlain target:self action:@selector(agentSettings)],
+      [[UIBarButtonItem alloc] initWithTitle:@"穿透设置" style:UIBarButtonItemStylePlain target:self action:@selector(tunnelSettings)]];
     // 调试宿主在前台时保持亮屏，避免等待远程请求期间自动息屏。
     UIApplication.sharedApplication.idleTimerDisabled = YES;
     self.sdkQueue=dispatch_queue_create("agov.host.sdk.actions",DISPATCH_QUEUE_SERIAL);
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.targetCenter = CGPointMake(0.5, 0.35);
     [self buildUI];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(sdkHealthChanged:) name:@"AGSDKHealthDidChange" object:nil];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -77,6 +86,7 @@
     // 调试服务在启动自检结束后开放，避免接入时与初始化争用设备。
     NSString *debugRaw=[AGBridge invoke:@"debugapi.start" payload:@"{}"];
     [self append:[@"debugapi.start → " stringByAppendingString:debugRaw]];
+    [self append:[@"background.status → " stringByAppendingString:[AGBridge invoke:@"background.status" payload:@"{}"]]];
     NSDictionary *debugReply=[NSJSONSerialization JSONObjectWithData:[debugRaw dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];
     if([debugReply[@"ok"] boolValue])dispatch_async(dispatch_get_main_queue(),^{
         self.debugService=[[NSNetService alloc] initWithDomain:@"local." type:@"_agovhost._tcp." name:@"" port:18990];
@@ -89,6 +99,8 @@
         // 表现就是外部 SYN 被静默丢弃（真机实测：ping 通、:80 回 RST、:18990 超时）。
         [self triggerLocalNetworkAccess];
     });
+    // 启动自检完成后再连接，避免初始化中的点击/脚本与云端任务争用手机。
+    [AGAgentSettingsViewController startSavedIfEnabled];
     });
 }
 
@@ -163,7 +175,12 @@
     [super viewDidDisappear:animated];
     [self.tunnelTimer invalidate];self.tunnelTimer=nil;
 }
-- (void)dealloc {[_tunnelTimer invalidate];}
+- (void)dealloc {[_tunnelTimer invalidate];[NSNotificationCenter.defaultCenter removeObserver:self];}
+- (void)sdkHealthChanged:(NSNotification *)notification {
+    NSString *message=notification.userInfo[@"message"];
+    [self append:[@"[SDK 健康] " stringByAppendingString:message ?: @"状态更新"]];
+    self.navigationItem.prompt=[notification.userInfo[@"needsRestart"] boolValue]?message:nil;
+}
 
 - (void)refreshTunnelStatus {
     NSString *raw=[AGBridge invoke:@"tunnel.status" payload:@"{}"];
@@ -175,9 +192,13 @@
     if(pid>0 && pid!=self.lastTunnelPID)self.lastTunnelExitCode=nil;
     if([status[@"exitCode"] isKindOfClass:NSNumber.class])self.lastTunnelExitCode=status[@"exitCode"];
     if(pid>0 && !running)self.lastTunnelPID=pid;
+    if(!running && [status[@"exitedPid"] integerValue]>0)self.lastTunnelPID=[status[@"exitedPid"] integerValue];
     NSString *message;
     if(![envelope[@"ok"] boolValue] || !status)message=[@"frpc 状态读取失败：" stringByAppendingString:envelope[@"error"] ?: @"返回内容无效"];
     else if([status[@"lastError"] length])message=[@"frpc 状态读取失败：" stringByAppendingString:status[@"lastError"]];
+    else if(!running && [status[@"supervising"] boolValue])message=[NSString stringWithFormat:@"frpc 自动恢复中 · 已尝试 %@ 次 · %@",status[@"restartAttempts"] ?: @0,status[@"restartError"] ?: @"等待重试"];
+    else if(!running && [status[@"restartError"] length])message=[@"frpc 恢复停止：" stringByAppendingString:status[@"restartError"]];
+    else if(!running && [status[@"startError"] length])message=[@"frpc 启动失败：" stringByAppendingString:status[@"startError"]];
     else if(running){self.lastTunnelPID=pid;message=[NSString stringWithFormat:@"frpc 运行中 · PID %ld（连接/注册结果见下方日志）",(long)pid];}
     else if(self.lastTunnelPID>0)message=[NSString stringWithFormat:@"frpc 已退出 · PID %ld · 退出码 %@（请查看最后日志）",(long)self.lastTunnelPID,self.lastTunnelExitCode ?: @"未知"];
     else message=@"frpc 未运行 · 请配置后点击启动穿透";

@@ -8,11 +8,40 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"autogov1/v2/sdk/ios/device"
 )
+
+// 缓存目录和执行体的权限可能被安装/迁移工具改变，内容正确也必须修复。
+func TestPrepareWorkerRepairsCachedPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不支持 Unix 执行位")
+	}
+	paths, sdk := workerFixture(t)
+	app, err := prepareWorkerBinary(context.Background(), paths, sdk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(app, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(app), 0600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := prepareWorkerBinary(context.Background(), paths, sdk)
+	if err != nil || again != app {
+		t.Fatalf("缓存权限修复失败: %s %v", again, err)
+	}
+	for path, mode := range map[string]os.FileMode{app: 0755, filepath.Dir(app): 0700} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("权限未恢复: %s %v", path, err)
+		}
+	}
+}
 
 // 构造只用于依赖解析的最小 Mach-O，不执行任何二进制，也不需要 Apple SDK。
 func workerMachO(kind macho.Type, platform uint32, imports ...string) []byte {

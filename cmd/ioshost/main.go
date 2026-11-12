@@ -54,6 +54,7 @@ import (
 	"autogov1/v2/sdk/ios/script/worker"
 	"autogov1/v2/sdk/ios/selftest"
 	"autogov1/v2/sdk/ios/tunnel"
+	"autogov1/v2/sdk/ios/types"
 	"autogov1/v2/sdk/ios/update"
 )
 
@@ -192,6 +193,36 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
+	// 健康探测不执行设备动作，不能因为长脚本持锁就把候选版本误判为损坏。
+	if name == "sdk.health" {
+		return okData(update.Health(ctx))
+	}
+	if name == "sdk.health.record" {
+		var observation update.HealthObservation
+		raw, err := json.Marshal(args)
+		if err == nil {
+			err = json.Unmarshal(raw, &observation)
+		}
+		if err != nil {
+			return fail(err)
+		}
+		state, err := update.RecordHealth(ctx, observation)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(state)
+	}
+	// 停止必须能在原生动作持有宿主闸门时发出取消；状态查询也不能被长动作阻塞。
+	if name == "agent.status" {
+		return okData(iosAgent.Status())
+	}
+	if name == "agent.stop" {
+		if err := iosAgent.Stop(ctx); err != nil {
+			return fail(err)
+		}
+		backgroundRequest("release", "ios-agent", false)
+		return okData(iosAgent.Status())
+	}
 	if !hostCallMu.TryLock() {
 		return fail(contextError("宿主正在执行其他操作，请稍后重试"))
 	}
@@ -202,7 +233,49 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 // invokeSDK 复用 C ABI 的分派，不为 HTTP 再实现一套设备控制逻辑。
 // 调用者持有 hostCallMu；独立 worker 在自己的进程内具有独立的锁。
 func invokeSDK(ctx context.Context, name string, args map[string]any, duration time.Duration) *C.char {
+	after := backgroundBefore(name)
+	raw := invokeSDKBody(ctx, name, args, duration)
+	if after == nil {
+		return raw
+	}
+	var reply struct {
+		OK   bool           `json:"ok"`
+		Data map[string]any `json:"data"`
+	}
+	success := raw != nil && json.Unmarshal([]byte(C.GoString(raw)), &reply) == nil && reply.OK && reply.Data["ok"] != false
+	// 自动恢复中的隧道仍有后台运行需求，不能因一次启动观察失败释放 owner。
+	if name == "tunnel.start" {
+		if status, ok := reply.Data["status"].(map[string]any); ok && status["supervising"] == true {
+			success = true
+		}
+	}
+	after(success)
+	return raw
+}
+
+func invokeSDKBody(ctx context.Context, name string, args map[string]any, duration time.Duration) *C.char {
 	switch name {
+	case "agent.start":
+		if err := startIOSAgent(args); err != nil {
+			return fail(err)
+		}
+		return okData(iosAgent.Status())
+	case "agent.status":
+		return okData(iosAgent.Status())
+	case "agent.stop":
+		if err := iosAgent.Stop(ctx); err != nil {
+			return fail(err)
+		}
+		backgroundRequest("release", "ios-agent", false)
+		return okData(iosAgent.Status())
+	case "background.status":
+		return okData(backgroundRequest("status", "", false))
+	case "background.enable":
+		value, ok := args["enabled"].(bool)
+		if !ok {
+			return fail(contextError("enabled 必须为布尔值"))
+		}
+		return okData(backgroundRequest("enable", "", value))
 	case "capabilities":
 		v, err := device.Capabilities(ctx)
 		if err != nil {
@@ -257,9 +330,11 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 		}
 		return okData(report)
 	case "sdk.health":
-		// 启动器仅探测运行时能否响应；不要求 AX、截图等受授权限制的能力可用。
-		return okData(map[string]any{"ready": true, "protocol": 1})
+		return okData(update.Health(ctx))
 	case "sdk.rollback":
+		if err := agentBusyForUpdate(); err != nil {
+			return fail(err)
+		}
 		executionControl.Lock()
 		defer executionControl.Unlock()
 		state, err := update.Rollback(ctx)
@@ -274,6 +349,9 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 		}
 		return okData(status)
 	case "sdk.install":
+		if err := agentBusyForUpdate(); err != nil {
+			return fail(err)
+		}
 		executionControl.Lock()
 		defer executionControl.Unlock()
 		raw, err := base64.StdEncoding.DecodeString(str(args, "base64"))
@@ -302,9 +380,9 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 			if err != nil {
 				return fail(err)
 			}
-			server, err := debugapi.Start(debugapi.Config{Documents: paths.Documents, Invoke: func(callCtx context.Context, method string, parameters map[string]any) (json.RawMessage, error) {
+			server, err := debugapi.Start(debugapi.Config{Documents: paths.Documents, Video: debugapi.NewVideo(openBackgroundVideo), Invoke: func(callCtx context.Context, method string, parameters map[string]any) (json.RawMessage, error) {
 				// 运行状态只读自己的锁；其他动作执行中也必须能查询 worker PID。
-				if method != "script.status" {
+				if method != "script.status" && method != "background.status" && method != "sdk.health" {
 					if !hostCallMu.TryLock() {
 						return nil, contextError("宿主正在执行界面或脚本操作，请稍后重试")
 					}
@@ -344,6 +422,17 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 			return fail(err)
 		}
 		return okData(map[string]any{"port": port, "url": fmt.Sprintf("http://127.0.0.1:%d/status", port)})
+	case "localapi.stop":
+		localAPIMu.Lock()
+		defer localAPIMu.Unlock()
+		if localAPIServer != nil {
+			if err := localAPIServer.Shutdown(ctx); err != nil {
+				return fail(err)
+			}
+			localAPIServer = nil
+			localAPIPort = 0
+		}
+		return okData(map[string]any{"stopped": true})
 
 	case "tunnel.start":
 		cfg := tunnel.Config{
@@ -372,6 +461,9 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 
 	case "tunnel.status":
 		st := tunnel.Query(ctx)
+		if !st.Running && !st.Supervising && st.LastError == "" {
+			backgroundRequest("release", "tunnel", false)
+		}
 		return okData(map[string]any{"status": st, "logs": tunnel.Logs(30)})
 
 	case "tunnel.logs":
@@ -380,7 +472,7 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 	case "script.executeFile":
 		// 仅供独立执行体在自己进程内调用；解释器和能力仍来自同一份动态 SDK。
 		params, _ := args["params"].(map[string]any)
-		runner := script.New(script.Options{Params: params, Timeout: duration})
+		runner := script.New(script.Options{Params: params, Timeout: duration, DeviceExclusive: true})
 		res, err := runner.RunFile(ctx, str(args, "path"))
 		out := reply{OK: err == nil, Data: map[string]any{"logs": res.Logs, "result": res.Value, "elapsedMs": res.Elapsed.Milliseconds()}}
 		if err != nil {
@@ -447,6 +539,34 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 			return fail(err)
 		}
 		return okData(map[string]any{"injected": "swipe", "durationMs": d.Milliseconds()})
+	case "motion.gesture":
+		raw, err := json.Marshal(args["frames"])
+		var frames []types.Frame
+		if err != nil || json.Unmarshal(raw, &frames) != nil || len(frames) == 0 {
+			return fail(contextError("frames 必须是非空轨迹数组"))
+		}
+		if err = motion.Gesture(ctx, frames); err != nil {
+			return fail(err)
+		}
+		return okData(map[string]any{"injected": "gesture"})
+	case "motion.pinch":
+		points := make([]types.Point, 4)
+		for i, name := range []string{"a0", "b0", "a1", "b1"} {
+			value, ok := args[name].(map[string]any)
+			if !ok {
+				return fail(contextError("缺少坐标 " + name))
+			}
+			x, xOK := value["x"].(float64)
+			y, yOK := value["y"].(float64)
+			if !xOK || !yOK {
+				return fail(contextError("无效坐标 " + name))
+			}
+			points[i] = types.Point{X: x, Y: y}
+		}
+		if err := motion.Pinch(ctx, points[0], points[1], points[2], points[3], time.Duration(num(args, "durationMs", 500))*time.Millisecond); err != nil {
+			return fail(err)
+		}
+		return okData(map[string]any{"injected": "pinch"})
 
 	case "capture.screenshot":
 		// 截图走二进制，这里转 base64 交给宿主显示；iOS 侧是 JPEG/PNG 编码后的数据。
@@ -507,7 +627,7 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 				if err != nil {
 					return fail(err)
 				}
-				data, err := session.Call(name, args)
+				data, err := session.CallJSON(name, args)
 				if err != nil {
 					return fail(err)
 				}

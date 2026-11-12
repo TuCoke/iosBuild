@@ -2,11 +2,13 @@
 #import "AGAppDelegate.h"
 #import "AGRootViewController.h"
 #import "AGAppCtlServer.h"
+#import "AGBackgroundRuntime.h"
 
 @implementation AGAppDelegate
 
 - (BOOL)application:(UIApplication *)application
 didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *)launchOptions {
+    [[AGBackgroundRuntime shared] install];
     NSError *controlError=nil;
     if(![[AGAppCtlServer shared] start:&controlError])NSLog(@"[apkctl] 宿主通道启动失败: %@",controlError);
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
@@ -15,6 +17,10 @@ didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey, id> *
     self.window.rootViewController = nav;
     [self.window makeKeyAndVisible];
     return YES;
+}
+
+- (void)applicationWillTerminate:(UIApplication *)application {
+    [[AGBackgroundRuntime shared] command:@"terminate" owner:@"host" enabled:NO];
 }
 
 @end

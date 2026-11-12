@@ -103,11 +103,14 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
         NSDictionary *args = [value isKindOfClass:[NSDictionary class]] ? value : @{};
         AGLoadFrameworks();
         @try {
+            if ([op isEqualToString:@"runtime.health"]) return AGJSON(@{@"protocol":@2,@"inputLease":@YES,@"workerDocuments":@YES});
+            if ([op isEqualToString:@"runtime.input.acquire"]) return AGInputLeaseAcquire();
+            if ([op isEqualToString:@"runtime.input.release"]){AGInputLeaseRelease();return AGJSON(@{});}
             if ([op isEqualToString:@"runtime.diagnostics"]) return AGDiagnostics();
             if ([op isEqualToString:@"runtime.paths"]) {
                 Dl_info image={0};dladdr((const void *)&ag_ios_call,&image);
                 NSString *loaded=image.dli_fname ? [NSString stringWithUTF8String:image.dli_fname] : @"";
-                NSString *documents=NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject ?: @"";
+                NSString *documents=AGRuntimeDocumentsPath() ?: @"";
                 return AGJSON(@{@"platform":(TARGET_OS_SIMULATOR ? @"ios-simulator" : @"ios"),@"documents":documents,@"bundle":AGApplicationBundlePath() ?: @"",@"loadedImage":loaded ?: @"",@"executable":NSBundle.mainBundle.executablePath ?: @""});
             }
             if ([op isEqualToString:@"runtime.capabilities"]) {

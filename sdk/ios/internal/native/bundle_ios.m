@@ -25,3 +25,15 @@ NSString *AGApplicationBundlePath(void){
     if(executable && app.location!=NSNotFound)return [executable substringToIndex:app.location+4];
     return bundle;
 }
+
+// worker 必须使用宿主传入的目录，不能按自身 HOME 生成另一把互不相干的设备锁。
+NSString *AGRuntimeDocumentsPath(void){
+    NSArray<NSString *> *arguments=NSProcessInfo.processInfo.arguments;
+    for(NSUInteger i=1;i+1<arguments.count;i++){
+        if([arguments[i] isEqualToString:@"--documents"]){
+            NSString *path=[arguments[i+1] stringByStandardizingPath];
+            return path.isAbsolutePath?path:nil;
+        }
+    }
+    return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES).firstObject;
+}

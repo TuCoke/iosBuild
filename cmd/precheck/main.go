@@ -158,6 +158,7 @@ func checkNativeOps() {
 	files := walk("sdk/ios/internal/native", ".m")
 	files = append(files, walk("sdk/ios/internal/native", ".mm")...)
 	files = append(files, walk("host/ios/objc", ".mm")...)
+	files = append(files, walk("cmd/ioshost", ".m")...)
 	for _, f := range files {
 		data, _ := os.ReadFile(f)
 		dispatch.Write(data)
@@ -308,6 +309,15 @@ func checkWorkflowOrder() {
 	if !strings.Contains(src, "exported_symbol") {
 		fail("dylib 链接缺少 -Wl,-exported_symbol")
 	}
+	// frpc 必须可追溯到源码，不能再按文件大小信任第三方预编译成品。
+	if strings.Contains(src, "stat -f%z") || strings.Contains(src, "优先用包内预置") {
+		fail("frpc 构建仍允许跳过源码校验并使用预置二进制")
+	}
+	for _, required := range []string{"FRP_COMMIT: 5f575b84420a19350467290c5c2bf9f4c7b27e57", "frpc-verify\" verify -c", "frpc-build-info.txt", "python3 tools/verify_frpc_source.py", "SOURCE=\"$GITHUB_WORKSPACE/third_party/frp\""} {
+		if !strings.Contains(src, required) {
+			fail("frpc 构建缺少来源或命令行校验: %s", required)
+		}
+	}
 	ok("workflow 顺序与关键路径检查完成")
 }
 
@@ -384,6 +394,7 @@ func checkNativeSources() {
 	files := walk("sdk/ios/internal/native", ".m")
 	files = append(files, walk("sdk/ios/internal/native", ".mm")...)
 	files = append(files, walk("host/ios/objc", ".mm")...)
+	files = append(files, walk("cmd/ioshost", ".m")...)
 	// 仅扫描自维护的包装层；第三方原始代码交由对应平台的编译器检查。
 	files = append(files, "host/ios/third_party/cimgui/ag_bridge.cpp", "host/ios/third_party/cimgui/ag_widgets_gen.cpp")
 	stripRe := regexp.MustCompile(`(?s)/\*.*?\*/|//[^\n]*|"(?:[^"\\]|\\.)*"`)

@@ -61,6 +61,23 @@ func TestAuthentication(t *testing.T) {
 		t.Fatal("发现接口泄漏 token 或允许缓存")
 	}
 }
+
+func TestBackgroundStatusRemainsReadableWhileActionBusy(t *testing.T) {
+	s := serverForTest(t, func(_ context.Context, method string, _ map[string]any) (json.RawMessage, error) {
+		if method != "background.status" {
+			t.Fatalf("意外调用: %s", method)
+		}
+		return json.RawMessage(`{"ok":true,"data":{"requested":true}}`), nil
+	})
+	s.gate <- struct{}{}
+	defer func() { <-s.gate }()
+	if w := req(s, "GET", "/background", "", true); w.Code != 200 {
+		t.Fatalf("后台状态被业务闸门阻塞: %d", w.Code)
+	}
+	if w := req(s, "POST", "/invoke", `{"method":"background.enable","args":{"enabled":false}}`, true); w.Code != 409 {
+		t.Fatalf("忙时意外修改运行策略: %d", w.Code)
+	}
+}
 func TestReadRoutes(t *testing.T) {
 	var called string
 	s := serverForTest(t, func(_ context.Context, m string, _ map[string]any) (json.RawMessage, error) {

@@ -1,5 +1,6 @@
 #import "AGAppCtlServer.h"
 #import "AGJSBridge.h"
+#import "AGBackgroundRuntime.h"
 #import <JavaScriptCore/JavaScriptCore.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -39,6 +40,7 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
 @property(nonatomic,strong) NSMutableDictionary<NSNumber *,NSArray<JSValue *> *> *responses;
 @property(nonatomic,assign) uint32_t nextEvent;
 @property(nonatomic,strong) dispatch_semaphore_t evalSlots;
+@property(nonatomic,copy) NSString *backgroundOwner;
 - (void)run;
 - (BOOL)sendStatus:(uint32_t)status messageID:(uint32_t)messageID payload:(NSData *)payload;
 - (void)close;
@@ -67,6 +69,7 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
 }
 - (void)close { @synchronized(self){if(self.closed)return;self.closed=YES;shutdown(self.fd,SHUT_RDWR);close(self.fd);self.fd=-1;} }
 - (void)run {
+    @synchronized(self){if(self.closed)return;self.backgroundOwner=[@"js-connection:" stringByAppendingString:NSUUID.UUID.UUIDString];[[AGBackgroundRuntime shared] command:@"acquire" owner:self.backgroundOwner enabled:NO];}
     for(;;){@autoreleasepool {
         uint32_t header[2];if(!AGReadAll(self.fd,header,8))break;
         uint32_t messageID=ntohl(header[0]),length=ntohl(header[1]);
@@ -125,7 +128,9 @@ static NSString *AGTakeControlString(NSData *data,NSUInteger *offset) {
         }} @catch(NSException *failure) {[self sendStatus:3 messageID:messageID payload:AGControlString(failure.reason?:@"JS 原生桥异常")];} @finally {dispatch_semaphore_signal(self.evalSlots);}});
     }}
     [self close];
-    dispatch_async(self.jsQueue,^{for(AGJSBridge *bridge in self.bridges.allValues)[bridge close];[self.responses removeAllObjects];[self.bridges removeAllObjects];[self.contexts removeAllObjects];});
+    dispatch_async(self.jsQueue,^{for(AGJSBridge *bridge in self.bridges.allValues)[bridge close];[self.responses removeAllObjects];[self.bridges removeAllObjects];[self.contexts removeAllObjects];
+        // 等正在执行的 JS 返回及场景释放后再解除需求，不能仅凭 socket 已断开提前释放。
+        if(self.backgroundOwner)[[AGBackgroundRuntime shared] command:@"release" owner:self.backgroundOwner enabled:NO];});
 }
 @end
 
