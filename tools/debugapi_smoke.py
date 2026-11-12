@@ -1,5 +1,6 @@
 """模拟器真实 HTTP 冒烟；token 只放请求头，不打印，也不写测试报告。"""
 import json
+import hashlib
 import os
 import signal
 import tempfile
@@ -17,7 +18,16 @@ def input_lease_probe(documents, call):
     bundle = pathlib.Path(subprocess.run(
         ["xcrun", "simctl", "get_app_container", "booted", "dev.autogov.host", "app"],
         check=True, capture_output=True, text=True, timeout=15).stdout.strip())
-    binary, sdk = bundle / "Runtime/app", bundle / "libagovios.dylib"
+    sdk = bundle / "libagovios.dylib"
+    # 与宿主一致：使用已准备的版本化执行目录。安装器可能收回包内资源的执行位，
+    # 不能绕过 prepareWorkerBinary，直接执行只读包内 Runtime/app。
+    source_digest = hashlib.sha256((bundle / "Runtime/app").read_bytes()).digest()
+    candidates = [path for path in (documents / "Worker").glob("*/app")
+                  if path.is_file() and os.access(path, os.X_OK)
+                  and hashlib.sha256(path.read_bytes()).digest() == source_digest]
+    if len(candidates) != 1:
+        raise RuntimeError("没有找到唯一且内容一致的已准备工作进程: " + str(candidates))
+    binary = candidates[0]
     report = {"deviceValidated": False, "effectVerified": False}
     with tempfile.TemporaryDirectory(prefix="input-lease-ci-", dir=documents) as directory:
         directory = pathlib.Path(directory)
