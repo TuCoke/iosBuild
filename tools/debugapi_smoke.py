@@ -26,8 +26,11 @@ def run(documents):
     if token != "1234567":
         raise RuntimeError("调试服务没有使用约定的固定 token")
 
-    def call(path, method="GET", auth=True):
-        req = urllib.request.Request("http://127.0.0.1:18990" + path, method=method)
+    def call(path, method="GET", auth=True, payload=None):
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request("http://127.0.0.1:18990" + path, method=method, data=body)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
         if auth:
             req.add_header("Authorization", "Bearer " + token)
         # 前台状态轮询可能与请求短暂竞争；409 表示动作尚未开始，可有界重试。
@@ -90,8 +93,63 @@ def run(documents):
         results["backgroundSwitchProbe"] = {"ok": False, "error": str(exc), "deviceValidated": False}
     finally:
         subprocess.run(["xcrun", "simctl", "launch", "booted", "dev.autogov.host"], capture_output=True, timeout=15)
+    # 此前只在视频结束后切 App，无法捕获“接口正常但编码已停”的回归。
+    # 有实际编码能力才做强断言；不支持编码的模拟器明确记为跳过。
+    switch_error = None
+    if results["videoCaptureProbe"].get("ok"):
+        owned = False
+        samples = []
+        try:
+            reply = json.loads(call("/video/start", "POST", payload={
+                "durationSeconds": 45, "maxSize": 256, "fps": 5, "bitrate": 200000,
+            }))
+            if not reply.get("ok"):
+                raise RuntimeError("切换测试未能启动编码器")
+            owned = True
+
+            def wait_frames(after):
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    status = json.loads(call("/video/status"))["data"]
+                    if status.get("error") or not status.get("running"):
+                        raise RuntimeError("切换期间编码已结束: " + json.dumps(status, ensure_ascii=False))
+                    if status.get("frames", 0) > after + 2 and 0 <= status.get("lastFrameAgeMs", -1) < 1500:
+                        return status
+                    time.sleep(0.25)
+                raise RuntimeError("切换后八秒内没有恢复连续出帧")
+
+            status = wait_frames(0)
+            samples.append({"phase": "beforeSwitch", "status": status})
+            for bundle in ("com.apple.Preferences", "dev.autogov.host"):
+                subprocess.run(["xcrun", "simctl", "launch", "booted", bundle],
+                               check=True, capture_output=True, timeout=15)
+                time.sleep(1.5)
+                # 从切换后的计数继续观察，不能拿切换前已产出的帧冒充恢复。
+                after = json.loads(call("/video/status"))["data"].get("frames", 0)
+                status = wait_frames(after)
+                samples.append({"phase": bundle, "status": status})
+            results["videoSwitchProbe"] = {"ok": True, "samples": samples, "deviceValidated": False}
+        except Exception as exc:
+            switch_error = str(exc)
+            results["videoSwitchProbe"] = {"ok": False, "error": switch_error,
+                                           "samples": samples, "deviceValidated": False}
+        finally:
+            if owned:
+                stopped = json.loads(call("/video/stop", "POST"))
+                if not stopped.get("ok"):
+                    switch_error = switch_error or "切换测试停止编码器失败"
+                results["videoAfterSwitchProbe"] = json.loads(call("/video/status"))
+                if results["videoAfterSwitchProbe"].get("data", {}).get("running"):
+                    switch_error = switch_error or "切换测试结束后编码器仍在运行"
+            subprocess.run(["xcrun", "simctl", "launch", "booted", "dev.autogov.host"],
+                           capture_output=True, timeout=15)
+    else:
+        results["videoSwitchProbe"] = {"skipped": True, "reason": "当前环境未通过基础编码探测",
+                                       "deviceValidated": False}
     report = documents / "debugapi-smoke.json"
     report.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    if switch_error:
+        raise RuntimeError("视频切换回归失败: " + switch_error)
     print("调试 HTTP 鉴权与设备/脚本入口检查通过；视频实际探测结果见 videoCaptureProbe，未输出 token")
 
 

@@ -78,6 +78,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	// 浏览器 WebSocket 无法设置 Authorization；此入口在升级后的首条消息鉴权。
+	// 其他 HTTP 入口继续使用原有鉴权和跨源限制。
+	if r.URL.Path == "/video/ws" {
+		s.videoSocket(w, r)
+		return
+	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if token == "" {
 		token = r.URL.Query().Get("token")
@@ -99,7 +105,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/", "/api":
-		writeJSON(w, 200, map[string]any{"ok": true, "data": map[string]any{"version": 2, "routes": routes, "videoRoutes": videoRoutes, "extra": []string{"GET /health", "GET /log", "GET /results", "POST /invoke", "POST /script/test", "GET /video/stream (Annex B H.264，限时独占采集)"}, "allowedMethods": allowed, "note": "GET /selftest 会触发自检，可能点击界面或改变剪贴板、悬浮层；只用于受控测试"}})
+		writeJSON(w, 200, map[string]any{"ok": true, "data": map[string]any{"version": 2, "routes": routes, "videoRoutes": videoRoutes, "extra": []string{"GET /health", "GET /log", "GET /results", "POST /invoke", "POST /script/test", "GET /video/stream (Annex B H.264，限时独占采集)", "GET /video/ws (WebSocket，首消息鉴权，AGV1 二进制帧)"}, "allowedMethods": allowed, "note": "GET /selftest 会触发自检，可能点击界面或改变剪贴板、悬浮层；只用于受控测试"}})
 		return
 	case "/health":
 		writeJSON(w, 200, map[string]any{"ok": true, "data": map[string]any{"pid": os.Getpid(), "uptimeSec": int(time.Since(s.started).Seconds()), "port": 18990, "busy": len(s.gate) > 0}})

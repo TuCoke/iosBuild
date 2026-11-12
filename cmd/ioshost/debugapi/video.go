@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"autogov1/v2/sdk/ios/video"
+	"github.com/gorilla/websocket"
 )
 
 // VideoSource 只依赖 SDK 视频能力，测试时替换采集器，不伪造真机验证结果。
@@ -28,6 +29,7 @@ type Video struct {
 	open     func(context.Context, video.Config) (VideoSource, error)
 	run      *videoRun
 	shutdown bool
+	sockets  map[*websocket.Conn]struct{}
 }
 
 type videoRun struct {
@@ -49,7 +51,7 @@ func NewVideo(open func(context.Context, video.Config) (VideoSource, error)) *Vi
 	if open == nil {
 		open = func(ctx context.Context, cfg video.Config) (VideoSource, error) { return video.Start(ctx, cfg) }
 	}
-	return &Video{open: open}
+	return &Video{open: open, sockets: make(map[*websocket.Conn]struct{})}
 }
 
 type videoRequest struct {
@@ -205,7 +207,15 @@ func (v *Video) Close(ctx context.Context) error {
 	v.mu.Lock()
 	v.shutdown = true
 	r := v.run
+	sockets := make([]*websocket.Conn, 0, len(v.sockets))
+	for conn := range v.sockets {
+		sockets = append(sockets, conn)
+	}
 	v.mu.Unlock()
+	// net/http.Shutdown 不负责已经升级的连接，必须显式关闭以唤醒读写协程。
+	for _, conn := range sockets {
+		_ = conn.Close()
+	}
 	return v.stop(ctx, r)
 }
 

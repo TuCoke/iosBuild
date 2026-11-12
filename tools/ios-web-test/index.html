@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>iOS 真机实验台</title>
+<style>
+:root{color-scheme:dark;--bg:#0b111b;--panel:#121c2b;--line:#253247;--text:#e6edf7;--muted:#8e9db3;--blue:#6b9bff;--green:#53d8b3}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 10% 0,#182642,transparent 46%),var(--bg);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;color:var(--text)}button,input,textarea,select{font:inherit}button{border:1px solid var(--line);background:#1a293e;color:var(--text);padding:8px 13px;border-radius:9px;cursor:pointer}button:hover{background:#263b59}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#527cf0;border-color:#527cf0;color:white}.primary:hover{background:#658cff}.danger{color:#ffadad}input,textarea,select{background:#0c1523;border:1px solid var(--line);border-radius:8px;padding:9px 10px;color:var(--text);min-width:0;outline:none}input:focus,textarea:focus{border-color:var(--blue)}input[type=checkbox]{accent-color:var(--blue)}label{display:grid;gap:5px;color:var(--muted);font-size:12px}header{max-width:1450px;margin:auto;padding:24px 30px 18px;display:flex;justify-content:space-between;align-items:center}h1{font-size:23px;margin:0;letter-spacing:.5px}h2{font-size:14px;margin:0}p{margin:4px 0;color:var(--muted)}.eyebrow{color:var(--green);font:11px ui-monospace,monospace;letter-spacing:2px;margin-bottom:5px}.pill{display:inline-flex;gap:7px;align-items:center;border:1px solid var(--line);border-radius:30px;padding:6px 12px;font-size:12px;color:var(--muted)}.pill:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}.online{color:var(--green)}main{max-width:1450px;margin:auto;padding:0 30px 24px}.connection{display:grid;grid-template-columns:1fr 190px auto auto;gap:12px;align-items:end;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px;margin-bottom:18px}.workspace{display:grid;grid-template-columns:minmax(330px,440px) minmax(400px,1fr);gap:20px}.panel{background:linear-gradient(145deg,#142033,#111b29);border:1px solid var(--line);border-radius:14px;padding:17px}.panel-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.screen-panel{padding:14px;display:flex;flex-direction:column;align-items:center}.screen-panel .panel-title{width:100%}.screen{position:relative;max-width:100%;width:calc((100vh - 260px)*.462);min-width:235px;aspect-ratio:473/1024;background:#03070d;border:0;outline:5px solid #2b374a;border-radius:25px;overflow:hidden;box-shadow:0 18px 50px #0005;touch-action:none;user-select:none}.screen canvas{width:100%;height:100%;object-fit:contain;display:block}.screen svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.placeholder{position:absolute;inset:0;display:grid;place-content:center;text-align:center;padding:20px;color:var(--muted)}.placeholder b{font-size:36px;color:#415473;font-weight:400}.screen-footer{width:100%;display:flex;justify-content:space-between;gap:8px;margin-top:12px;font-size:11px;color:var(--muted)}.keys{display:flex;gap:8px;justify-content:center;margin-top:13px;flex-wrap:wrap}.right{display:grid;gap:14px;align-content:start}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row label{flex:1}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.metric{background:#0c1625;border:1px solid #213047;border-radius:10px;padding:11px}.metric small{display:block;color:var(--muted);font-size:11px}.metric strong{font-size:16px;font-weight:550}.help{font-size:12px;color:var(--muted);margin-top:10px}.warning{padding:10px 12px;border:1px solid #765d35;background:#342b1c;color:#e5c48b;border-radius:9px;font-size:12px;margin-top:12px}.hidden{display:none!important}textarea{width:100%;resize:vertical;min-height:68px}.grow{flex:1}.log{height:158px;overflow:auto;background:#0b1421;border-radius:8px;padding:8px 10px;font:12px/1.65 ui-monospace,Consolas,monospace}.log div{border-bottom:1px solid #1e2b3c;padding:3px 0;white-space:pre-wrap;overflow-wrap:anywhere}.log .error{color:#ffaaaa}.log .ok{color:var(--green)}.small{font-size:11px;color:var(--muted)}.check{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}.banner{min-height:22px;font-size:12px;color:#b7c9e6;margin-bottom:8px}details summary{cursor:pointer;color:var(--muted);font-size:12px}pre{white-space:pre-wrap;max-height:220px;overflow:auto;font-size:11px;color:var(--muted)}@media(max-width:900px){.connection{grid-template-columns:1fr 1fr}.workspace{grid-template-columns:1fr}.screen{width:300px;min-width:0}.metrics{grid-template-columns:repeat(2,1fr)}main{padding:0 14px 20px}header{padding:20px 14px}.connection button{width:100%}}@media(prefers-reduced-motion:no-preference){button{transition:background .15s}}
+</style>
+</head>
+<body>
+<header><div><div class="eyebrow">DEVICE LAB / FRP</div><h1>iOS 真机实验台</h1><p>视频 WS 直连 FRP · 独立验证画面与操作</p></div><span id="connectionStatus" class="pill">未连接</span></header>
+<main>
+ <section class="connection">
+  <label>手机调试映射地址<input id="base" value="http://49.235.187.13:18990" spellcheck="false"></label>
+  <label>调试 Token<input id="token" type="password" value="1234567" autocomplete="off"></label>
+  <button id="connect" class="primary">连接设备</button><button id="disconnect">断开</button>
+ </section>
+ <div class="workspace">
+  <section class="panel screen-panel">
+   <div class="panel-title"><h2 id="deviceName">等待连接 iPhone</h2><span id="viewMode" class="small">截图模式</span></div>
+   <div id="screen" class="screen"><canvas id="canvas" width="473" height="1024"></canvas><svg id="trace" aria-hidden="true"><path id="tracePath" fill="none" stroke="#73b1ff" stroke-width="3" stroke-linecap="round"/></svg><div id="placeholder" class="placeholder"><b>⌁</b><p>连接后显示真实画面</p><span class="small">单击 · 长按 · 拖动滑动</span></div></div>
+   <div class="screen-footer"><span id="frameInfo">—</span><span id="gestureInfo">坐标为当前画面归一化坐标</span></div>
+   <div class="keys"><button data-method="device.button" data-args='{"button":"home"}'>主屏幕</button><button data-method="device.wake">唤醒</button><button data-method="device.lock" class="danger">锁屏</button><button id="capture">刷新截图</button></div>
+   <label class="check" style="margin-top:12px"><input type="checkbox" id="allowTouch" checked>允许在画面上点击、长按和滑动</label>
+  </section>
+  <div class="right">
+   <section class="panel">
+    <div class="panel-title"><h2>设备与后台状态</h2><button id="refresh" style="font-size:12px;padding:4px 9px">刷新状态</button></div>
+    <div class="metrics"><div class="metric"><small>设备系统</small><strong id="os">—</strong></div><div class="metric"><small>屏幕 / 锁定</small><strong id="lockState">—</strong></div><div class="metric"><small>宿主状态</small><strong id="hostState">—</strong></div><div class="metric"><small>后台音频</small><strong id="audioState">—</strong></div></div>
+    <p id="foreground" class="help">前台应用：—</p>
+   </section>
+   <section class="panel">
+    <div class="panel-title"><h2>视频 WebSocket / FRP</h2><span id="codec" class="small">检测浏览器…</span></div>
+    <div id="streamHint" class="banner">先连接设备，默认获取截图。</div>
+    <div class="row"><label>视频最长边<select id="maxSize"><option>512</option><option selected>720</option><option>960</option></select></label><label>帧率<select id="fps"><option>10</option><option selected>15</option><option>20</option></select></label><label>码率<select id="bitrate"><option value="300000">300 Kbps</option><option value="500000">500 Kbps</option><option value="800000" selected>800 Kbps</option><option value="1500000">1.5 Mbps</option></select></label><label>时长 / 秒<select id="duration"><option>15</option><option selected>60</option><option>120</option></select></label></div>
+    <div class="row" style="margin-top:12px"><button id="startVideo" class="primary">开始视频</button><button id="stopVideo">停止视频</button><button id="keyframe">请求关键帧</button><button id="applyBitrate">应用码率</button><label class="check"><input type="checkbox" id="autoShot">自动截图 · 1 FPS</label></div>
+    <p id="videoStats" class="help">接收 0 KB · 解码 0 帧</p>
+    <div class="warning">视频直接通过 FRP 的 TCP 映射传输，不经过本地代理。请安装包含视频 WS 和编码恢复修复的新版手机端；操作、截图和状态仍使用独立 HTTP 调试连接。</div>
+   </section>
+   <section class="panel">
+    <div class="panel-title"><h2>操作测试</h2><span class="small">仅在你自己的测试设备上操作</span></div>
+    <div class="row"><button id="openSettings">打开设置</button><button id="openHost">回到 AgovHost</button><button id="swipeUp">向上滑动</button><button id="swipeDown">向下滑动</button></div>
+    <div class="row" style="margin-top:12px"><input id="bundle" class="grow" placeholder="应用 bundleId，例如 com.apple.Preferences" spellcheck="false"><button id="openApp">打开应用</button></div>
+    <label style="margin-top:12px">向手机当前已聚焦的输入框输入文字<textarea id="text" placeholder="例如：杭州天气（先在手机画面中点击输入框）"></textarea></label>
+    <div class="row" style="margin-top:8px"><button id="sendText">发送文字</button><span class="small">不会自动点击发送、发布或支付</span></div>
+   </section>
+   <section class="panel">
+    <div class="panel-title"><h2>操作与诊断日志</h2><button id="clearLog" style="font-size:12px;padding:4px 9px">清空</button></div><div id="log" class="log" role="log" aria-live="polite"></div>
+    <details style="margin-top:9px"><summary>查看最近状态 JSON</summary><pre id="rawStatus">尚未连接</pre></details>
+   </section>
+  </div>
+ </div>
+</main>
+<script type="module" src="/app.js"></script>
+</body></html>
