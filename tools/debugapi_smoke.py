@@ -34,9 +34,12 @@ def input_lease_probe(documents, call):
         params = directory / "params.json"
         ready_path = directory / "ready.json"
         params.write_text(json.dumps({"ready": str(ready_path)}), encoding="utf-8")
-        hold = directory / "hold.go"
+        # Yaegi 按包加载同目录 Go 文件，每个 main 必须放在独立工程目录，避免入口互相覆盖。
+        (directory / "hold").mkdir()
+        (directory / "quick").mkdir()
+        hold = directory / "hold" / "main.go"
         hold.write_text('package main; import("os";"encoding/json";"autogov1/v2/sdk/ios/script/api");func main(){_,err:=api.Call("motion.pointer",map[string]any{"x":30,"y":30,"id":0,"phase":"down"});message:="";if err!=nil{message=err.Error()};b,_:=json.Marshal(map[string]any{"pid":os.Getpid(),"touchError":message});os.WriteFile(api.ParamString("ready"),b,0600);api.Sleep(30000)}', encoding="utf-8")
-        quick = directory / "quick.go"
+        quick = directory / "quick" / "main.go"
         quick.write_text('package main;import "autogov1/v2/sdk/ios/script/api";func main(){api.SetResult("lease-recovered")}', encoding="utf-8")
 
         def command(source, result):
