@@ -1,6 +1,7 @@
 package inputstate
 
 import (
+	"autogov1/v2/sdk/ios/types"
 	"context"
 	"errors"
 	"testing"
@@ -27,4 +28,31 @@ func TestCanceledWaitDoesNotStealOrLeakInputGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	Release()
+}
+
+func TestTaskLeaseLifecycleAndNestedAction(t *testing.T) {
+	release, err := BeginTask(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = BeginTask(context.Background()); !errors.Is(err, types.ErrBusy) {
+		release()
+		t.Fatalf("同一进程的第二个设备任务没有被拒绝: %v", err)
+	}
+	if err = Acquire(context.Background()); err != nil {
+		release()
+		t.Fatal(err)
+	}
+	Release() // 任务里的高层动作可以嵌套取得自己的引用。
+	release()
+	release, err = BeginTask(context.Background())
+	if err != nil {
+		t.Fatal("任务结束后没有释放所有权", err)
+	}
+	release()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err = BeginTask(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
 }

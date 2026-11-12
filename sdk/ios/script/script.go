@@ -17,6 +17,7 @@ import (
 
 	"autogov1/v2/sdk/ios/apkctl"
 	"autogov1/v2/sdk/ios/imgui"
+	"autogov1/v2/sdk/ios/internal/inputstate"
 	"autogov1/v2/sdk/ios/opencv"
 	"autogov1/v2/sdk/ios/ppocr"
 	"autogov1/v2/sdk/ios/script/api"
@@ -26,10 +27,12 @@ import (
 )
 
 type Options struct {
-	Params        map[string]any
-	Timeout       time.Duration
-	NoStdlib      bool
-	ImportAliases map[string]string
+	// DeviceExclusive 让设备任务在整个运行期独占设备；纯计算脚本仍可并发。
+	DeviceExclusive bool
+	Params          map[string]any
+	Timeout         time.Duration
+	NoStdlib        bool
+	ImportAliases   map[string]string
 }
 type Result struct {
 	ProcessID int // 独立工作进程的 PID；内嵌执行时为 0。
@@ -62,6 +65,13 @@ func (r *Runner) execute(ctx context.Context, filesystem fs.FS, entry, source st
 	}
 	if err = runCtx.Err(); err != nil {
 		return result, err
+	}
+	if r.opts.DeviceExclusive {
+		releaseDevice, leaseErr := inputstate.BeginTask(runCtx)
+		if leaseErr != nil {
+			return result, fmt.Errorf("脚本无法取得设备使用权: %w", leaseErr)
+		}
+		defer func() { cancel(); releaseDevice() }()
 	}
 	session, err := api.NewSession(runCtx, r.opts.Params)
 	if err != nil {

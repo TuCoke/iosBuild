@@ -92,7 +92,7 @@ static NSString *AGWiFiMAC(void) {
     return result;
 }
 
-ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
+static ag_ios_result AGDeviceBody(NSString *op, NSDictionary *args) {
     if ([op isEqualToString:@"device.button"]) return AGInput(op,args);
 
     if ([op isEqualToString:@"device.lock"]) {
@@ -245,4 +245,9 @@ ag_ios_result AGDevice(NSString *op, NSDictionary *args) {
         }
         return AGError(1,@"未知设备操作");
     });
+}
+
+ag_ios_result AGDevice(NSString *op,NSDictionary *args){
+    if(AGInputWriteRequired(op))return AGWithInputLease(^{return AGDeviceBody(op,args);});
+    return AGDeviceBody(op,args);
 }

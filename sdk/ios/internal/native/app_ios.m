@@ -23,7 +23,7 @@ static id AGProxy(NSString *bundleID) {
     return nil;
 }
 
-ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
+static ag_ios_result AGApplicationBody(NSString *op, NSDictionary *args) {
     NSString *bundleID = args[@"bundleId"];
     // 安装工具的进程等待必须在 UIKit 主线程外；未命中 helper 时再走 workspace。
     if([op isEqualToString:@"app.install"]){BOOL handled=NO;ag_ios_result result=AGInstallPackage(args[@"path"],&handled);if(handled || result.code)return result;free(result.data);}
@@ -241,4 +241,9 @@ ag_ios_result AGApplication(NSString *op, NSDictionary *args) {
 
         return AGError(1,@"未知应用操作");
     });
+}
+
+ag_ios_result AGApplication(NSString *op,NSDictionary *args){
+    if(AGInputWriteRequired(op))return AGWithInputLease(^{return AGApplicationBody(op,args);});
+    return AGApplicationBody(op,args);
 }

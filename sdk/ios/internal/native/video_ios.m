@@ -8,7 +8,8 @@
 
 @interface AGEncoder : NSObject {
 @public uint64_t token;
-    int nativeW,nativeH,width,height,rotation,fps,bitrate;
+    int nativeW,nativeH,width,height,rotation,fps,bitrate,maxSize;
+    BOOL autoRotation;
     size_t byteLimit,queuedBytes;
     VTCompressionSessionRef session;
     dispatch_queue_t queue;
@@ -99,7 +100,7 @@ static void EncodedOnQueue(void *ref,OSStatus status,VTEncodeInfoFlags flags,CMS
                 }
                 if (key || !encoder->needKey) {
                     if (key) encoder->needKey = NO;
-                    [encoder->packets addObject:@{@"data":output,@"pts":@(ptsUS),@"key":@(key)}];
+                    [encoder->packets addObject:@{@"data":output,@"pts":@(ptsUS),@"key":@(key),@"width":@(encoder->width),@"height":@(encoder->height)}];
                     encoder->queuedBytes += output.length;
                     [encoder->condition broadcast];
                 }
@@ -137,8 +138,9 @@ static void Encoded(void *ref,void *frame,OSStatus status,VTEncodeInfoFlags flag
 }
 - (ag_ios_result)prepare:(NSDictionary *)config display:(NSDictionary *)display {
     nativeW = [display[@"width"] intValue]; nativeH = [display[@"height"] intValue];
-    rotation = [config[@"autoRotation"] boolValue] ? [display[@"rotation"] intValue] : [config[@"rotation"] intValue]; fps = [config[@"fps"] intValue]; byteLimit = [config[@"queueBytes"] unsignedLongLongValue];
-    int maxSize = [config[@"maxSize"] intValue]; bitrate = [config[@"bitrate"] intValue];
+    autoRotation = [config[@"autoRotation"] boolValue];
+    rotation = autoRotation ? [display[@"rotation"] intValue] : [config[@"rotation"] intValue]; fps = [config[@"fps"] intValue]; byteLimit = [config[@"queueBytes"] unsignedLongLongValue];
+    maxSize = [config[@"maxSize"] intValue]; bitrate = [config[@"bitrate"] intValue];
     if (nativeW<=0 || nativeH<=0 || nativeW>8192 || nativeH>8192 || (uint64_t)nativeW*nativeH*4>64*1024*1024 || maxSize<64 || maxSize>4096 || fps<1 || fps>60 || rotation<0 || rotation>3 || byteLimit<256*1024 || byteLimit>32*1024*1024 || bitrate<64000 || bitrate>50000000) return AGError(2,@"视频参数或屏幕尺寸无效");
     width = rotation%2 ? nativeH : nativeW; height = rotation%2 ? nativeW : nativeH;
     double factor = MIN(1.0,(double)maxSize/MAX(width,height)); width = MAX(2,((int)(width*factor))&~1); height = MAX(2,((int)(height*factor))&~1);
@@ -195,6 +197,26 @@ static void Encoded(void *ref,void *frame,OSStatus status,VTEncodeInfoFlags flag
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     [condition lock]; BOOL ended = stopped || failure != nil; [condition unlock];
     if (ended) return;
+    if (autoRotation) {
+        int nextRotation = AGScreenRotation();
+        if (nextRotation != rotation) {
+            // 方向来自 FrontBoard，而不是宿主界面；先作废旧回调，再更新显示几何。
+            // 方向变化属于正常配置切换，不消耗异常恢复次数，也不能清除已发生的错误。
+            [condition lock]; generation++; pending = 0; needKey = YES; forceKey = YES;
+            [packets removeAllObjects]; queuedBytes = 0; [condition unlock];
+            rotation = nextRotation;
+            int w = rotation%2 ? nativeH : nativeW, h = rotation%2 ? nativeW : nativeH;
+            double factor = MIN(1.0,(double)maxSize/MAX(w,h));
+            [condition lock]; width = MAX(2,((int)(w*factor))&~1); height = MAX(2,((int)(h*factor))&~1); [condition unlock];
+            [self releaseSession]; AGReleaseCaptureSurface();
+            if (!recovering) {
+                OSStatus status = [self createSession];
+                lastOutputAt = now;
+                if (status) { [self recover:[NSString stringWithFormat:@"方向切换后创建编码器失败: %d",(int)status]]; return; }
+            }
+            NSLog(@"[video] 屏幕方向变化，rotation=%d，输出=%dx%d，等待新关键帧",rotation,width,height);
+        }
+    }
     if (recovering) {
         if (now < nextRecoveryAt) return;
         if (recoveryAttempts >= 5) {
@@ -302,7 +324,7 @@ ag_ios_result AGVideo(NSString *op,NSDictionary *args) {
             else if (encoder->stopped) result = AGError(7,@"视频已停止");
             else if (encoder->packets.count) {
                 NSDictionary *packet = encoder->packets[0]; NSData *bytes = packet[@"data"];
-                result = AGData(bytes); result.pts_us = [packet[@"pts"] longLongValue]; result.keyframe = [packet[@"key"] boolValue]; result.width = encoder->width; result.height = encoder->height;
+                result = AGData(bytes); result.pts_us = [packet[@"pts"] longLongValue]; result.keyframe = [packet[@"key"] boolValue]; result.width = [packet[@"width"] intValue]; result.height = [packet[@"height"] intValue];
                 encoder->queuedBytes -= bytes.length; [encoder->packets removeObjectAtIndex:0];
             }
             [encoder->condition unlock]; return result;

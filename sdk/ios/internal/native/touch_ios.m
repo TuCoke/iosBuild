@@ -159,7 +159,7 @@ static uint32_t AGKeyUsage(int code, uint32_t *page) {
     }
 }
 
-ag_ios_result AGInput(NSString *op, NSDictionary *args) {
+static ag_ios_result AGInputBody(NSString *op, NSDictionary *args) {
     InitInput();
     NSDictionary *display=nil;
     // UIKit/FrontBoard 查询放在输入锁外，不能持锁等待主线程。
@@ -226,4 +226,9 @@ ag_ios_result AGInput(NSString *op, NSDictionary *args) {
         }
         return AGError(1,@"未知输入操作");
     } @finally { [inputLock unlock]; }
+}
+
+ag_ios_result AGInput(NSString *op,NSDictionary *args){
+    if(AGInputWriteRequired(op))return AGWithInputLease(^{return AGInputBody(op,args);});
+    return AGInputBody(op,args);
 }

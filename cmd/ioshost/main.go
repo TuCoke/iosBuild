@@ -213,6 +213,12 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 		Data map[string]any `json:"data"`
 	}
 	success := raw != nil && json.Unmarshal([]byte(C.GoString(raw)), &reply) == nil && reply.OK && reply.Data["ok"] != false
+	// 自动恢复中的隧道仍有后台运行需求，不能因一次启动观察失败释放 owner。
+	if name == "tunnel.start" {
+		if status, ok := reply.Data["status"].(map[string]any); ok && status["supervising"] == true {
+			success = true
+		}
+	}
 	after(success)
 	return raw
 }
@@ -407,7 +413,7 @@ func invokeSDKBody(ctx context.Context, name string, args map[string]any, durati
 
 	case "tunnel.status":
 		st := tunnel.Query(ctx)
-		if !st.Running && st.LastError == "" {
+		if !st.Running && !st.Supervising && st.LastError == "" {
 			backgroundRequest("release", "tunnel", false)
 		}
 		return okData(map[string]any{"status": st, "logs": tunnel.Logs(30)})
@@ -418,7 +424,7 @@ func invokeSDKBody(ctx context.Context, name string, args map[string]any, durati
 	case "script.executeFile":
 		// 仅供独立执行体在自己进程内调用；解释器和能力仍来自同一份动态 SDK。
 		params, _ := args["params"].(map[string]any)
-		runner := script.New(script.Options{Params: params, Timeout: duration})
+		runner := script.New(script.Options{Params: params, Timeout: duration, DeviceExclusive: true})
 		res, err := runner.RunFile(ctx, str(args, "path"))
 		out := reply{OK: err == nil, Data: map[string]any{"logs": res.Logs, "result": res.Value, "elapsedMs": res.Elapsed.Milliseconds()}}
 		if err != nil {

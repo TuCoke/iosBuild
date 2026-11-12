@@ -54,15 +54,18 @@ type Config struct {
 
 // Status 是当前隧道状态。
 type Status struct {
-	Running    bool   `json:"running"`
-	PID        int    `json:"pid"`
-	Config     string `json:"config"`
-	LogPath    string `json:"logPath"`
-	Binary     string `json:"binary"`
-	LastError  string `json:"lastError,omitempty"`
-	ExitCode   *int   `json:"exitCode,omitempty"`
-	StartError string `json:"startError,omitempty"`
-	ExitedPID  int    `json:"exitedPid,omitempty"`
+	Supervising     bool   `json:"supervising"`
+	RestartAttempts int    `json:"restartAttempts"`
+	RestartError    string `json:"restartError,omitempty"`
+	Running         bool   `json:"running"`
+	PID             int    `json:"pid"`
+	Config          string `json:"config"`
+	LogPath         string `json:"logPath"`
+	Binary          string `json:"binary"`
+	LastError       string `json:"lastError,omitempty"`
+	ExitCode        *int   `json:"exitCode,omitempty"`
+	StartError      string `json:"startError,omitempty"`
+	ExitedPID       int    `json:"exitedPid,omitempty"`
 }
 
 const (
@@ -75,6 +78,8 @@ const (
 	logRel    = "Tunnel/frpc.log"
 	pidRel    = "Tunnel/frpc.pid"
 )
+
+var callNative = native.Call
 
 var mu sync.Mutex
 var activePID int
@@ -122,7 +127,7 @@ func BundleBinary(ctx context.Context) string {
 	}
 	askCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := native.Call(askCtx, "app.bundle_dir", nil, &out); err != nil || out.Path == "" {
+	if err := callNative(askCtx, "app.bundle_dir", nil, &out); err != nil || out.Path == "" {
 		return ""
 	}
 	candidates := []string{
@@ -158,6 +163,8 @@ func Render(cfg Config) string {
 	b.WriteString("# 由 AgovHost 生成，勿手改\n")
 	b.WriteString("serverAddr = " + strconv.Quote(cfg.Server) + "\n")
 	b.WriteString("serverPort = " + strconv.Itoa(serverPort) + "\n")
+	// 网络尚未就绪时由官方 frpc 持续重连，不因第一次登录失败直接退出。
+	b.WriteString("loginFailExit = false\n")
 	if cfg.Token != "" {
 		b.WriteString("auth.method = \"token\"\n")
 		b.WriteString("auth.token = " + strconv.Quote(cfg.Token) + "\n")
@@ -183,9 +190,7 @@ func Render(cfg Config) string {
 // Start 写配置、拉进程、记 pid。
 //
 // 返回的 Status 里 PID 为 0 且 LastError 非空，说明没起来（原因写在 LastError）。
-func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
-	mu.Lock()
-	defer mu.Unlock()
+func startLocked(ctx context.Context, cfg Config) (result Status, startErr error) {
 	lastStartError = ""
 	lastExitedPID = 0
 	lastExitCode = nil
@@ -208,6 +213,9 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 		}
 	}()
 
+	if ctx == nil {
+		return Status{}, fmt.Errorf("穿透 context 不能为空")
+	}
 	if cfg.Server == "" {
 		return Status{}, fmt.Errorf("缺少 serverAddr")
 	}
@@ -224,7 +232,7 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 		var dir struct {
 			Path string `json:"path"`
 		}
-		_ = native.Call(ctx, "app.bundle_dir", nil, &dir)
+		_ = callNative(ctx, "app.bundle_dir", nil, &dir)
 		return Status{LastError: "app 包里找不到 frpc-ios；bundle=" + dir.Path},
 			fmt.Errorf("找不到 frpc-ios（bundle=%s）", dir.Path)
 	}
@@ -268,7 +276,7 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 	}
 	spawnCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	err = native.Call(spawnCtx, "utils.spawn", map[string]any{
+	err = callNative(spawnCtx, "utils.spawn", map[string]any{
 		"path":    binary,
 		"args":    []string{"-c", configPath},
 		"logPath": logPath,
@@ -298,7 +306,7 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 		Finished bool `json:"finished"`
 		Code     int  `json:"code"`
 	}
-	if err := native.Call(ctx, "utils.wait", map[string]any{"pid": out.PID}, &exited); err != nil {
+	if err := callNative(ctx, "utils.wait", map[string]any{"pid": out.PID}, &exited); err != nil {
 		return result, fmt.Errorf("无法确认 frpc 启动结果：%w", err)
 	}
 	if exited.Finished {
@@ -315,7 +323,7 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 	var alive struct {
 		Alive bool `json:"alive"`
 	}
-	if err := native.Call(ctx, "utils.alive", map[string]any{"pid": out.PID}, &alive); err != nil {
+	if err := callNative(ctx, "utils.alive", map[string]any{"pid": out.PID}, &alive); err != nil {
 		return result, fmt.Errorf("无法读取 frpc 存活状态：%w", err)
 	}
 	result.Running = alive.Alive
@@ -327,8 +335,12 @@ func Start(ctx context.Context, cfg Config) (result Status, startErr error) {
 
 // Stop 停掉隧道（没有在跑就返回 ok）。
 func Stop(ctx context.Context) (Status, error) {
+	if ctx == nil {
+		return Status{}, fmt.Errorf("穿透 context 不能为空")
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	stopSupervisorLocked()
 	lastStartError = ""
 	lastExitedPID = 0
 	lastExitCode = nil
@@ -345,7 +357,7 @@ func Stop(ctx context.Context) (Status, error) {
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := native.Call(stopCtx, "utils.kill", map[string]any{"pid": pid}, &out); err != nil {
+	if err := callNative(stopCtx, "utils.kill", map[string]any{"pid": pid}, &out); err != nil {
 		return Status{Running: true, PID: pid, LastError: err.Error()}, err
 	}
 	activePID = 0
@@ -355,8 +367,16 @@ func Stop(ctx context.Context) (Status, error) {
 
 // Query 查当前状态（真去问系统进程还在不在，不只看 pid 文件）。
 func Query(ctx context.Context) Status {
+	if ctx == nil {
+		return Status{LastError: "穿透 context 不能为空"}
+	}
 	mu.Lock()
 	defer mu.Unlock()
+	status := queryLocked(ctx)
+	status.Supervising, status.RestartAttempts, status.RestartError = supervising, restartAttempts, restartError
+	return status
+}
+func queryLocked(ctx context.Context) Status {
 
 	if err := ensureDirectory(ctx); err != nil {
 		return Status{LastError: err.Error()}
@@ -374,7 +394,7 @@ func Query(ctx context.Context) Status {
 				Finished bool `json:"finished"`
 				Code     int  `json:"code"`
 			}
-			if native.Call(ctx, "utils.wait", map[string]any{"pid": lastExitedPID}, &exited) == nil && exited.Finished {
+			if callNative(ctx, "utils.wait", map[string]any{"pid": lastExitedPID}, &exited) == nil && exited.Finished {
 				code := exited.Code
 				lastExitCode = &code
 				status.ExitCode = lastExitCode
@@ -387,7 +407,7 @@ func Query(ctx context.Context) Status {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := native.Call(checkCtx, "utils.alive", map[string]any{"pid": pid}, &out); err != nil {
+	if err := callNative(checkCtx, "utils.alive", map[string]any{"pid": pid}, &out); err != nil {
 		status.LastError = err.Error()
 		return status
 	}
@@ -398,7 +418,7 @@ func Query(ctx context.Context) Status {
 			Finished bool `json:"finished"`
 			Code     int  `json:"code"`
 		}
-		if native.Call(ctx, "utils.wait", map[string]any{"pid": pid}, &exited) == nil && exited.Finished {
+		if callNative(ctx, "utils.wait", map[string]any{"pid": pid}, &exited) == nil && exited.Finished {
 			status.ExitCode = &exited.Code
 		}
 		lastExitedPID = pid
