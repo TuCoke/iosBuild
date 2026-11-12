@@ -152,6 +152,25 @@ func (s *Session) Sleep(ms int) error {
 		return nil
 	}
 }
+
+// CallJSON 保留数组、字符串等原始 JSON 类型，供宿主调试通道复用。
+// 不用于二进制视频或截图；二进制必须通过各自的有界读取接口。
+func (s *Session) CallJSON(op string, args Args) (json.RawMessage, error) {
+	if op == "" {
+		return nil, fmt.Errorf("缺少能力名")
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
+	var out json.RawMessage
+	if err := native.Call(ctx, op, args, &out); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		out = json.RawMessage(`{}`)
+	}
+	return out, nil
+}
+
 func (s *Session) Call(op string, args Args) (map[string]any, error) {
 	if op == "" {
 		return nil, fmt.Errorf("缺少能力名")

@@ -1,5 +1,6 @@
 """模拟器真实 HTTP 冒烟；token 只放请求头，不打印，也不写测试报告。"""
 import json
+import re
 import pathlib
 import sys
 import time
@@ -46,7 +47,7 @@ def run(documents):
     else:
         raise RuntimeError("未授权请求被错误放行")
     results = {"unauthenticatedStatus": 401}
-    for path in ["/health", "/status", "/api", "/capabilities", "/worker", "/selftest", "/diagnostics/worker", "/screenshot", "/ui-tree"]:
+    for path in ["/health", "/status", "/api", "/capabilities", "/worker", "/selftest", "/diagnostics/worker", "/screenshot", "/ui-tree", "/video/status"]:
         data = json.loads(call(path))
         if not data.get("ok"):
             raise RuntimeError("调试调用失败: " + path)
@@ -57,9 +58,24 @@ def run(documents):
     results["/script/test"] = {"ok": True}
     if not call("/log"):
         raise RuntimeError("调试日志为空")
+    # 真正尝试短时采集；模拟器硬件编码/系统采集限制单独登记，不能冒充真机通过。
+    video_request = urllib.request.Request("http://127.0.0.1:18990/video/stream?durationSeconds=2&maxSize=256&fps=5&bitrate=200000")
+    video_request.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(video_request, timeout=15) as response:
+            sample = response.read((8 << 20) + 1)
+        if len(sample) > 8 << 20:
+            raise RuntimeError("模拟器视频样本超过上限")
+        nal_types = sorted({packet[0] & 31 for packet in re.split(b"\x00\x00(?:\x00)?\x01", sample) if packet})
+        valid = all(kind in nal_types for kind in (5, 7, 8))
+        results["videoCaptureProbe"] = {"ok": valid, "bytes": len(sample), "nalTypes": nal_types, "deviceValidated": False}
+        (documents / "debug-video.h264").write_bytes(sample)
+    except Exception as exc:
+        results["videoCaptureProbe"] = {"ok": False, "error": str(exc), "deviceValidated": False}
+    results["videoAfterProbe"] = json.loads(call("/video/status"))
     report = documents / "debugapi-smoke.json"
     report.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("调试 HTTP 入口鉴权与 10 项设备/脚本检查通过；未输出 token")
+    print("调试 HTTP 鉴权与设备/脚本入口检查通过；视频实际探测结果见 videoCaptureProbe，未输出 token")
 
 
 if __name__ == "__main__":

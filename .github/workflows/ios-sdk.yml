@@ -77,8 +77,12 @@ jobs:
         run: |
           set -euo pipefail
           go test ./sdk/... ./cmd/runtimeapp ./cmd/symbolgen ./cmd/ioshost/debugapi -count=1 -v 2>&1 | tee test.log
+
           echo "---- 汇总 ----"
           grep -E "^(ok|FAIL|---)" test.log | tail -40
+
+      - name: 视频调试生命周期并发检查
+        run: go test -race ./cmd/ioshost/debugapi -count=1
 
       - name: 上传测试日志
         if: always()

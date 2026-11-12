@@ -54,6 +54,7 @@ import (
 	"autogov1/v2/sdk/ios/script/worker"
 	"autogov1/v2/sdk/ios/selftest"
 	"autogov1/v2/sdk/ios/tunnel"
+	"autogov1/v2/sdk/ios/types"
 	"autogov1/v2/sdk/ios/update"
 )
 
@@ -447,6 +448,34 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 			return fail(err)
 		}
 		return okData(map[string]any{"injected": "swipe", "durationMs": d.Milliseconds()})
+	case "motion.gesture":
+		raw, err := json.Marshal(args["frames"])
+		var frames []types.Frame
+		if err != nil || json.Unmarshal(raw, &frames) != nil || len(frames) == 0 {
+			return fail(contextError("frames 必须是非空轨迹数组"))
+		}
+		if err = motion.Gesture(ctx, frames); err != nil {
+			return fail(err)
+		}
+		return okData(map[string]any{"injected": "gesture"})
+	case "motion.pinch":
+		points := make([]types.Point, 4)
+		for i, name := range []string{"a0", "b0", "a1", "b1"} {
+			value, ok := args[name].(map[string]any)
+			if !ok {
+				return fail(contextError("缺少坐标 " + name))
+			}
+			x, xOK := value["x"].(float64)
+			y, yOK := value["y"].(float64)
+			if !xOK || !yOK {
+				return fail(contextError("无效坐标 " + name))
+			}
+			points[i] = types.Point{X: x, Y: y}
+		}
+		if err := motion.Pinch(ctx, points[0], points[1], points[2], points[3], time.Duration(num(args, "durationMs", 500))*time.Millisecond); err != nil {
+			return fail(err)
+		}
+		return okData(map[string]any{"injected": "pinch"})
 
 	case "capture.screenshot":
 		// 截图走二进制，这里转 base64 交给宿主显示；iOS 侧是 JPEG/PNG 编码后的数据。
@@ -507,7 +536,7 @@ func invokeSDK(ctx context.Context, name string, args map[string]any, duration t
 				if err != nil {
 					return fail(err)
 				}
-				data, err := session.Call(name, args)
+				data, err := session.CallJSON(name, args)
 				if err != nil {
 					return fail(err)
 				}

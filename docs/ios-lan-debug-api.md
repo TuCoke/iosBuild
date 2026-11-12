@@ -78,3 +78,70 @@ GitHub 模拟器增加真实 HTTP 冒烟：读取 App 日志内 token，以请�
 ## 固定鉴权与防息屏补充
 
 按用户要求，局域网调试 token 固定为 `1234567`。`Authorization: Bearer 1234567` 和 `?token=1234567` 均可；错误或缺少 token 仍然拒绝。宿主在主线程设置 `idleTimerDisabled=YES`，前台运行时防止自动息屏；这不阻止手动锁屏，也不提供后台常驻。全量自检不再执行 `device.keep_awake=false`，该项归为跳过有副作用，避免覆盖宿主保活设置。上述改动需安装新包生效，前一节 CI 结果对应此前的功能提交。
+
+## 新增：连续视频和完整设备调试入口（2026-11-12）
+
+此版本需重新构建并安装 IPA。仅有旧版 /selftest 返回成功，不代表这些新接口已部署。
+
+### 视频接口
+
+所有请求继续携带 `Authorization: Bearer 1234567`，也兼容 `?token=1234567`。
+
+| 方法/路径 | 用途 |
+| --- | --- |
+| POST /video/start | 开始后台限时采集；读取并统计实际编码帧，不依赖 HTTP 启动请求一直保持 |
+| GET /video/status | running、frames、bytes、keyframes、实际尺寸、PTS、平均 FPS/码率、最近帧年龄与错误 |
+| GET /video/packet | 最新完整访问单元 JSON；data 是 Base64，sequence 用于判断是否重复读取 |
+| POST /video/keyframe | 请求新的 IDR |
+| POST /video/bitrate | 运行中调整码率，body 为 {"bitrate":500000} |
+| POST /video/stop | 取消采集并等待编码器释放；清理失败如实报错并禁止新会话 |
+| GET /video/stream | 独占一次限时采集，连续返回原始 Annex B H.264，结束或断开时停止采集 |
+
+`/invoke` 同时支持 video.start/read/status/keyframe/bitrate/stop，映射到相同的有界视频管理器，不能传 native token 抢占其他流。video.read 是最新帧快照，并非连续无损消费队列。视频读取不占用普通设备操作的 HTTP 闸门，状态和停止可以在下载中调用。
+
+start 请求使用平铺的 SDK 配置：maxSize、fps、bitrate、queueBytes、autoRotation、rotation，以及 durationSeconds。默认最长边 960、15 FPS、1.5 Mbps、1 MiB SDK 队列、自动旋转、30 秒；调试时长范围 1..120 秒，SDK 缓冲不超过 4 MiB，未知参数拒绝。一个进程仅允许一个调试视频所有者；已经 start 时不能再 stream，请先 stop。只保留最新帧和最多四个下载待发帧，单帧不超过 4 MiB，不将视频 Base64 存入 /results。
+
+连续下载从首个关键帧开始，保留 SDK 提供的 SPS/PPS；慢下载不会无限积压或随机丢参考帧后继续输出，队列发送阻塞超过 2 秒时结束采集，网络单次写入设置短超时，原因可查 status。HTTP 已开始输出后无法再改成 JSON 错误，需同时查看 status.error。连续下载不是 MP4，也不是 WebRTC 浏览器播放器；浏览器会下载 .h264 文件，可以用支持 H.264 的播放器查看。
+
+```powershell
+$phone = 'http://49.235.187.13:18990'
+$headers = @{ Authorization = 'Bearer 1234567' }
+$body = '{"durationSeconds":30,"maxSize":720,"fps":15,"bitrate":800000}'
+Invoke-RestMethod "$phone/video/start" -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+Invoke-RestMethod "$phone/video/status" -Headers $headers
+Invoke-RestMethod "$phone/video/packet" -Headers $headers
+Invoke-RestMethod "$phone/video/keyframe" -Method Post -Headers $headers
+Invoke-RestMethod "$phone/video/bitrate" -Method Post -Headers $headers -ContentType 'application/json' -Body '{"bitrate":500000}'
+Invoke-RestMethod "$phone/video/stop" -Method Post -Headers $headers
+
+# 独立抓取 5 秒连续视频，运行前先停止上面的手动会话。
+Invoke-WebRequest "$phone/video/stream?durationSeconds=5&maxSize=720&fps=15&bitrate=800000" -Headers $headers -OutFile './ios-debug.h264'
+```
+
+### 其他补齐的调试能力
+
+`/api.allowedMethods` 为实际清单；均通过 POST /invoke 调用，不开放任意前缀。
+
+- 手势：motion.gesture 完整轨迹、motion.pinch 双指缩放、pointer、status，保留点击/长按/滑动/frame。
+- 输入：ime.text、ime.key、ime.segments；界面效果需自行确认。
+- 应用：app.list_all、app.stop，保留应用读取/启动；app.install 和 app.uninstall 不开放。
+- 观测：capture.screenshot/json/release、uiacc.snapshot/warmup/prepare/restore、设备 Wi-Fi MAC 查询。
+- 显示：HUD 的 show/visible/hide/destroy，console 的 show/print/clear/hide/visible/destroy，以及 toast/alert/input_alert。弹窗可能等待用户操作，不应作为自动冒烟的一部分。
+- 识别：ppocr.load/ocr/close，yolo.load/set_image/detect/detect_image/close，dotocr.set_dict/ocr/find。
+- 图像：opencv.decode/rgba/info/encode/match/clone/gray/crop/resize/rotate/threshold/blur/canny/close。
+
+识别模型、Mat 和悬浮层的 token/id 依照对应 SDK 协议传递，使用后主动 close/destroy；接口开放不代表模型已经交付或识别结果已验证。/invoke 请求上限从 64 KiB 调整为 6 MiB，以便提交 Base64 图片，SDK 自身的尺寸/模型数量限制继续生效。宿主通用调用保留数组/字符串等 JSON 原始类型，修复应用列表等结果被强制当成对象的问题。
+
+双指示例：
+
+```json
+{"method":"motion.pinch","args":{"a0":{"x":0.4,"y":0.5},"b0":{"x":0.6,"y":0.5},"a1":{"x":0.2,"y":0.5},"b1":{"x":0.8,"y":0.5},"durationMs":600}}
+```
+
+安装/卸载按本次要求不开放。原有任意 shell/进程启动、清数据、设备重启、任意远程脚本和 SDK 安装限制保持不变，这些不属于本轮视频及日常能力调试入口。
+
+### 验证范围
+
+纯 Go 测试验证真实 HTTP 路由/鉴权、二进制内容输出、关键帧起步、启动互斥、参数、控制下发、限时退出、断开清理和清理失败重试。测试采集器是替身，不算真机编码通过。
+
+GitHub 模拟器增加 /video/status 检查并实际请求两秒 H.264；debugapi-smoke.json 的 videoCaptureProbe 记录样本字节数、SPS/PPS/IDR NAL 类型或真实失败原因，debug-video.h264 随模拟器产物上传。模拟器硬件能力失败单独登记，不冒充成功；最终仍需真机下载样本、解码和连续运行验收。
