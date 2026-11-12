@@ -167,7 +167,7 @@ func Run(ctx context.Context, source, filename string, params map[string]any) (s
 			Code     int  `json:"code"`
 		}
 		if err = native.Call(ctx, "utils.wait", map[string]any{"pid": pid}, &wait); err == nil && wait.Finished {
-			body, readErr := os.ReadFile(resultPath)
+			body, readErr := readWorkerResult(resultPath)
 			if readErr != nil {
 				return script.Result{}, fmt.Errorf("工作进程退出(code=%d)，没有完整结果: %w", wait.Code, readErr)
 			}

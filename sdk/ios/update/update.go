@@ -148,6 +148,7 @@ func Install(ctx context.Context, raw []byte, expected string) (map[string]any, 
 		return nil, err
 	}
 	state.Pending, state.LastError = digest, ""
+	state.Rejected, state.NeedsRestart, state.Health = "", false, nil
 	if err = writeState(dir, state); err != nil {
 		return nil, err
 	}
@@ -187,19 +188,20 @@ func Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	directory := filepath.Dir(filename)
 	state, err := readState(filepath.Dir(filename))
 	if err != nil {
 		return nil, err
 	}
 	if state.Pending != "" {
-		filename = versionPath(filepath.Dir(filename), state.Pending)
+		filename = versionPath(directory, state.Pending)
 	} else if state.Current != "" {
-		filename = versionPath(filepath.Dir(filename), state.Current)
+		filename = versionPath(directory, state.Current)
 	}
 	installed := fileStatus(filename)
 	loaded := snapshotCopy()
 	pending := installed["exists"] == true && installed["sha256"] != loaded["sha256"]
-	return map[string]any{"release": state, "loaded": loaded, "loadedFileNow": fileStatus(paths.LoadedImage), "candidate": installed, "runningBuild": runningBuild(), "pluginsDir": filepath.Dir(filename), "pendingRestart": pending, "restartRequiredForInstall": true}, nil
+	return map[string]any{"release": state, "loaded": loaded, "loadedFileNow": fileStatus(paths.LoadedImage), "candidate": installed, "runningBuild": runningBuild(), "pluginsDir": directory, "pendingRestart": pending || state.NeedsRestart, "restartRequiredForInstall": true}, nil
 }
 
 // ActiveLibrary 返回当前进程实际使用的 SDK 文件。更新替换了同名文件时要求先重启，
@@ -213,6 +215,17 @@ func ActiveLibrary(ctx context.Context) (string, error) {
 	current := fileStatus(filename)
 	if current["exists"] != true || current["sha256"] != snapshot["sha256"] {
 		return "", fmt.Errorf("SDK 文件已变化，请重启宿主后再执行脚本")
+	}
+	paths, err := device.Paths(ctx)
+	if err != nil {
+		return "", err
+	}
+	state, err := readState(filepath.Join(paths.Documents, "Plugins"))
+	if err != nil {
+		return "", err
+	}
+	if state.NeedsRestart {
+		return "", fmt.Errorf("SDK 健康异常或回退版本尚待确认，请检查健康报告后再启动脚本")
 	}
 	return filename, nil
 }

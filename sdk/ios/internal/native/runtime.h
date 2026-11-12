@@ -70,6 +70,7 @@ BOOL AGImGuiOverlayAvailable(void);
 // 进程间共享输入租约；只约束 SDK 协作进程，不替代云端租户/Session 鉴权。
 NSString *AGRuntimeDocumentsPath(void);
 ag_ios_result AGInputLeaseAcquire(void);
+ag_ios_result AGRecoverOrphanTouches(void);
 void AGInputLeaseRelease(void);
 BOOL AGInputWriteRequired(NSString *op);
 ag_ios_result AGWithInputLease(ag_ios_result (^work)(void));

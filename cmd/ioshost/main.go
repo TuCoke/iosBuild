@@ -193,6 +193,25 @@ func agov_ios_invoke(method *C.char, payload *C.char) *C.char {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
+	// 健康探测不执行设备动作，不能因为长脚本持锁就把候选版本误判为损坏。
+	if name == "sdk.health" {
+		return okData(update.Health(ctx))
+	}
+	if name == "sdk.health.record" {
+		var observation update.HealthObservation
+		raw, err := json.Marshal(args)
+		if err == nil {
+			err = json.Unmarshal(raw, &observation)
+		}
+		if err != nil {
+			return fail(err)
+		}
+		state, err := update.RecordHealth(ctx, observation)
+		if err != nil {
+			return fail(err)
+		}
+		return okData(state)
+	}
 	if !hostCallMu.TryLock() {
 		return fail(contextError("宿主正在执行其他操作，请稍后重试"))
 	}
@@ -287,8 +306,7 @@ func invokeSDKBody(ctx context.Context, name string, args map[string]any, durati
 		}
 		return okData(report)
 	case "sdk.health":
-		// 启动器仅探测运行时能否响应；不要求 AX、截图等受授权限制的能力可用。
-		return okData(map[string]any{"ready": true, "protocol": 1})
+		return okData(update.Health(ctx))
 	case "sdk.rollback":
 		executionControl.Lock()
 		defer executionControl.Unlock()
@@ -334,7 +352,7 @@ func invokeSDKBody(ctx context.Context, name string, args map[string]any, durati
 			}
 			server, err := debugapi.Start(debugapi.Config{Documents: paths.Documents, Video: debugapi.NewVideo(openBackgroundVideo), Invoke: func(callCtx context.Context, method string, parameters map[string]any) (json.RawMessage, error) {
 				// 运行状态只读自己的锁；其他动作执行中也必须能查询 worker PID。
-				if method != "script.status" && method != "background.status" {
+				if method != "script.status" && method != "background.status" && method != "sdk.health" {
 					if !hostCallMu.TryLock() {
 						return nil, contextError("宿主正在执行界面或脚本操作，请稍后重试")
 					}

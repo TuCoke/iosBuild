@@ -103,6 +103,7 @@ ag_ios_result ag_ios_call(const char *method, const uint8_t *json, size_t length
         NSDictionary *args = [value isKindOfClass:[NSDictionary class]] ? value : @{};
         AGLoadFrameworks();
         @try {
+            if ([op isEqualToString:@"runtime.health"]) return AGJSON(@{@"protocol":@2,@"inputLease":@YES,@"workerDocuments":@YES});
             if ([op isEqualToString:@"runtime.input.acquire"]) return AGInputLeaseAcquire();
             if ([op isEqualToString:@"runtime.input.release"]){AGInputLeaseRelease();return AGJSON(@{});}
             if ([op isEqualToString:@"runtime.diagnostics"]) return AGDiagnostics();

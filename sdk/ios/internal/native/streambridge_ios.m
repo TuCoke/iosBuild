@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 // C 回调与 Go 拉取复用一个 VideoToolbox 编码器，UINT64_MAX 仅保留给 C 回调会话。
 static NSLock *callbackLock;
@@ -63,18 +64,36 @@ int AGRawStart(void){
  rawTimer=dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,0,0,rawQueue);if(!rawTimer){[callbackLock unlock];[controlLock unlock];return -1;}
  [lastFailure release];lastFailure=nil;rawRunning=YES;NSUInteger current=++rawGeneration;[callbackLock unlock];
  dispatch_source_set_timer(rawTimer,dispatch_time(DISPATCH_TIME_NOW,0),NSEC_PER_SEC/30,NSEC_PER_MSEC);
+ __block NSUInteger failures=0;
+ __block uint64_t retryAt=0,lastSuccess=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
  dispatch_source_set_event_handler(rawTimer,^{@autoreleasepool{
     [callbackLock lock];AGRawCallback cb=(rawRunning && current==rawGeneration)?rawCallback:NULL;[callbackLock unlock];if(!cb)return;
-    NSString *failure=nil;CGImageRef image=AGCopyScreenImage(w,h,&failure);if(!image){AGStreamFailure(failure ?: @"原始帧采集失败");AGRawStop();return;}
+    uint64_t now=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);if(now<retryAt)return;
+    NSString *failure=nil;CGImageRef image=AGCopyScreenImage(w,h,&failure);
+    if(!image){
+        failures++;AGReleaseCaptureSurface();
+        if(failures==1 || failures%5==0)NSLog(@"[raw-frame] 采集暂时失败，第 %lu 次：%@",(unsigned long)failures,failure);
+        if(now-lastSuccess>=15*NSEC_PER_SEC){AGStreamFailure([NSString stringWithFormat:@"原始帧连续十五秒未恢复：%@",failure ?: @"采集失败"]);AGRawStop();return;}
+        retryAt=now+MIN((uint64_t)100*NSEC_PER_MSEC << MIN(failures-1,4),NSEC_PER_SEC);return;
+    }
     int turn=AGScreenRotation(),outW=(turn&1)?h:w,outH=(turn&1)?w:h;
     size_t stride=(size_t)outW*4;NSMutableData *pixels=[NSMutableData dataWithLength:stride*outH];CGColorSpaceRef color=CGColorSpaceCreateDeviceRGB();
     CGContextRef context=CGBitmapContextCreate(pixels.mutableBytes,outW,outH,8,stride,color,kCGImageAlphaPremultipliedFirst|kCGBitmapByteOrder32Little);CGColorSpaceRelease(color);
-    if(context){AGDrawImage(context,image,outW,outH,turn);CGContextRelease(context);cb(pixels.bytes,outW,outH,(int)stride);}CGImageRelease(image);
+    if(context){
+        AGDrawImage(context,image,outW,outH,turn);CGContextRelease(context);
+        // 采集期间 Stop/Start 可能更换代次，交付前再次验证，不能发送旧会话最后一帧。
+        [callbackLock lock];BOOL deliver=rawRunning && current==rawGeneration;[callbackLock unlock];
+        if(deliver){cb(pixels.bytes,outW,outH,(int)stride);if(failures)NSLog(@"[raw-frame] 采集已恢复");failures=0;retryAt=0;lastSuccess=now;}
+    }else{
+        failures++;retryAt=now+200*NSEC_PER_MSEC;
+        if(now-lastSuccess>=15*NSEC_PER_SEC){AGStreamFailure(@"原始帧图像转换连续十五秒失败");AGRawStop();}
+    }
+    CGImageRelease(image);
  }});
  dispatch_resume(rawTimer);[controlLock unlock];return 0;
 }
 int AGRawStop(void){
  AGStreamInit();[controlLock lock];[callbackLock lock];rawRunning=NO;rawGeneration++;dispatch_source_t timer=rawTimer;rawTimer=NULL;[callbackLock unlock];
  if(timer){dispatch_source_cancel(timer);dispatch_source_set_event_handler(timer,NULL);dispatch_release(timer);}[controlLock unlock];
- if(!dispatch_get_specific(&rawQueueKey))dispatch_sync(rawQueue,^{});return 0;
+ if(!dispatch_get_specific(&rawQueueKey))dispatch_sync(rawQueue,^{});AGReleaseCaptureSurface();return 0;
 }

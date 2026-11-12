@@ -28,7 +28,12 @@ func RawFrameStart(fn func([]byte, int, int, int)) error {
 	if err := native.RawCallbackSet(fn); err != nil {
 		return err
 	}
-	return native.RawStart()
+	if err := native.RawStart(); err != nil {
+		// 启动失败时不能一直保留用户闭包；若已有其他采集器启动，原生会拒绝清除。
+		_ = native.RawCallbackSet(nil)
+		return err
+	}
+	return nil
 }
 func RawFrameStop() error {
 	if err := native.RawStop(); err != nil {

@@ -186,3 +186,8 @@ AutoGo 样本确认提供缓冲池失败后的 CVPixelBufferCreate 回退、失�
 页面与协议细节见 `v2/tools/diagnostics/ios-web-test/README.md`。本机 Python 仍用于提供页面、截图和设备操作转发，只有视频改成浏览器直连；这不等于已经接入正式 Agent 或实现多租户云控鉴权。现有调试时长仍限制 1..120 秒。
 
 本轮本地验证：Go 调试 API 测试、go vet、precheck、JS 语法及 3 项 H.264/帧头 Node 测试通过。Go 视频测试使用替代源，证明 WS 协议与清理，不证明真实 iOS 编码。Apple 编译、重新安装、FRP 浏览器播放及跨 App 真机复验尚未执行；旧手机安装包没有新接口。
+
+
+## 持续健康与输入故障诊断
+
+新增已鉴权只读 `GET /sdk/health`，返回运行协议 2、ready、各核心检查原因和耗时。它不争用长脚本的动作锁，不执行点击、截图或 AX 环境改动。原始帧容错、旧 AX 节点点击校验、健康记录与回退、崩溃触点释放及模拟器故障注入，见 `proposals/ios-runtime-hardening-20261112.md` 的补齐说明。触点恢复只报告事件提交，不自动宣称系统已接受或业务成功。

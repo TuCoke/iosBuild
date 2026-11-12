@@ -50,6 +50,7 @@
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.targetCenter = CGPointMake(0.5, 0.35);
     [self buildUI];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(sdkHealthChanged:) name:@"AGSDKHealthDidChange" object:nil];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -164,7 +165,12 @@
     [super viewDidDisappear:animated];
     [self.tunnelTimer invalidate];self.tunnelTimer=nil;
 }
-- (void)dealloc {[_tunnelTimer invalidate];}
+- (void)dealloc {[_tunnelTimer invalidate];[NSNotificationCenter.defaultCenter removeObserver:self];}
+- (void)sdkHealthChanged:(NSNotification *)notification {
+    NSString *message=notification.userInfo[@"message"];
+    [self append:[@"[SDK 健康] " stringByAppendingString:message ?: @"状态更新"]];
+    self.navigationItem.prompt=[notification.userInfo[@"needsRestart"] boolValue]?message:nil;
+}
 
 - (void)refreshTunnelStatus {
     NSString *raw=[AGBridge invoke:@"tunnel.status" payload:@"{}"];

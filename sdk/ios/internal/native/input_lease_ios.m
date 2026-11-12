@@ -33,7 +33,15 @@ ag_ios_result AGInputLeaseAcquire(void) {
         do{result=flock(fd,LOCK_EX|LOCK_NB);}while(result!=0 && errno==EINTR);
         if(result!=0){int code=errno;close(fd);return AGError(code==EWOULDBLOCK?5:3,
             code==EWOULDBLOCK?@"设备正在由其他进程执行任务，请等待任务结束":[NSString stringWithFormat:@"设备操作锁获取失败: %d",code]);}
-        leaseFD=fd;leaseReferences=1;return AGJSON(@{});
+        leaseFD=fd;leaseReferences=1;
+        @try{
+            ag_ios_result recovered=AGRecoverOrphanTouches();
+            if(recovered.code){close(leaseFD);leaseFD=-1;leaseReferences=0;return recovered;}
+            free(recovered.data);return AGJSON(@{});
+        }@catch(NSException *exception){
+            close(leaseFD);leaseFD=-1;leaseReferences=0;
+            return AGError(4,[@"遗留触点恢复异常：" stringByAppendingString:exception.reason ?: @"未知异常"]);
+        }
     } @finally {[leaseMutex unlock];}
 }
 void AGInputLeaseRelease(void) {

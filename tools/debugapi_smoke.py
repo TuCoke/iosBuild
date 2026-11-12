@@ -1,5 +1,8 @@
 """模拟器真实 HTTP 冒烟；token 只放请求头，不打印，也不写测试报告。"""
 import json
+import os
+import signal
+import tempfile
 import re
 import subprocess
 import pathlib
@@ -7,6 +10,88 @@ import sys
 import time
 import urllib.request
 import urllib.error
+
+
+def input_lease_probe(documents, call):
+    """真实模拟器进程：互斥、强杀、触点恢复；不把提交释放事件当成视觉确认。"""
+    bundle = pathlib.Path(subprocess.run(
+        ["xcrun", "simctl", "get_app_container", "booted", "dev.autogov.host", "app"],
+        check=True, capture_output=True, text=True, timeout=15).stdout.strip())
+    binary, sdk = bundle / "Runtime/app", bundle / "libagovios.dylib"
+    report = {"deviceValidated": False, "effectVerified": False}
+    with tempfile.TemporaryDirectory(prefix="input-lease-ci-", dir=documents) as directory:
+        directory = pathlib.Path(directory)
+        params = directory / "params.json"
+        ready_path = directory / "ready.json"
+        params.write_text(json.dumps({"ready": str(ready_path)}), encoding="utf-8")
+        hold = directory / "hold.go"
+        hold.write_text('package main; import("os";"encoding/json";"autogov1/v2/sdk/ios/script/api");func main(){_,err:=api.Call("motion.pointer",map[string]any{"x":30,"y":30,"id":0,"phase":"down"});message:="";if err!=nil{message=err.Error()};b,_:=json.Marshal(map[string]any{"pid":os.Getpid(),"touchError":message});os.WriteFile(api.ParamString("ready"),b,0600);api.Sleep(30000)}', encoding="utf-8")
+        quick = directory / "quick.go"
+        quick.write_text('package main;import "autogov1/v2/sdk/ios/script/api";func main(){api.SetResult("lease-recovered")}', encoding="utf-8")
+
+        def command(source, result):
+            return ["xcrun", "simctl", "spawn", "booted", str(binary), "--sdk", str(sdk),
+                    "--bundle", str(bundle), "--documents", str(documents), "--params", str(params),
+                    "--result", str(result), "--timeout-ms", "40000", str(source)]
+
+        owner = None
+        with (directory / "hold.log").open("wb") as log:
+            process = subprocess.Popen(command(hold, directory / "hold-result.json"), stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 8
+                journal = documents / ".agov-device-touch.json"
+                while time.monotonic() < deadline:
+                    if ready_path.exists():
+                        try:
+                            state = json.loads(ready_path.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            time.sleep(0.05); continue
+                        candidate = state.get("pid", 0)
+                        if candidate > 0:
+                            cmd = subprocess.run(["ps", "-p", str(candidate), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+                            if str(binary) in cmd and str(directory) in cmd:
+                                owner = candidate; break
+                    if process.poll() is not None:
+                        raise RuntimeError("持有任务提前退出: " + (directory / "hold.log").read_text(errors="replace")[-3000:])
+                    time.sleep(0.1)
+                if owner is None:
+                    raise RuntimeError("设备任务没有进入持有租约的执行阶段")
+                touch_error = state.get("touchError", "")
+                had_touch = not touch_error
+                if touch_error and not any(word in touch_error for word in ("HID", "触摸接口不可用", "需检查授权", "事件服务接口不可用")):
+                    raise RuntimeError("触摸探测发生非环境错误: " + touch_error)
+                if had_touch and not json.loads(journal.read_text()).get("active"):
+                    raise RuntimeError("触摸提交成功却没有记录活跃触点")
+                other_result = directory / "busy-result.json"
+                subprocess.run(command(quick, other_result), capture_output=True, timeout=15)
+                busy = json.loads(other_result.read_text())
+                if busy.get("ok") or "其他进程" not in busy.get("error", ""):
+                    raise RuntimeError("另一个真实进程没有被设备租约阻止: " + json.dumps(busy, ensure_ascii=False))
+                health = json.loads(call("/sdk/health"))
+                if not health.get("data", {}).get("ready"):
+                    raise RuntimeError("设备任务期间健康检查失败: " + json.dumps(health, ensure_ascii=False))
+                # PID 来自自己的唯一任务目录，并再次核对命令；只终止本测试创建的进程。
+                cmd = subprocess.run(["ps", "-p", str(owner), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+                if str(binary) not in cmd or str(directory) not in cmd:
+                    raise RuntimeError("终止前进程身份发生变化")
+                os.kill(owner, signal.SIGKILL); process.wait(timeout=10)
+                result = directory / "recovered-result.json"
+                completed = subprocess.run(command(quick, result), capture_output=True, timeout=15)
+                recovered = json.loads(result.read_text())
+                if completed.returncode != 0 or not recovered.get("ok"):
+                    raise RuntimeError("进程退出后未恢复设备租约: " + json.dumps(recovered, ensure_ascii=False))
+                if journal.exists() and json.loads(journal.read_text()).get("active"):
+                    raise RuntimeError("恢复后仍记录遗留触点")
+                report.update(ok=True, contentionRejected=True, healthDuringTask=True,
+                              killedWorkerPID=owner, orphanReleaseSubmitted=had_touch, touchProbeSkipped=touch_error or None, leaseReacquired=True)
+            finally:
+                if process.poll() is None:
+                    if owner:
+                        cmd = subprocess.run(["ps", "-p", str(owner), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+                        if str(binary) in cmd and str(directory) in cmd:
+                            os.kill(owner, signal.SIGKILL)
+                    process.wait(timeout=45)
+    return report
 
 
 def run(documents):
@@ -60,6 +145,13 @@ def run(documents):
     if not data.get("ok") or not data.get("data", {}).get("ok"):
         raise RuntimeError("调试内置脚本失败")
     results["/script/test"] = {"ok": True}
+    try:
+        results["inputLeaseProbe"] = input_lease_probe(documents, call)
+    except Exception as exc:
+        results["inputLeaseProbe"] = {"ok": False, "error": str(exc), "deviceValidated": False}
+        (documents / "debugapi-smoke.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        raise
+
     if not call("/log"):
         raise RuntimeError("调试日志为空")
     # 真正尝试短时采集；模拟器硬件编码/系统采集限制单独登记，不能冒充真机通过。
